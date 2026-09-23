@@ -1681,10 +1681,12 @@ BEGIN
   DECLARE v_tenant_status_code VARCHAR(80);
 
   IF p_actor_role = 'super_admin' THEN
-    IF p_role_code NOT IN ('super_admin', 'tenant_admin') THEN
+    -- El super_admin puede operar cualquier tenant directamente (crear
+    -- tenant_admin, instructor o alumno), no solo delegar en un tenant_admin.
+    IF p_role_code NOT IN ('super_admin', 'tenant_admin', 'instructor', 'student') THEN
       SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'role_not_allowed_for_actor';
     END IF;
-    IF p_role_code = 'tenant_admin' AND p_target_tenant_id IS NULL THEN
+    IF p_role_code <> 'super_admin' AND p_target_tenant_id IS NULL THEN
       SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_required';
     END IF;
   ELSEIF p_actor_role = 'tenant_admin' THEN

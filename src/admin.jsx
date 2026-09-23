@@ -153,7 +153,7 @@ export function UsersPanel({ session }) {
     }
   }
 
-  const roleOptions = isSuperAdmin ? ['tenant_admin', 'super_admin'] : ['instructor', 'student']
+  const roleOptions = isSuperAdmin ? ['tenant_admin', 'instructor', 'student', 'super_admin'] : ['instructor', 'student']
 
   return (
     <div className="admin-wrap">
@@ -168,7 +168,7 @@ export function UsersPanel({ session }) {
               {roleOptions.map((r) => <option key={r} value={r}>{r}</option>)}
             </select>
           </label>
-          {isSuperAdmin && form.roleCode === 'tenant_admin' && (
+          {isSuperAdmin && form.roleCode !== 'super_admin' && (
             <label>Tenant
               <select value={form.tenantId} onChange={(e) => setForm({ ...form, tenantId: e.target.value })} required>
                 <option value="">Selecciona…</option>
@@ -484,9 +484,10 @@ export function ProgramsPanel({ session }) {
   const { token, profile } = session
   const isSuperAdmin = profile.roleCode === 'super_admin'
   const { items, error, loading, reload } = useList('/api/programs', token)
+  const { items: tenants } = useList(isSuperAdmin ? '/api/tenants' : '', token)
   const modalities = useCatalog('CLASS_MODALITY', token)
   const programStatuses = useCatalog('PROGRAM_STATUS', token)
-  const [form, setForm] = useState({ name: '', description: '', cohort: '', modalityCode: '', startsOn: '', endsOn: '' })
+  const [form, setForm] = useState({ tenantId: '', name: '', description: '', cohort: '', modalityCode: '', startsOn: '', endsOn: '' })
   const [formError, setFormError] = useState('')
   const [selectedProgram, setSelectedProgram] = useState(null)
 
@@ -494,8 +495,11 @@ export function ProgramsPanel({ session }) {
     e.preventDefault()
     setFormError('')
     try {
-      await apiRequest('/api/programs', { method: 'POST', token, body: form })
-      setForm({ name: '', description: '', cohort: '', modalityCode: '', startsOn: '', endsOn: '' })
+      await apiRequest('/api/programs', {
+        method: 'POST', token,
+        body: { ...form, tenantId: isSuperAdmin ? (form.tenantId ? Number(form.tenantId) : null) : undefined },
+      })
+      setForm({ tenantId: '', name: '', description: '', cohort: '', modalityCode: '', startsOn: '', endsOn: '' })
       reload()
     } catch (err) {
       setFormError(err.message)
@@ -521,6 +525,14 @@ export function ProgramsPanel({ session }) {
       <section className="panel admin-form-panel">
         <h3>Nuevo programa</h3>
         <form className="admin-form" onSubmit={handleCreate}>
+          {isSuperAdmin && (
+            <label>Tenant
+              <select value={form.tenantId} onChange={(e) => setForm({ ...form, tenantId: e.target.value })} required>
+                <option value="">Selecciona…</option>
+                {tenants.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+              </select>
+            </label>
+          )}
           <label>Nombre<input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required /></label>
           <label>Cohorte<input value={form.cohort} onChange={(e) => setForm({ ...form, cohort: e.target.value })} placeholder="2026-1" required /></label>
           <label>Descripción<input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></label>
@@ -674,18 +686,23 @@ export function LeaveRequestsPanel({ session }) {
 }
 
 export function HolidaysPanel({ session }) {
-  const { token } = session
+  const { token, profile } = session
+  const isSuperAdmin = profile.roleCode === 'super_admin'
   const { items, error, loading, reload } = useList('/api/holidays', token)
+  const { items: tenants } = useList(isSuperAdmin ? '/api/tenants' : '', token)
   const types = useCatalog('HOLIDAY_TYPE', token)
-  const [form, setForm] = useState({ holidayOn: '', name: '', typeCode: '' })
+  const [form, setForm] = useState({ tenantId: '', holidayOn: '', name: '', typeCode: '' })
   const [formError, setFormError] = useState('')
 
   async function handleCreate(e) {
     e.preventDefault()
     setFormError('')
     try {
-      await apiRequest('/api/holidays', { method: 'POST', token, body: form })
-      setForm({ holidayOn: '', name: '', typeCode: '' })
+      await apiRequest('/api/holidays', {
+        method: 'POST', token,
+        body: { ...form, tenantId: isSuperAdmin ? (form.tenantId ? Number(form.tenantId) : null) : undefined },
+      })
+      setForm({ tenantId: '', holidayOn: '', name: '', typeCode: '' })
       reload()
     } catch (err) {
       setFormError(err.message)
@@ -697,6 +714,14 @@ export function HolidaysPanel({ session }) {
       <section className="panel admin-form-panel">
         <h3>Nuevo feriado</h3>
         <form className="admin-form" onSubmit={handleCreate}>
+          {isSuperAdmin && (
+            <label>Tenant
+              <select value={form.tenantId} onChange={(e) => setForm({ ...form, tenantId: e.target.value })} required>
+                <option value="">Selecciona…</option>
+                {tenants.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+              </select>
+            </label>
+          )}
           <label>Fecha<input type="date" value={form.holidayOn} onChange={(e) => setForm({ ...form, holidayOn: e.target.value })} required /></label>
           <label>Nombre<input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required /></label>
           <label>Tipo
