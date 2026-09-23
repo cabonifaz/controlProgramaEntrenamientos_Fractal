@@ -882,7 +882,9 @@ app.post('/api/leave-requests/:id/cancel', authenticate, async (req, res) => {
 if (process.env.NODE_ENV === 'production') {
   const dist = path.resolve(__dirname, '../dist')
   app.use(express.static(dist))
-  app.get('*', (_req, res) => res.sendFile(path.join(dist, 'index.html')))
+  // Middleware, not a '*' route pattern: Express 5's path-to-regexp no
+  // longer accepts a bare '*' as a route path.
+  app.use((_req, res) => res.sendFile(path.join(dist, 'index.html')))
 }
 
 app.listen(port, () => console.log(`Training monolith listening on http://localhost:${port}`))
