@@ -9,6 +9,10 @@ const pool = mysql.createPool({
   waitForConnections: true,
   connectionLimit: 10,
   namedPlaceholders: true,
+  // Sin esto, mysql2 devuelve DATE/DATETIME como objetos Date de JS
+  // construidos en hora local; al serializar a JSON quedan como timestamp
+  // ISO desplazado (p.ej. "2026-01-05" -> "2026-01-05T05:00:00.000Z").
+  dateStrings: true,
 })
 
 export async function callProcedure(name, parameters = {}) {

@@ -7,12 +7,18 @@
     "dev": "vite",
     "build": "vite build",
     "start": "node server/index.js",
-    "server": "node --watch server/index.js"
+    "server": "node --watch server/index.js",
+    "seed:superadmin": "node server/scripts/seedSuperadmin.js",
+    "db:apply-schema": "node database/run-schema.js",
+    "db:verify-schema": "node database/verify-schema.js",
+    "db:create-app-users": "node database/create-app-users.js"
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",
+    "bcryptjs": "latest",
     "dotenv": "latest",
     "express": "latest",
+    "jsonwebtoken": "latest",
     "lucide-react": "latest",
     "mysql2": "latest",
     "react": "latest",
