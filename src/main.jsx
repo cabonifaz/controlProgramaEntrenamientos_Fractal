@@ -18,7 +18,7 @@ const data = {
   superAdmin: { greeting: 'Buenos dias, Cris', eyebrow: 'Vista global', metrics: [['Tenants activos', '6', '+1 este mes', 'blue'], ['Programas activos', '18', 'En todos los tenants', 'good'], ['Salud de la plataforma', '99.8%', 'Todos los servicios estables', 'progress']], topics: [['Tenant nuevo', 'Fractal Peru', 'Configuracion inicial pendiente', 'Configurar'], ['Actividad global', '18 programas activos', '142 instructores asignados', 'Ver detalle'], ['Seguridad', '2 invitaciones pendientes', 'Requieren aprobacion', 'Revisar']] },
 }
 
-const roleCodeByKey = { student: 'student', instructor: 'instructor', admin: 'tenant_admin', superAdmin: 'super_admin' }
+const roleKeyByCode = { student: 'student', instructor: 'instructor', tenant_admin: 'admin', super_admin: 'superAdmin' }
 
 const ADMIN_PANEL_BY_NAV = { Tenants: TenantsPanel, Usuarios: UsersPanel, Programas: ProgramsPanel, Calendario: HolidaysPanel, Permisos: LeaveRequestsPanel, Alertas: AlertsPanel, Reportes: ReportsPanel, Configuracion: ChangePasswordPanel }
 const INSTRUCTOR_PANEL_BY_NAV = { Inicio: RealDashboard, 'Mis clases': InstructorClassesPanel, Temarios: InstructorClassesPanel, Asistencia: InstructorClassesPanel, Alertas: AlertsPanel, 'Mi cuenta': ChangePasswordPanel }
@@ -26,12 +26,10 @@ const STUDENT_PANEL_BY_NAV = { Inicio: RealDashboard, Permisos: LeaveRequestsPan
 const SECTION_PANELS_BY_ROLE = { admin: ADMIN_PANEL_BY_NAV, superAdmin: ADMIN_PANEL_BY_NAV, instructor: INSTRUCTOR_PANEL_BY_NAV, student: STUDENT_PANEL_BY_NAV }
 
 function Login({ onLogin }) {
-  const [role, setRole] = useState('student')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
-  const current = roles[role]
 
   async function handleSubmit(e) {
     e.preventDefault()
@@ -42,11 +40,16 @@ function Login({ onLogin }) {
       const response = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password, role: roleCodeByKey[role] }),
+        body: JSON.stringify({ email, password }),
       })
       const body = await response.json().catch(() => ({}))
       if (!response.ok) {
         setError(body.message || 'No se pudo iniciar sesion')
+        return
+      }
+      const role = roleKeyByCode[body.user?.roleCode]
+      if (!role) {
+        setError('Rol de cuenta no reconocido')
         return
       }
       onLogin({ role, token: body.token, profile: body.user })
@@ -57,7 +60,7 @@ function Login({ onLogin }) {
     }
   }
 
-  return <main className="login-shell"><section className="login-art"><div className="logo-mark">F</div><p className="kicker">FRACTAL · TRAINING OS</p><h1>Aprender. Aplicar.<br /><em>Transformar.</em></h1><p className="art-copy">El espacio operativo donde cada talento convierte conocimiento en resultados visibles.</p><div className="art-foot"><span>01</span><span className="line" /><span>Control de entrenamiento</span></div></section><section className="login-panel"><form className="login-form" onSubmit={handleSubmit}><div className="mobile-logo logo-mark">F</div><p className="kicker">Bienvenido de nuevo</p><h2>Ingresa a tu espacio</h2><p className="muted">Selecciona tu tipo de acceso para continuar.</p><div className="role-tabs">{Object.entries(roles).map(([key, item]) => <button type="button" className={role === key ? 'role-tab active' : 'role-tab'} onClick={() => setRole(key)} key={key}>{item.label}</button>)}</div><label>Correo corporativo<input type="email" placeholder="tu@fractal.com" value={email} onChange={(e) => setEmail(e.target.value)} required /></label><label>Contraseña<div className="password"><input type="password" placeholder="••••••••" value={password} onChange={(e) => setPassword(e.target.value)} required /><span>Mostrar</span></div></label><div className="form-row"><label className="check"><input type="checkbox" defaultChecked /> Recordarme</label><a href="#forgot">¿Olvidaste tu contraseña?</a></div>{error && <p className="form-error">{error}</p>}<button type="submit" className="primary full" disabled={loading}>{loading ? 'Ingresando…' : <>Entrar como {current.label.toLowerCase()} <span>→</span></>}</button><p className="login-note">Acceso seguro · Tu información está protegida</p></form></section></main>
+  return <main className="login-shell"><section className="login-art"><div className="logo-mark">F</div><p className="kicker">FRACTAL · TRAINING OS</p><h1>Aprender. Aplicar.<br /><em>Transformar.</em></h1><p className="art-copy">El espacio operativo donde cada talento convierte conocimiento en resultados visibles.</p><div className="art-foot"><span>01</span><span className="line" /><span>Control de entrenamiento</span></div></section><section className="login-panel"><form className="login-form" onSubmit={handleSubmit}><div className="mobile-logo logo-mark">F</div><p className="kicker">Bienvenido de nuevo</p><h2>Ingresa a tu espacio</h2><p className="muted">Tu rol se determina automáticamente al autenticarte.</p><label>Correo corporativo<input type="email" placeholder="tu@fractal.com" value={email} onChange={(e) => setEmail(e.target.value)} required /></label><label>Contraseña<div className="password"><input type="password" placeholder="••••••••" value={password} onChange={(e) => setPassword(e.target.value)} required /><span>Mostrar</span></div></label><div className="form-row"><label className="check"><input type="checkbox" defaultChecked /> Recordarme</label><a href="#forgot">¿Olvidaste tu contraseña?</a></div>{error && <p className="form-error">{error}</p>}<button type="submit" className="primary full" disabled={loading}>{loading ? 'Ingresando…' : <>Entrar <span>→</span></>}</button><p className="login-note">Acceso seguro · Tu información está protegida</p></form></section></main>
 }
 
 function App() {

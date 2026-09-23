@@ -33,12 +33,14 @@ app.get('/api/catalogs/:code', async (req, res) => {
   }
 })
 
-// La API solo valida formato basico, compara el hash de contrasena (operacion
-// criptografica, no regla de negocio) y traduce a HTTP la decision que ya tomo
-// el procedimiento almacenado (usuario activo, tenant activo, bloqueo por intentos).
+// El login no pide ni muestra rol: cada correo tiene un unico rol en la
+// cuenta (UNIQUE en users.email), asi que el SP lo determina el mismo, no
+// el cliente. La API solo valida formato basico, compara el hash de
+// contrasena (operacion criptografica, no regla de negocio) y traduce a
+// HTTP la decision que ya tomo el procedimiento almacenado.
 app.post('/api/auth/login', async (req, res) => {
-  const { email, password, role } = req.body || {}
-  if (typeof email !== 'string' || !email.includes('@') || typeof password !== 'string' || !password || !VALID_ROLES.has(role)) {
+  const { email, password } = req.body || {}
+  if (typeof email !== 'string' || !email.includes('@') || typeof password !== 'string' || !password) {
     return res.status(400).json({ message: 'Invalid request format' })
   }
 
@@ -46,11 +48,11 @@ app.post('/api/auth/login', async (req, res) => {
   const userAgent = req.headers['user-agent'] || null
 
   try {
-    const [context] = await callProcedure('sp_auth_get_login_context', { p_email: email, p_role_code: role })
+    const [context] = await callProcedure('sp_auth_get_login_context', { p_email: email })
 
     if (!context) {
       await callProcedure('sp_auth_log_access', {
-        p_user_id: null, p_tenant_id: null, p_email: email, p_role_code: role,
+        p_user_id: null, p_tenant_id: null, p_email: email, p_role_code: null,
         p_success: false, p_failure_reason: 'user_not_found', p_ip: ip, p_user_agent: userAgent,
       })
       return res.status(401).json({ message: 'Invalid credentials' })
@@ -58,7 +60,7 @@ app.post('/api/auth/login', async (req, res) => {
 
     if (context.is_locked) {
       await callProcedure('sp_auth_log_access', {
-        p_user_id: context.user_id, p_tenant_id: context.tenant_id, p_email: email, p_role_code: role,
+        p_user_id: context.user_id, p_tenant_id: context.tenant_id, p_email: email, p_role_code: context.role_code,
         p_success: false, p_failure_reason: 'locked', p_ip: ip, p_user_agent: userAgent,
       })
       return res.status(423).json({ message: 'Account temporarily locked, try again later' })
@@ -66,7 +68,7 @@ app.post('/api/auth/login', async (req, res) => {
 
     if (!context.user_is_active || (context.tenant_row_id && !context.tenant_is_active)) {
       await callProcedure('sp_auth_log_access', {
-        p_user_id: context.user_id, p_tenant_id: context.tenant_id, p_email: email, p_role_code: role,
+        p_user_id: context.user_id, p_tenant_id: context.tenant_id, p_email: email, p_role_code: context.role_code,
         p_success: false, p_failure_reason: 'inactive', p_ip: ip, p_user_agent: userAgent,
       })
       return res.status(403).json({ message: 'User or tenant is inactive' })
@@ -75,7 +77,7 @@ app.post('/api/auth/login', async (req, res) => {
     const passwordMatches = await verifyPassword(password, context.password_hash)
     await callProcedure('sp_auth_register_login_result', { p_user_id: context.user_id, p_success: passwordMatches })
     await callProcedure('sp_auth_log_access', {
-      p_user_id: context.user_id, p_tenant_id: context.tenant_id, p_email: email, p_role_code: role,
+      p_user_id: context.user_id, p_tenant_id: context.tenant_id, p_email: email, p_role_code: context.role_code,
       p_success: passwordMatches, p_failure_reason: passwordMatches ? null : 'bad_password', p_ip: ip, p_user_agent: userAgent,
     })
 

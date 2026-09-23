@@ -516,7 +516,10 @@ END$$
 -- Reglas de negocio de login (usuario activo, tenant activo, bloqueo por intentos)
 -- resueltas en SQL. La API solo compara el hash de contrasena (operacion tecnica)
 -- y traduce el resultado a una respuesta HTTP.
-CREATE PROCEDURE sp_auth_get_login_context(IN p_email VARCHAR(190), IN p_role_code VARCHAR(80))
+-- El rol no se pide en el login: cada email tiene un unico rol (UNIQUE en
+-- users.email), asi que se determina aqui a partir de la cuenta, nunca de
+-- lo que el cliente diga que es. La UI de login no debe mostrar ni pedir rol.
+CREATE PROCEDURE sp_auth_get_login_context(IN p_email VARCHAR(190))
 BEGIN
   SELECT
     u.id AS user_id,
@@ -538,7 +541,7 @@ BEGIN
   JOIN master_catalog_values v ON v.id = u.role_id AND v.is_deleted = FALSE
   LEFT JOIN tenants t ON t.id = u.tenant_id
   LEFT JOIN master_catalog_values ts ON ts.id = t.status_id
-  WHERE u.email = p_email AND v.code = p_role_code AND u.is_deleted = FALSE
+  WHERE u.email = p_email AND u.is_deleted = FALSE
   LIMIT 1;
 END$$
 
