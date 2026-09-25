@@ -517,6 +517,14 @@ DROP PROCEDURE IF EXISTS sp_instructor_agenda;
 DROP PROCEDURE IF EXISTS sp_instructor_metrics;
 DROP PROCEDURE IF EXISTS sp_dashboard_get;
 DROP PROCEDURE IF EXISTS sp_attendance_record;
+-- Renombradas/eliminadas por el refactor a grupos (component_groups): estos
+-- guards se quedan para limpiar cualquier entorno que todavia las tenga.
+DROP PROCEDURE IF EXISTS sp_components_assign_instructor;
+DROP PROCEDURE IF EXISTS sp_components_enroll_student;
+DROP PROCEDURE IF EXISTS sp_components_list_by_instructor;
+DROP PROCEDURE IF EXISTS sp_program_schedule_days_list;
+DROP PROCEDURE IF EXISTS sp_program_schedule_days_add;
+DROP PROCEDURE IF EXISTS sp_program_schedule_days_remove;
 
 DELIMITER $$
 
