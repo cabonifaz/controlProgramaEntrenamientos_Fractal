@@ -127,29 +127,9 @@ CREATE TABLE IF NOT EXISTS program_enrollments (
   CONSTRAINT fk_program_enrollment_student FOREIGN KEY (student_id) REFERENCES users(id)
 );
 
--- Horario base del programa: dias de la semana (0=domingo..6=sabado, estilo
--- Date.getDay() de JS) y franja horaria en que se dictan clases. El generador
--- automatico de fechas de temas solo usa estos dias.
-CREATE TABLE IF NOT EXISTS program_schedule_days (
-  id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
-  program_id BIGINT UNSIGNED NOT NULL,
-  weekday TINYINT UNSIGNED NOT NULL,
-  start_time TIME NOT NULL,
-  end_time TIME NOT NULL,
-  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  created_by BIGINT UNSIGNED NULL,
-  deleted_at DATETIME NULL,
-  deleted_by BIGINT UNSIGNED NULL,
-  is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
-  UNIQUE KEY uq_program_weekday (program_id, weekday),
-  CONSTRAINT fk_schedule_day_program FOREIGN KEY (program_id) REFERENCES training_programs(id),
-  CONSTRAINT chk_schedule_day_weekday CHECK (weekday BETWEEN 0 AND 6)
-);
-
 CREATE TABLE IF NOT EXISTS components (
   id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
   program_id BIGINT UNSIGNED NOT NULL,
-  instructor_id BIGINT UNSIGNED NULL,
   name VARCHAR(180) NOT NULL,
   description TEXT NULL,
   sort_order INT NOT NULL DEFAULT 0,
@@ -162,33 +142,16 @@ CREATE TABLE IF NOT EXISTS components (
   deleted_by BIGINT UNSIGNED NULL,
   is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
   CONSTRAINT fk_component_program FOREIGN KEY (program_id) REFERENCES training_programs(id),
-  CONSTRAINT fk_component_instructor FOREIGN KEY (instructor_id) REFERENCES users(id),
   CONSTRAINT fk_component_status FOREIGN KEY (status_id) REFERENCES master_catalog_values(id)
 );
 
-CREATE TABLE IF NOT EXISTS component_enrollments (
+-- Un componente puede dictarse en paralelo a traves de varios grupos (misma
+-- malla/temario, instructor y horario propios, alumnos propios, avance
+-- independiente). El instructor y el horario viven aqui, no en components.
+CREATE TABLE IF NOT EXISTS component_groups (
   id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
   component_id BIGINT UNSIGNED NOT NULL,
-  student_id BIGINT UNSIGNED NOT NULL,
-  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  created_by BIGINT UNSIGNED NULL,
-  deleted_at DATETIME NULL,
-  deleted_by BIGINT UNSIGNED NULL,
-  is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
-  UNIQUE KEY uq_component_student (component_id, student_id),
-  CONSTRAINT fk_component_enrollment_component FOREIGN KEY (component_id) REFERENCES components(id),
-  CONSTRAINT fk_component_enrollment_student FOREIGN KEY (student_id) REFERENCES users(id)
-);
-
-CREATE TABLE IF NOT EXISTS topics (
-  id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
-  component_id BIGINT UNSIGNED NOT NULL,
-  title VARCHAR(180) NOT NULL,
-  description TEXT NULL,
-  sort_order INT NOT NULL DEFAULT 0,
-  scheduled_on DATE NULL,
-  actual_date DATE NULL,
-  duration_minutes INT UNSIGNED NULL,
+  name VARCHAR(120) NOT NULL,
   instructor_id BIGINT UNSIGNED NULL,
   status_id BIGINT UNSIGNED NOT NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -198,9 +161,55 @@ CREATE TABLE IF NOT EXISTS topics (
   deleted_at DATETIME NULL,
   deleted_by BIGINT UNSIGNED NULL,
   is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
-  CONSTRAINT fk_topic_component FOREIGN KEY (component_id) REFERENCES components(id),
-  CONSTRAINT fk_topic_status FOREIGN KEY (status_id) REFERENCES master_catalog_values(id),
-  CONSTRAINT fk_topic_instructor FOREIGN KEY (instructor_id) REFERENCES users(id)
+  CONSTRAINT fk_group_component FOREIGN KEY (component_id) REFERENCES components(id),
+  CONSTRAINT fk_group_instructor FOREIGN KEY (instructor_id) REFERENCES users(id),
+  CONSTRAINT fk_group_status FOREIGN KEY (status_id) REFERENCES master_catalog_values(id)
+);
+
+-- Horario semanal recurrente de un grupo (0=domingo..6=sabado, estilo
+-- Date.getDay() de JS). Reemplaza al horario por programa: cada grupo tiene
+-- el suyo, por eso dos componentes distintos pueden compartir dia/hora
+-- siempre que sean instructores distintos (esa regla se valida en el SP).
+CREATE TABLE IF NOT EXISTS component_group_schedule_days (
+  id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+  group_id BIGINT UNSIGNED NOT NULL,
+  weekday TINYINT UNSIGNED NOT NULL,
+  start_time TIME NOT NULL,
+  end_time TIME NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  created_by BIGINT UNSIGNED NULL,
+  deleted_at DATETIME NULL,
+  deleted_by BIGINT UNSIGNED NULL,
+  is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+  UNIQUE KEY uq_group_weekday (group_id, weekday),
+  CONSTRAINT fk_group_schedule_day_group FOREIGN KEY (group_id) REFERENCES component_groups(id),
+  CONSTRAINT chk_group_schedule_day_weekday CHECK (weekday BETWEEN 0 AND 6)
+);
+
+-- group_enrollments NO se crea aqui arriba: en una base existente todavia
+-- se llama component_enrollments, y crear la tabla nueva de antemano le
+-- ganaria el nombre al RENAME que hace la migracion mas abajo. La crea el
+-- procedimiento de migracion, en cualquiera de los dos casos.
+
+CREATE TABLE IF NOT EXISTS topics (
+  id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+  group_id BIGINT UNSIGNED NOT NULL,
+  title VARCHAR(180) NOT NULL,
+  description TEXT NULL,
+  sort_order INT NOT NULL DEFAULT 0,
+  scheduled_on DATE NULL,
+  actual_date DATE NULL,
+  duration_minutes INT UNSIGNED NULL,
+  status_id BIGINT UNSIGNED NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  created_by BIGINT UNSIGNED NULL,
+  updated_at DATETIME NULL,
+  updated_by BIGINT UNSIGNED NULL,
+  deleted_at DATETIME NULL,
+  deleted_by BIGINT UNSIGNED NULL,
+  is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+  CONSTRAINT fk_topic_group FOREIGN KEY (group_id) REFERENCES component_groups(id),
+  CONSTRAINT fk_topic_status FOREIGN KEY (status_id) REFERENCES master_catalog_values(id)
 );
 
 CREATE TABLE IF NOT EXISTS holidays (
@@ -441,6 +450,7 @@ INSERT IGNORE INTO master_catalog_values (catalog_id, code, label, sort_order) V
 -- ===================================================================
 -- Procedimientos almacenados
 -- ===================================================================
+DROP PROCEDURE IF EXISTS sp_migrate_component_groups_v1;
 DROP PROCEDURE IF EXISTS sp_system_health;
 DROP PROCEDURE IF EXISTS sp_authenticate_user;
 DROP PROCEDURE IF EXISTS sp_auth_get_login_context;
@@ -465,16 +475,18 @@ DROP PROCEDURE IF EXISTS sp_programs_set_status;
 DROP PROCEDURE IF EXISTS sp_programs_enroll_student;
 DROP PROCEDURE IF EXISTS sp_components_list;
 DROP PROCEDURE IF EXISTS sp_components_create;
-DROP PROCEDURE IF EXISTS sp_components_assign_instructor;
-DROP PROCEDURE IF EXISTS sp_components_enroll_student;
+DROP PROCEDURE IF EXISTS sp_component_groups_list;
+DROP PROCEDURE IF EXISTS sp_component_groups_create;
+DROP PROCEDURE IF EXISTS sp_component_groups_update;
+DROP PROCEDURE IF EXISTS sp_group_enrollments_add;
 DROP PROCEDURE IF EXISTS sp_topics_list;
 DROP PROCEDURE IF EXISTS sp_topics_create;
 DROP PROCEDURE IF EXISTS sp_topics_update_status;
 DROP PROCEDURE IF EXISTS sp_topics_reschedule;
 DROP PROCEDURE IF EXISTS sp_topics_generate_schedule;
-DROP PROCEDURE IF EXISTS sp_program_schedule_days_list;
-DROP PROCEDURE IF EXISTS sp_program_schedule_days_add;
-DROP PROCEDURE IF EXISTS sp_program_schedule_days_remove;
+DROP PROCEDURE IF EXISTS sp_group_schedule_days_list;
+DROP PROCEDURE IF EXISTS sp_group_schedule_days_add;
+DROP PROCEDURE IF EXISTS sp_group_schedule_days_remove;
 DROP PROCEDURE IF EXISTS sp_holidays_list;
 DROP PROCEDURE IF EXISTS sp_holidays_create;
 DROP PROCEDURE IF EXISTS sp_alerts_run_detection;
@@ -487,7 +499,7 @@ DROP PROCEDURE IF EXISTS sp_leave_requests_create;
 DROP PROCEDURE IF EXISTS sp_leave_requests_list;
 DROP PROCEDURE IF EXISTS sp_leave_requests_resolve;
 DROP PROCEDURE IF EXISTS sp_leave_requests_cancel;
-DROP PROCEDURE IF EXISTS sp_components_list_by_instructor;
+DROP PROCEDURE IF EXISTS sp_groups_list_by_instructor;
 DROP PROCEDURE IF EXISTS sp_reports_attendance_by_program;
 DROP PROCEDURE IF EXISTS sp_reports_attendance_by_component;
 DROP PROCEDURE IF EXISTS sp_reports_attendance_by_student;
@@ -507,6 +519,98 @@ DROP PROCEDURE IF EXISTS sp_dashboard_get;
 DROP PROCEDURE IF EXISTS sp_attendance_record;
 
 DELIMITER $$
+
+-- Migracion unica: mueve instructor/horario de "por programa" y "por
+-- componente" a "por grupo" (component_groups), preservando datos
+-- existentes. Cada paso esta guardado por una comprobacion en
+-- information_schema, asi que es seguro volver a llamarla: en una base
+-- nueva no encuentra nada que migrar, y en una ya migrada tampoco. La
+-- llama database/run-schema.js despues de aplicar todos los procedimientos.
+CREATE PROCEDURE sp_migrate_component_groups_v1()
+BEGIN
+  DECLARE v_has_old_component_instructor INT DEFAULT 0;
+  DECLARE v_has_old_topics_component INT DEFAULT 0;
+  DECLARE v_has_old_component_enrollments INT DEFAULT 0;
+  DECLARE v_has_old_program_schedule INT DEFAULT 0;
+
+  SELECT COUNT(*) INTO v_has_old_component_instructor FROM information_schema.columns
+    WHERE table_schema = DATABASE() AND table_name = 'components' AND column_name = 'instructor_id';
+  SELECT COUNT(*) INTO v_has_old_topics_component FROM information_schema.columns
+    WHERE table_schema = DATABASE() AND table_name = 'topics' AND column_name = 'component_id';
+  SELECT COUNT(*) INTO v_has_old_component_enrollments FROM information_schema.tables
+    WHERE table_schema = DATABASE() AND table_name = 'component_enrollments';
+  SELECT COUNT(*) INTO v_has_old_program_schedule FROM information_schema.tables
+    WHERE table_schema = DATABASE() AND table_name = 'program_schedule_days';
+
+  -- 1) Un "Grupo A" por componente existente, heredando su instructor y estado.
+  IF v_has_old_component_instructor > 0 THEN
+    INSERT INTO component_groups (component_id, name, instructor_id, status_id, created_at)
+    SELECT c.id, 'Grupo A', c.instructor_id, c.status_id, NOW() FROM components c
+    WHERE c.is_deleted = FALSE AND NOT EXISTS (SELECT 1 FROM component_groups g WHERE g.component_id = c.id);
+  END IF;
+
+  -- 2) Copiar el horario del programa a cada grupo recien creado (punto de
+  -- partida editable despues por drag-and-drop) y retirar la tabla vieja.
+  IF v_has_old_program_schedule > 0 THEN
+    INSERT INTO component_group_schedule_days (group_id, weekday, start_time, end_time, created_at)
+    SELECT g.id, psd.weekday, psd.start_time, psd.end_time, NOW()
+    FROM component_groups g
+    JOIN components c ON c.id = g.component_id
+    JOIN training_programs p ON p.id = c.program_id
+    JOIN program_schedule_days psd ON psd.program_id = p.id AND psd.is_deleted = FALSE
+    WHERE NOT EXISTS (SELECT 1 FROM component_group_schedule_days x WHERE x.group_id = g.id AND x.weekday = psd.weekday);
+
+    DROP TABLE program_schedule_days;
+  END IF;
+
+  -- 3) topics: component_id -> group_id, se retira el instructor propio
+  -- (ahora se resuelve via el grupo, para no duplicar el dato).
+  IF v_has_old_topics_component > 0 THEN
+    ALTER TABLE topics ADD COLUMN group_id BIGINT UNSIGNED NULL AFTER component_id;
+    UPDATE topics t JOIN component_groups g ON g.component_id = t.component_id SET t.group_id = g.id WHERE t.group_id IS NULL;
+    ALTER TABLE topics
+      MODIFY group_id BIGINT UNSIGNED NOT NULL,
+      ADD CONSTRAINT fk_topic_group FOREIGN KEY (group_id) REFERENCES component_groups(id),
+      DROP FOREIGN KEY fk_topic_component,
+      DROP COLUMN component_id;
+    ALTER TABLE topics DROP FOREIGN KEY fk_topic_instructor, DROP COLUMN instructor_id;
+  END IF;
+
+  -- 4) component_enrollments -> group_enrollments (rename + reapuntar FK).
+  -- En una base nueva (ninguna de las dos tablas existe todavia) se crea
+  -- directamente en su forma final.
+  IF v_has_old_component_enrollments > 0 THEN
+    RENAME TABLE component_enrollments TO group_enrollments;
+    ALTER TABLE group_enrollments ADD COLUMN group_id BIGINT UNSIGNED NULL AFTER component_id;
+    UPDATE group_enrollments e JOIN component_groups g ON g.component_id = e.component_id SET e.group_id = g.id WHERE e.group_id IS NULL;
+    ALTER TABLE group_enrollments
+      MODIFY group_id BIGINT UNSIGNED NOT NULL,
+      ADD CONSTRAINT fk_group_enrollment_group FOREIGN KEY (group_id) REFERENCES component_groups(id),
+      DROP FOREIGN KEY fk_component_enrollment_component,
+      DROP COLUMN component_id,
+      DROP INDEX uq_component_student,
+      ADD UNIQUE KEY uq_group_student (group_id, student_id);
+  ELSE
+    CREATE TABLE IF NOT EXISTS group_enrollments (
+      id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+      group_id BIGINT UNSIGNED NOT NULL,
+      student_id BIGINT UNSIGNED NOT NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      created_by BIGINT UNSIGNED NULL,
+      deleted_at DATETIME NULL,
+      deleted_by BIGINT UNSIGNED NULL,
+      is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+      UNIQUE KEY uq_group_student (group_id, student_id),
+      CONSTRAINT fk_group_enrollment_group FOREIGN KEY (group_id) REFERENCES component_groups(id),
+      CONSTRAINT fk_group_enrollment_student FOREIGN KEY (student_id) REFERENCES users(id)
+    );
+  END IF;
+
+  -- 5) components: el instructor ya vive en component_groups.
+  IF v_has_old_component_instructor > 0 THEN
+    ALTER TABLE components DROP FOREIGN KEY fk_component_instructor, DROP COLUMN instructor_id;
+  END IF;
+END$$
 
 CREATE PROCEDURE sp_system_health()
 BEGIN
@@ -960,19 +1064,77 @@ BEGIN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
   END IF;
 
-  SELECT c.id, c.program_id, c.name, c.description, c.sort_order, c.instructor_id,
-         iu.full_name AS instructor_name, cs.code AS status_code, cs.label AS status_label
+  SELECT c.id, c.program_id, c.name, c.description, c.sort_order,
+         cs.code AS status_code, cs.label AS status_label,
+         (SELECT COUNT(*) FROM component_groups g WHERE g.component_id = c.id AND g.is_deleted = FALSE) AS group_count
   FROM components c
   JOIN master_catalog_values cs ON cs.id = c.status_id
-  LEFT JOIN users iu ON iu.id = c.instructor_id
   WHERE c.program_id = p_program_id AND c.is_deleted = FALSE
   ORDER BY c.sort_order, c.name;
 END$$
 
 CREATE PROCEDURE sp_components_create(
   IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED,
-  IN p_program_id BIGINT UNSIGNED, IN p_name VARCHAR(180), IN p_description TEXT,
-  IN p_sort_order INT, IN p_instructor_id BIGINT UNSIGNED
+  IN p_program_id BIGINT UNSIGNED, IN p_name VARCHAR(180), IN p_description TEXT, IN p_sort_order INT
+)
+BEGIN
+  DECLARE v_program_tenant_id BIGINT UNSIGNED;
+  DECLARE v_status_id BIGINT UNSIGNED;
+
+  SELECT tenant_id INTO v_program_tenant_id FROM training_programs WHERE id = p_program_id AND is_deleted = FALSE;
+  IF v_program_tenant_id IS NULL THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'program_not_found';
+  END IF;
+
+  IF p_actor_role = 'tenant_admin' AND v_program_tenant_id <> p_actor_tenant_id THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
+  ELSEIF p_actor_role NOT IN ('super_admin', 'tenant_admin') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+
+  SELECT v.id INTO v_status_id FROM master_catalog_values v JOIN master_catalogs c ON c.id = v.catalog_id
+  WHERE c.code = 'COMPONENT_STATUS' AND v.code = 'pending';
+
+  INSERT INTO components (program_id, name, description, sort_order, status_id, created_by)
+  VALUES (p_program_id, p_name, p_description, COALESCE(p_sort_order, 0), v_status_id, p_actor_user_id);
+
+  SELECT LAST_INSERT_ID() AS component_id;
+END$$
+
+-- ===================================================================
+-- Grupos: un componente puede dictarse en paralelo a traves de varios
+-- grupos (misma malla, instructor y horario propios). El instructor y el
+-- horario recurrente viven aqui, no en components.
+-- ===================================================================
+CREATE PROCEDURE sp_component_groups_list(
+  IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED, IN p_component_id BIGINT UNSIGNED
+)
+BEGIN
+  DECLARE v_program_tenant_id BIGINT UNSIGNED;
+  SELECT p.tenant_id INTO v_program_tenant_id
+  FROM components c JOIN training_programs p ON p.id = c.program_id
+  WHERE c.id = p_component_id AND c.is_deleted = FALSE;
+
+  IF v_program_tenant_id IS NULL THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'component_not_found';
+  END IF;
+  IF p_actor_role <> 'super_admin' AND v_program_tenant_id <> p_actor_tenant_id THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
+  END IF;
+
+  SELECT g.id, g.component_id, g.name, g.instructor_id, iu.full_name AS instructor_name,
+         gs.code AS status_code, gs.label AS status_label,
+         (SELECT COUNT(*) FROM group_enrollments ge WHERE ge.group_id = g.id AND ge.is_deleted = FALSE) AS enrolled_students
+  FROM component_groups g
+  JOIN master_catalog_values gs ON gs.id = g.status_id
+  LEFT JOIN users iu ON iu.id = g.instructor_id
+  WHERE g.component_id = p_component_id AND g.is_deleted = FALSE
+  ORDER BY g.name;
+END$$
+
+CREATE PROCEDURE sp_component_groups_create(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED,
+  IN p_component_id BIGINT UNSIGNED, IN p_name VARCHAR(120), IN p_instructor_id BIGINT UNSIGNED
 )
 BEGIN
   DECLARE v_program_tenant_id BIGINT UNSIGNED;
@@ -980,11 +1142,13 @@ BEGIN
   DECLARE v_instructor_tenant_id BIGINT UNSIGNED;
   DECLARE v_instructor_role VARCHAR(80);
 
-  SELECT tenant_id INTO v_program_tenant_id FROM training_programs WHERE id = p_program_id AND is_deleted = FALSE;
-  IF v_program_tenant_id IS NULL THEN
-    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'program_not_found';
-  END IF;
+  SELECT p.tenant_id INTO v_program_tenant_id
+  FROM components c JOIN training_programs p ON p.id = c.program_id
+  WHERE c.id = p_component_id AND c.is_deleted = FALSE;
 
+  IF v_program_tenant_id IS NULL THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'component_not_found';
+  END IF;
   IF p_actor_role = 'tenant_admin' AND v_program_tenant_id <> p_actor_tenant_id THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
   ELSEIF p_actor_role NOT IN ('super_admin', 'tenant_admin') THEN
@@ -1004,15 +1168,18 @@ BEGIN
   SELECT v.id INTO v_status_id FROM master_catalog_values v JOIN master_catalogs c ON c.id = v.catalog_id
   WHERE c.code = 'COMPONENT_STATUS' AND v.code = 'pending';
 
-  INSERT INTO components (program_id, instructor_id, name, description, sort_order, status_id, created_by)
-  VALUES (p_program_id, p_instructor_id, p_name, p_description, COALESCE(p_sort_order, 0), v_status_id, p_actor_user_id);
+  INSERT INTO component_groups (component_id, name, instructor_id, status_id, created_by)
+  VALUES (p_component_id, p_name, p_instructor_id, v_status_id, p_actor_user_id);
 
-  SELECT LAST_INSERT_ID() AS component_id;
+  SELECT LAST_INSERT_ID() AS group_id;
 END$$
 
-CREATE PROCEDURE sp_components_assign_instructor(
+-- Renombrar y/o reasignar instructor. Si cambia de instructor, valida que
+-- el nuevo no choque con el horario ya asignado a este grupo en cualquier
+-- otro grupo suyo (misma regla que sp_group_schedule_days_add).
+CREATE PROCEDURE sp_component_groups_update(
   IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED,
-  IN p_component_id BIGINT UNSIGNED, IN p_instructor_id BIGINT UNSIGNED
+  IN p_group_id BIGINT UNSIGNED, IN p_name VARCHAR(120), IN p_instructor_id BIGINT UNSIGNED
 )
 BEGIN
   DECLARE v_program_tenant_id BIGINT UNSIGNED;
@@ -1020,33 +1187,48 @@ BEGIN
   DECLARE v_instructor_role VARCHAR(80);
 
   SELECT p.tenant_id INTO v_program_tenant_id
-  FROM components c JOIN training_programs p ON p.id = c.program_id
-  WHERE c.id = p_component_id AND c.is_deleted = FALSE;
+  FROM component_groups g JOIN components c ON c.id = g.component_id JOIN training_programs p ON p.id = c.program_id
+  WHERE g.id = p_group_id AND g.is_deleted = FALSE;
 
   IF v_program_tenant_id IS NULL THEN
-    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'component_not_found';
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'group_not_found';
   END IF;
-
   IF p_actor_role = 'tenant_admin' AND v_program_tenant_id <> p_actor_tenant_id THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
   ELSEIF p_actor_role NOT IN ('super_admin', 'tenant_admin') THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
   END IF;
 
-  SELECT u.tenant_id, v.code INTO v_instructor_tenant_id, v_instructor_role
-  FROM users u JOIN master_catalog_values v ON v.id = u.role_id
-  WHERE u.id = p_instructor_id AND u.is_deleted = FALSE;
+  IF p_instructor_id IS NOT NULL THEN
+    SELECT u.tenant_id, v.code INTO v_instructor_tenant_id, v_instructor_role
+    FROM users u JOIN master_catalog_values v ON v.id = u.role_id
+    WHERE u.id = p_instructor_id AND u.is_deleted = FALSE;
 
-  IF v_instructor_role IS NULL OR v_instructor_role <> 'instructor' OR v_instructor_tenant_id <> v_program_tenant_id THEN
-    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'instructor_invalid';
+    IF v_instructor_role IS NULL OR v_instructor_role <> 'instructor' OR v_instructor_tenant_id <> v_program_tenant_id THEN
+      SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'instructor_invalid';
+    END IF;
+
+    IF EXISTS (
+      SELECT 1 FROM component_group_schedule_days d
+      JOIN component_group_schedule_days d2 ON d2.weekday = d.weekday AND d2.is_deleted = FALSE
+      JOIN component_groups g2 ON g2.id = d2.group_id
+      WHERE d.group_id = p_group_id AND d.is_deleted = FALSE
+        AND g2.instructor_id = p_instructor_id AND g2.id <> p_group_id
+        AND NOT (d.end_time <= d2.start_time OR d.start_time >= d2.end_time)
+    ) THEN
+      SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'instructor_schedule_conflict';
+    END IF;
   END IF;
 
-  UPDATE components SET instructor_id = p_instructor_id, updated_at = NOW(), updated_by = p_actor_user_id WHERE id = p_component_id;
+  UPDATE component_groups
+  SET name = COALESCE(NULLIF(p_name, ''), name), instructor_id = p_instructor_id,
+      updated_at = NOW(), updated_by = p_actor_user_id
+  WHERE id = p_group_id;
 END$$
 
-CREATE PROCEDURE sp_components_enroll_student(
+CREATE PROCEDURE sp_group_enrollments_add(
   IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED,
-  IN p_component_id BIGINT UNSIGNED, IN p_student_id BIGINT UNSIGNED
+  IN p_group_id BIGINT UNSIGNED, IN p_student_id BIGINT UNSIGNED
 )
 BEGIN
   DECLARE v_program_id BIGINT UNSIGNED;
@@ -1055,13 +1237,12 @@ BEGIN
   DECLARE v_student_role VARCHAR(80);
 
   SELECT c.program_id, p.tenant_id INTO v_program_id, v_program_tenant_id
-  FROM components c JOIN training_programs p ON p.id = c.program_id
-  WHERE c.id = p_component_id AND c.is_deleted = FALSE;
+  FROM component_groups g JOIN components c ON c.id = g.component_id JOIN training_programs p ON p.id = c.program_id
+  WHERE g.id = p_group_id AND g.is_deleted = FALSE;
 
   IF v_program_tenant_id IS NULL THEN
-    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'component_not_found';
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'group_not_found';
   END IF;
-
   IF p_actor_role = 'tenant_admin' AND v_program_tenant_id <> p_actor_tenant_id THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
   ELSEIF p_actor_role NOT IN ('super_admin', 'tenant_admin') THEN
@@ -1080,36 +1261,34 @@ BEGIN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'student_not_enrolled_in_program';
   END IF;
 
-  IF EXISTS (SELECT 1 FROM component_enrollments WHERE component_id = p_component_id AND student_id = p_student_id AND is_deleted = FALSE) THEN
+  IF EXISTS (SELECT 1 FROM group_enrollments WHERE group_id = p_group_id AND student_id = p_student_id AND is_deleted = FALSE) THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'already_enrolled';
   END IF;
 
-  INSERT INTO component_enrollments (component_id, student_id, created_by) VALUES (p_component_id, p_student_id, p_actor_user_id);
+  INSERT INTO group_enrollments (group_id, student_id, created_by) VALUES (p_group_id, p_student_id, p_actor_user_id);
 END$$
 
 CREATE PROCEDURE sp_topics_list(
-  IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED, IN p_component_id BIGINT UNSIGNED
+  IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED, IN p_group_id BIGINT UNSIGNED
 )
 BEGIN
   DECLARE v_program_tenant_id BIGINT UNSIGNED;
   SELECT p.tenant_id INTO v_program_tenant_id
-  FROM components c JOIN training_programs p ON p.id = c.program_id
-  WHERE c.id = p_component_id AND c.is_deleted = FALSE;
+  FROM component_groups g JOIN components c ON c.id = g.component_id JOIN training_programs p ON p.id = c.program_id
+  WHERE g.id = p_group_id AND g.is_deleted = FALSE;
 
   IF v_program_tenant_id IS NULL THEN
-    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'component_not_found';
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'group_not_found';
   END IF;
   IF p_actor_role <> 'super_admin' AND v_program_tenant_id <> p_actor_tenant_id THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
   END IF;
 
-  SELECT t.id, t.component_id, t.title, t.description, t.sort_order, t.scheduled_on, t.actual_date,
-         t.duration_minutes, t.instructor_id, iu.full_name AS instructor_name,
-         ts.code AS status_code, ts.label AS status_label
+  SELECT t.id, t.group_id, t.title, t.description, t.sort_order, t.scheduled_on, t.actual_date,
+         t.duration_minutes, ts.code AS status_code, ts.label AS status_label
   FROM topics t
   JOIN master_catalog_values ts ON ts.id = t.status_id
-  LEFT JOIN users iu ON iu.id = t.instructor_id
-  WHERE t.component_id = p_component_id AND t.is_deleted = FALSE
+  WHERE t.group_id = p_group_id AND t.is_deleted = FALSE
   ORDER BY t.sort_order, t.scheduled_on;
 END$$
 
@@ -1117,20 +1296,19 @@ END$$
 -- de calendario vive aqui, no en la API ni en el frontend.
 CREATE PROCEDURE sp_topics_create(
   IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED,
-  IN p_component_id BIGINT UNSIGNED, IN p_title VARCHAR(180), IN p_description TEXT,
+  IN p_group_id BIGINT UNSIGNED, IN p_title VARCHAR(180), IN p_description TEXT,
   IN p_sort_order INT, IN p_scheduled_on DATE, IN p_duration_minutes INT UNSIGNED
 )
 BEGIN
   DECLARE v_program_tenant_id BIGINT UNSIGNED;
-  DECLARE v_component_instructor_id BIGINT UNSIGNED;
   DECLARE v_status_id BIGINT UNSIGNED;
 
-  SELECT p.tenant_id, c.instructor_id INTO v_program_tenant_id, v_component_instructor_id
-  FROM components c JOIN training_programs p ON p.id = c.program_id
-  WHERE c.id = p_component_id AND c.is_deleted = FALSE;
+  SELECT p.tenant_id INTO v_program_tenant_id
+  FROM component_groups g JOIN components c ON c.id = g.component_id JOIN training_programs p ON p.id = c.program_id
+  WHERE g.id = p_group_id AND g.is_deleted = FALSE;
 
   IF v_program_tenant_id IS NULL THEN
-    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'component_not_found';
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'group_not_found';
   END IF;
 
   IF p_actor_role = 'tenant_admin' AND v_program_tenant_id <> p_actor_tenant_id THEN
@@ -1148,33 +1326,33 @@ BEGIN
   SELECT v.id INTO v_status_id FROM master_catalog_values v JOIN master_catalogs c ON c.id = v.catalog_id
   WHERE c.code = 'TOPIC_STATUS' AND v.code = IF(p_scheduled_on IS NULL, 'pending', 'scheduled');
 
-  INSERT INTO topics (component_id, title, description, sort_order, scheduled_on, duration_minutes, instructor_id, status_id, created_by)
-  VALUES (p_component_id, p_title, p_description, COALESCE(p_sort_order, 0), p_scheduled_on, p_duration_minutes, v_component_instructor_id, v_status_id, p_actor_user_id);
+  INSERT INTO topics (group_id, title, description, sort_order, scheduled_on, duration_minutes, status_id, created_by)
+  VALUES (p_group_id, p_title, p_description, COALESCE(p_sort_order, 0), p_scheduled_on, p_duration_minutes, v_status_id, p_actor_user_id);
 
   SELECT LAST_INSERT_ID() AS topic_id;
 END$$
 
--- El instructor asignado al componente (o un admin de su tenant) puede
--- marcar el tema como iniciado/completado/adelantado y registrar la fecha real.
+-- El instructor del grupo (o un admin de su tenant) puede marcar el tema
+-- como iniciado/completado/adelantado y registrar la fecha real.
 CREATE PROCEDURE sp_topics_update_status(
   IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED,
   IN p_topic_id BIGINT UNSIGNED, IN p_status_code VARCHAR(80), IN p_actual_date DATE
 )
 BEGIN
   DECLARE v_program_tenant_id BIGINT UNSIGNED;
-  DECLARE v_component_instructor_id BIGINT UNSIGNED;
+  DECLARE v_group_instructor_id BIGINT UNSIGNED;
   DECLARE v_status_id BIGINT UNSIGNED;
   DECLARE v_authorized BOOLEAN DEFAULT FALSE;
 
-  SELECT p.tenant_id, c.instructor_id INTO v_program_tenant_id, v_component_instructor_id
-  FROM topics t JOIN components c ON c.id = t.component_id JOIN training_programs p ON p.id = c.program_id
+  SELECT p.tenant_id, g.instructor_id INTO v_program_tenant_id, v_group_instructor_id
+  FROM topics t JOIN component_groups g ON g.id = t.group_id JOIN components c ON c.id = g.component_id JOIN training_programs p ON p.id = c.program_id
   WHERE t.id = p_topic_id AND t.is_deleted = FALSE;
 
   IF v_program_tenant_id IS NULL THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'target_not_found';
   END IF;
 
-  IF p_actor_role = 'instructor' AND p_actor_user_id = v_component_instructor_id THEN
+  IF p_actor_role = 'instructor' AND p_actor_user_id = v_group_instructor_id THEN
     SET v_authorized = TRUE;
   ELSEIF p_actor_role = 'tenant_admin' AND v_program_tenant_id = p_actor_tenant_id THEN
     SET v_authorized = TRUE;
@@ -1199,40 +1377,49 @@ BEGIN
 END$$
 
 -- ===================================================================
--- Horario base del programa y generador automatico de fechas del temario.
--- Reglas de negocio (dias habiles del programa, feriados, disponibilidad del
+-- Horario semanal recurrente de un grupo y generador automatico de fechas
+-- del temario. Reglas de negocio (dias del grupo, feriados, choques de
 -- instructor) resueltas por completo en SQL; la API solo dispara el SP.
 -- ===================================================================
-CREATE PROCEDURE sp_program_schedule_days_list(
-  IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED, IN p_program_id BIGINT UNSIGNED
+CREATE PROCEDURE sp_group_schedule_days_list(
+  IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED, IN p_group_id BIGINT UNSIGNED
 )
 BEGIN
   DECLARE v_program_tenant_id BIGINT UNSIGNED;
-  SELECT tenant_id INTO v_program_tenant_id FROM training_programs WHERE id = p_program_id AND is_deleted = FALSE;
+  SELECT p.tenant_id INTO v_program_tenant_id
+  FROM component_groups g JOIN components c ON c.id = g.component_id JOIN training_programs p ON p.id = c.program_id
+  WHERE g.id = p_group_id AND g.is_deleted = FALSE;
 
   IF v_program_tenant_id IS NULL THEN
-    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'program_not_found';
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'group_not_found';
   END IF;
   IF p_actor_role <> 'super_admin' AND v_program_tenant_id <> p_actor_tenant_id THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
   END IF;
 
   SELECT id, weekday, start_time, end_time
-  FROM program_schedule_days
-  WHERE program_id = p_program_id AND is_deleted = FALSE
+  FROM component_group_schedule_days
+  WHERE group_id = p_group_id AND is_deleted = FALSE
   ORDER BY weekday;
 END$$
 
-CREATE PROCEDURE sp_program_schedule_days_add(
+-- Rechaza el horario si el instructor del grupo ya tiene OTRO grupo (de
+-- cualquier componente) con horario que se solape ese mismo dia. Esta es
+-- la regla dura de "los instructores no se cruzan".
+CREATE PROCEDURE sp_group_schedule_days_add(
   IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED,
-  IN p_program_id BIGINT UNSIGNED, IN p_weekday TINYINT UNSIGNED, IN p_start_time TIME, IN p_end_time TIME
+  IN p_group_id BIGINT UNSIGNED, IN p_weekday TINYINT UNSIGNED, IN p_start_time TIME, IN p_end_time TIME
 )
 BEGIN
   DECLARE v_program_tenant_id BIGINT UNSIGNED;
-  SELECT tenant_id INTO v_program_tenant_id FROM training_programs WHERE id = p_program_id AND is_deleted = FALSE;
+  DECLARE v_instructor_id BIGINT UNSIGNED;
+
+  SELECT p.tenant_id, g.instructor_id INTO v_program_tenant_id, v_instructor_id
+  FROM component_groups g JOIN components c ON c.id = g.component_id JOIN training_programs p ON p.id = c.program_id
+  WHERE g.id = p_group_id AND g.is_deleted = FALSE;
 
   IF v_program_tenant_id IS NULL THEN
-    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'program_not_found';
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'group_not_found';
   END IF;
   IF p_actor_role = 'tenant_admin' AND v_program_tenant_id <> p_actor_tenant_id THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
@@ -1244,21 +1431,33 @@ BEGIN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'invalid_schedule_day';
   END IF;
 
-  INSERT INTO program_schedule_days (program_id, weekday, start_time, end_time, created_by)
-  VALUES (p_program_id, p_weekday, p_start_time, p_end_time, p_actor_user_id)
+  IF v_instructor_id IS NOT NULL AND EXISTS (
+    SELECT 1 FROM component_group_schedule_days d
+    JOIN component_groups g2 ON g2.id = d.group_id
+    WHERE g2.instructor_id = v_instructor_id AND g2.id <> p_group_id
+      AND d.weekday = p_weekday AND d.is_deleted = FALSE
+      AND NOT (p_end_time <= d.start_time OR p_start_time >= d.end_time)
+  ) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'instructor_schedule_conflict';
+  END IF;
+
+  INSERT INTO component_group_schedule_days (group_id, weekday, start_time, end_time, created_by)
+  VALUES (p_group_id, p_weekday, p_start_time, p_end_time, p_actor_user_id)
   ON DUPLICATE KEY UPDATE start_time = p_start_time, end_time = p_end_time, is_deleted = FALSE, deleted_at = NULL, deleted_by = NULL;
 END$$
 
-CREATE PROCEDURE sp_program_schedule_days_remove(
+CREATE PROCEDURE sp_group_schedule_days_remove(
   IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED,
-  IN p_program_id BIGINT UNSIGNED, IN p_weekday TINYINT UNSIGNED
+  IN p_group_id BIGINT UNSIGNED, IN p_weekday TINYINT UNSIGNED
 )
 BEGIN
   DECLARE v_program_tenant_id BIGINT UNSIGNED;
-  SELECT tenant_id INTO v_program_tenant_id FROM training_programs WHERE id = p_program_id AND is_deleted = FALSE;
+  SELECT p.tenant_id INTO v_program_tenant_id
+  FROM component_groups g JOIN components c ON c.id = g.component_id JOIN training_programs p ON p.id = c.program_id
+  WHERE g.id = p_group_id AND g.is_deleted = FALSE;
 
   IF v_program_tenant_id IS NULL THEN
-    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'program_not_found';
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'group_not_found';
   END IF;
   IF p_actor_role = 'tenant_admin' AND v_program_tenant_id <> p_actor_tenant_id THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
@@ -1266,21 +1465,21 @@ BEGIN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
   END IF;
 
-  UPDATE program_schedule_days
+  UPDATE component_group_schedule_days
   SET is_deleted = TRUE, deleted_at = NOW(), deleted_by = p_actor_user_id
-  WHERE program_id = p_program_id AND weekday = p_weekday;
+  WHERE group_id = p_group_id AND weekday = p_weekday;
 END$$
 
--- Genera scheduled_on para los temas pendientes/programados de un componente,
--- en orden, saltando dias fuera del horario base del programa, feriados del
--- tenant y fechas donde el instructor ya tiene otro tema asignado. Los temas
--- ya iniciados/completados/cancelados no se tocan.
+-- Genera scheduled_on para los temas pendientes/programados de un GRUPO, en
+-- orden, saltando dias fuera de su horario, feriados del tenant y fechas
+-- donde su instructor ya tiene otro tema asignado (en cualquier grupo suyo,
+-- de cualquier componente). Los temas ya iniciados/completados/cancelados
+-- no se tocan.
 CREATE PROCEDURE sp_topics_generate_schedule(
   IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED,
-  IN p_component_id BIGINT UNSIGNED, IN p_start_date DATE
+  IN p_group_id BIGINT UNSIGNED, IN p_start_date DATE
 )
 BEGIN
-  DECLARE v_program_id BIGINT UNSIGNED;
   DECLARE v_program_tenant_id BIGINT UNSIGNED;
   DECLARE v_instructor_id BIGINT UNSIGNED;
   DECLARE v_schedule_day_count INT;
@@ -1293,16 +1492,16 @@ BEGIN
   DECLARE v_assigned_count INT DEFAULT 0;
   DECLARE topic_cursor CURSOR FOR
     SELECT t.id FROM topics t JOIN master_catalog_values ts ON ts.id = t.status_id
-    WHERE t.component_id = p_component_id AND t.is_deleted = FALSE AND ts.code IN ('pending', 'scheduled')
+    WHERE t.group_id = p_group_id AND t.is_deleted = FALSE AND ts.code IN ('pending', 'scheduled')
     ORDER BY t.sort_order, t.id;
   DECLARE CONTINUE HANDLER FOR NOT FOUND SET v_topic_done = TRUE;
 
-  SELECT p.id, p.tenant_id, c.instructor_id INTO v_program_id, v_program_tenant_id, v_instructor_id
-  FROM components c JOIN training_programs p ON p.id = c.program_id
-  WHERE c.id = p_component_id AND c.is_deleted = FALSE;
+  SELECT p.tenant_id, g.instructor_id INTO v_program_tenant_id, v_instructor_id
+  FROM component_groups g JOIN components c ON c.id = g.component_id JOIN training_programs p ON p.id = c.program_id
+  WHERE g.id = p_group_id AND g.is_deleted = FALSE;
 
   IF v_program_tenant_id IS NULL THEN
-    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'component_not_found';
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'group_not_found';
   END IF;
   IF p_actor_role = 'tenant_admin' AND v_program_tenant_id <> p_actor_tenant_id THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
@@ -1310,7 +1509,7 @@ BEGIN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
   END IF;
 
-  SELECT COUNT(*) INTO v_schedule_day_count FROM program_schedule_days WHERE program_id = v_program_id AND is_deleted = FALSE;
+  SELECT COUNT(*) INTO v_schedule_day_count FROM component_group_schedule_days WHERE group_id = p_group_id AND is_deleted = FALSE;
   IF v_schedule_day_count = 0 THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'schedule_not_configured';
   END IF;
@@ -1330,15 +1529,15 @@ BEGIN
       SET v_safety = v_safety + 1;
 
       IF EXISTS (
-           SELECT 1 FROM program_schedule_days
-           WHERE program_id = v_program_id AND weekday = (DAYOFWEEK(v_cursor) - 1) AND is_deleted = FALSE
+           SELECT 1 FROM component_group_schedule_days
+           WHERE group_id = p_group_id AND weekday = (DAYOFWEEK(v_cursor) - 1) AND is_deleted = FALSE
          )
          AND NOT EXISTS (
            SELECT 1 FROM holidays WHERE tenant_id = v_program_tenant_id AND holiday_on = v_cursor AND is_deleted = FALSE
          )
          AND (v_instructor_id IS NULL OR NOT EXISTS (
-           SELECT 1 FROM topics t2 JOIN components c2 ON c2.id = t2.component_id
-           WHERE c2.instructor_id = v_instructor_id AND t2.scheduled_on = v_cursor
+           SELECT 1 FROM topics t2 JOIN component_groups g2 ON g2.id = t2.group_id
+           WHERE g2.instructor_id = v_instructor_id AND t2.scheduled_on = v_cursor
              AND t2.is_deleted = FALSE AND t2.id <> v_topic_id
          ))
       THEN
@@ -1364,7 +1563,8 @@ BEGIN
 END$$
 
 -- Reprogramacion puntual de un tema (por ejemplo, tras registrar un feriado
--- nuevo sobre una fecha ya asignada). Respeta las mismas reglas de calendario.
+-- nuevo sobre una fecha ya asignada). Respeta las mismas reglas de calendario
+-- y de disponibilidad del instructor del grupo.
 CREATE PROCEDURE sp_topics_reschedule(
   IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED,
   IN p_topic_id BIGINT UNSIGNED, IN p_new_date DATE
@@ -1374,8 +1574,8 @@ BEGIN
   DECLARE v_instructor_id BIGINT UNSIGNED;
   DECLARE v_rescheduled_status_id BIGINT UNSIGNED;
 
-  SELECT p.tenant_id, c.instructor_id INTO v_program_tenant_id, v_instructor_id
-  FROM topics t JOIN components c ON c.id = t.component_id JOIN training_programs p ON p.id = c.program_id
+  SELECT p.tenant_id, g.instructor_id INTO v_program_tenant_id, v_instructor_id
+  FROM topics t JOIN component_groups g ON g.id = t.group_id JOIN components c ON c.id = g.component_id JOIN training_programs p ON p.id = c.program_id
   WHERE t.id = p_topic_id AND t.is_deleted = FALSE;
 
   IF v_program_tenant_id IS NULL THEN
@@ -1392,8 +1592,8 @@ BEGIN
   END IF;
 
   IF v_instructor_id IS NOT NULL AND EXISTS (
-    SELECT 1 FROM topics t2 JOIN components c2 ON c2.id = t2.component_id
-    WHERE c2.instructor_id = v_instructor_id AND t2.scheduled_on = p_new_date AND t2.is_deleted = FALSE AND t2.id <> p_topic_id
+    SELECT 1 FROM topics t2 JOIN component_groups g2 ON g2.id = t2.group_id
+    WHERE g2.instructor_id = v_instructor_id AND t2.scheduled_on = p_new_date AND t2.is_deleted = FALSE AND t2.id <> p_topic_id
   ) THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'instructor_not_available';
   END IF;
@@ -1488,12 +1688,13 @@ BEGIN
   SELECT p.tenant_id,
     (SELECT v.id FROM master_catalog_values v JOIN master_catalogs mc ON mc.id = v.catalog_id WHERE mc.code = 'ALERT_TYPE' AND v.code = 'topic_delayed'),
     (SELECT v.id FROM master_catalog_values v JOIN master_catalogs mc ON mc.id = v.catalog_id WHERE mc.code = 'ALERT_PRIORITY' AND v.code = 'high'),
-    c.instructor_id,
+    g.instructor_id,
     CONCAT('Tema atrasado: ', t.title),
-    CONCAT('El tema "', t.title, '" del componente "', c.name, '" estaba programado para el ', t.scheduled_on, ' y sigue sin completarse.'),
+    CONCAT('El tema "', t.title, '" de "', c.name, '" (', g.name, ') estaba programado para el ', t.scheduled_on, ' y sigue sin completarse.'),
     v_open_status_id, 'topic', t.id, p_actor_user_id
   FROM topics t
-  JOIN components c ON c.id = t.component_id
+  JOIN component_groups g ON g.id = t.group_id
+  JOIN components c ON c.id = g.component_id
   JOIN training_programs p ON p.id = c.program_id
   JOIN master_catalog_values ts ON ts.id = t.status_id
   WHERE t.is_deleted = FALSE AND t.scheduled_on IS NOT NULL AND t.scheduled_on < CURDATE()
@@ -1505,45 +1706,47 @@ BEGIN
       WHERE a.source_type = 'topic' AND a.source_id = t.id AND at2.code = 'topic_delayed' AND ast.code = 'open' AND a.is_deleted = FALSE
     );
 
-  -- 2) Componentes activos sin instructor asignado.
+  -- 2) Grupos activos sin instructor asignado.
   INSERT INTO alerts (tenant_id, type_id, priority_id, recipient_user_id, title, description, status_id, source_type, source_id, created_by)
   SELECT p.tenant_id,
     (SELECT v.id FROM master_catalog_values v JOIN master_catalogs mc ON mc.id = v.catalog_id WHERE mc.code = 'ALERT_TYPE' AND v.code = 'program_without_instructor'),
     (SELECT v.id FROM master_catalog_values v JOIN master_catalogs mc ON mc.id = v.catalog_id WHERE mc.code = 'ALERT_PRIORITY' AND v.code = 'medium'),
     NULL,
-    CONCAT('Componente sin instructor: ', c.name),
-    CONCAT('El componente "', c.name, '" del programa "', p.name, '" no tiene instructor asignado.'),
-    v_open_status_id, 'component', c.id, p_actor_user_id
-  FROM components c
+    CONCAT('Grupo sin instructor: ', c.name, ' - ', g.name),
+    CONCAT('El grupo "', g.name, '" de "', c.name, '" (programa "', p.name, '") no tiene instructor asignado.'),
+    v_open_status_id, 'component_group', g.id, p_actor_user_id
+  FROM component_groups g
+  JOIN components c ON c.id = g.component_id
   JOIN training_programs p ON p.id = c.program_id
   JOIN master_catalog_values ps ON ps.id = p.status_id
-  WHERE c.is_deleted = FALSE AND c.instructor_id IS NULL AND ps.code = 'active'
+  WHERE g.is_deleted = FALSE AND g.instructor_id IS NULL AND ps.code = 'active'
     AND (v_tenant_filter IS NULL OR p.tenant_id = v_tenant_filter)
     AND NOT EXISTS (
       SELECT 1 FROM alerts a JOIN master_catalog_values ast ON ast.id = a.status_id
       JOIN master_catalog_values at2 ON at2.id = a.type_id
-      WHERE a.source_type = 'component' AND a.source_id = c.id AND at2.code = 'program_without_instructor' AND ast.code = 'open' AND a.is_deleted = FALSE
+      WHERE a.source_type = 'component_group' AND a.source_id = g.id AND at2.code = 'program_without_instructor' AND ast.code = 'open' AND a.is_deleted = FALSE
     );
 
-  -- 3) Componentes activos sin alumnos inscritos.
+  -- 3) Grupos activos sin alumnos inscritos.
   INSERT INTO alerts (tenant_id, type_id, priority_id, recipient_user_id, title, description, status_id, source_type, source_id, created_by)
   SELECT p.tenant_id,
     (SELECT v.id FROM master_catalog_values v JOIN master_catalogs mc ON mc.id = v.catalog_id WHERE mc.code = 'ALERT_TYPE' AND v.code = 'component_without_students'),
     (SELECT v.id FROM master_catalog_values v JOIN master_catalogs mc ON mc.id = v.catalog_id WHERE mc.code = 'ALERT_PRIORITY' AND v.code = 'low'),
     NULL,
-    CONCAT('Componente sin alumnos: ', c.name),
-    CONCAT('El componente "', c.name, '" del programa "', p.name, '" no tiene alumnos inscritos.'),
-    v_open_status_id, 'component', c.id, p_actor_user_id
-  FROM components c
+    CONCAT('Grupo sin alumnos: ', c.name, ' - ', g.name),
+    CONCAT('El grupo "', g.name, '" de "', c.name, '" (programa "', p.name, '") no tiene alumnos inscritos.'),
+    v_open_status_id, 'component_group', g.id, p_actor_user_id
+  FROM component_groups g
+  JOIN components c ON c.id = g.component_id
   JOIN training_programs p ON p.id = c.program_id
   JOIN master_catalog_values ps ON ps.id = p.status_id
-  WHERE c.is_deleted = FALSE AND ps.code = 'active'
-    AND NOT EXISTS (SELECT 1 FROM component_enrollments ce WHERE ce.component_id = c.id AND ce.is_deleted = FALSE)
+  WHERE g.is_deleted = FALSE AND ps.code = 'active'
+    AND NOT EXISTS (SELECT 1 FROM group_enrollments ge WHERE ge.group_id = g.id AND ge.is_deleted = FALSE)
     AND (v_tenant_filter IS NULL OR p.tenant_id = v_tenant_filter)
     AND NOT EXISTS (
       SELECT 1 FROM alerts a JOIN master_catalog_values ast ON ast.id = a.status_id
       JOIN master_catalog_values at2 ON at2.id = a.type_id
-      WHERE a.source_type = 'component' AND a.source_id = c.id AND at2.code = 'component_without_students' AND ast.code = 'open' AND a.is_deleted = FALSE
+      WHERE a.source_type = 'component_group' AND a.source_id = g.id AND at2.code = 'component_without_students' AND ast.code = 'open' AND a.is_deleted = FALSE
     );
 
   -- 4) Alumnos con 3 o mas inasistencias no justificadas.
@@ -1762,21 +1965,21 @@ CREATE PROCEDURE sp_attendance_upsert(
 )
 BEGIN
   DECLARE v_program_tenant_id BIGINT UNSIGNED;
-  DECLARE v_component_id BIGINT UNSIGNED;
-  DECLARE v_component_instructor_id BIGINT UNSIGNED;
+  DECLARE v_group_id BIGINT UNSIGNED;
+  DECLARE v_group_instructor_id BIGINT UNSIGNED;
   DECLARE v_status_id BIGINT UNSIGNED;
   DECLARE v_reason_id BIGINT UNSIGNED;
   DECLARE v_authorized BOOLEAN DEFAULT FALSE;
 
-  SELECT p.tenant_id, c.id, c.instructor_id INTO v_program_tenant_id, v_component_id, v_component_instructor_id
-  FROM topics t JOIN components c ON c.id = t.component_id JOIN training_programs p ON p.id = c.program_id
+  SELECT p.tenant_id, g.id, g.instructor_id INTO v_program_tenant_id, v_group_id, v_group_instructor_id
+  FROM topics t JOIN component_groups g ON g.id = t.group_id JOIN components c ON c.id = g.component_id JOIN training_programs p ON p.id = c.program_id
   WHERE t.id = p_topic_id AND t.is_deleted = FALSE;
 
   IF v_program_tenant_id IS NULL THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'target_not_found';
   END IF;
 
-  IF p_actor_role = 'instructor' AND p_actor_user_id = v_component_instructor_id THEN
+  IF p_actor_role = 'instructor' AND p_actor_user_id = v_group_instructor_id THEN
     SET v_authorized = TRUE;
   ELSEIF p_actor_role = 'tenant_admin' AND v_program_tenant_id = p_actor_tenant_id THEN
     SET v_authorized = TRUE;
@@ -1787,7 +1990,7 @@ BEGIN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
   END IF;
 
-  IF NOT EXISTS (SELECT 1 FROM component_enrollments WHERE component_id = v_component_id AND student_id = p_student_id AND is_deleted = FALSE) THEN
+  IF NOT EXISTS (SELECT 1 FROM group_enrollments WHERE group_id = v_group_id AND student_id = p_student_id AND is_deleted = FALSE) THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'student_not_enrolled_in_program';
   END IF;
 
@@ -1814,31 +2017,31 @@ CREATE PROCEDURE sp_attendance_list_by_topic(
 )
 BEGIN
   DECLARE v_program_tenant_id BIGINT UNSIGNED;
-  DECLARE v_component_instructor_id BIGINT UNSIGNED;
+  DECLARE v_group_instructor_id BIGINT UNSIGNED;
 
-  SELECT p.tenant_id, c.instructor_id INTO v_program_tenant_id, v_component_instructor_id
-  FROM topics t JOIN components c ON c.id = t.component_id JOIN training_programs p ON p.id = c.program_id
+  SELECT p.tenant_id, g.instructor_id INTO v_program_tenant_id, v_group_instructor_id
+  FROM topics t JOIN component_groups g ON g.id = t.group_id JOIN components c ON c.id = g.component_id JOIN training_programs p ON p.id = c.program_id
   WHERE t.id = p_topic_id AND t.is_deleted = FALSE;
 
   IF v_program_tenant_id IS NULL THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'target_not_found';
   END IF;
-  IF p_actor_role = 'instructor' AND p_actor_user_id <> v_component_instructor_id THEN
+  IF p_actor_role = 'instructor' AND p_actor_user_id <> v_group_instructor_id THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
   ELSEIF p_actor_role <> 'super_admin' AND v_program_tenant_id <> p_actor_tenant_id THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
   END IF;
 
-  SELECT ce.student_id, su.full_name AS student_name, a.id AS attendance_id,
+  SELECT ge.student_id, su.full_name AS student_name, a.id AS attendance_id,
          ast.code AS status_code, ast.label AS status_label,
          ar.code AS reason_code, ar.label AS reason_label, a.observations
-  FROM component_enrollments ce
-  JOIN users su ON su.id = ce.student_id
+  FROM group_enrollments ge
+  JOIN users su ON su.id = ge.student_id
   JOIN topics t ON t.id = p_topic_id
-  LEFT JOIN attendance a ON a.topic_id = p_topic_id AND a.student_id = ce.student_id AND a.is_deleted = FALSE
+  LEFT JOIN attendance a ON a.topic_id = p_topic_id AND a.student_id = ge.student_id AND a.is_deleted = FALSE
   LEFT JOIN master_catalog_values ast ON ast.id = a.attendance_status_id
   LEFT JOIN master_catalog_values ar ON ar.id = a.reason_id
-  WHERE ce.component_id = t.component_id AND ce.is_deleted = FALSE
+  WHERE ge.group_id = t.group_id AND ge.is_deleted = FALSE
   ORDER BY su.full_name;
 END$$
 
@@ -1996,19 +2199,21 @@ BEGIN
 END$$
 
 -- Componentes propios de un instructor (para su vista "Mis clases" / temario / asistencia).
-CREATE PROCEDURE sp_components_list_by_instructor(IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80))
+CREATE PROCEDURE sp_groups_list_by_instructor(IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80))
 BEGIN
   IF p_actor_role <> 'instructor' THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
   END IF;
 
-  SELECT c.id, c.name, c.description, cs.code AS status_code, cs.label AS status_label,
+  SELECT g.id, g.name, c.id AS component_id, c.name AS component_name,
+         gs.code AS status_code, gs.label AS status_label,
          p.id AS program_id, p.name AS program_name, p.cohort
-  FROM components c
+  FROM component_groups g
+  JOIN components c ON c.id = g.component_id
   JOIN training_programs p ON p.id = c.program_id
-  JOIN master_catalog_values cs ON cs.id = c.status_id
-  WHERE c.instructor_id = p_actor_user_id AND c.is_deleted = FALSE AND p.is_deleted = FALSE
-  ORDER BY p.name, c.sort_order;
+  JOIN master_catalog_values gs ON gs.id = g.status_id
+  WHERE g.instructor_id = p_actor_user_id AND g.is_deleted = FALSE AND c.is_deleted = FALSE AND p.is_deleted = FALSE
+  ORDER BY p.name, c.sort_order, g.name;
 END$$
 
 -- ===================================================================
@@ -2034,7 +2239,8 @@ BEGIN
     ROUND(100 * SUM(ast.code IN ('present', 'late')) / NULLIF(COUNT(a.id), 0), 1) AS attendance_rate
   FROM training_programs p
   JOIN components c ON c.program_id = p.id AND c.is_deleted = FALSE
-  JOIN topics t ON t.component_id = c.id AND t.is_deleted = FALSE
+  JOIN component_groups g ON g.component_id = c.id AND g.is_deleted = FALSE
+  JOIN topics t ON t.group_id = g.id AND t.is_deleted = FALSE
   JOIN attendance a ON a.topic_id = t.id AND a.is_deleted = FALSE
   JOIN master_catalog_values ast ON ast.id = a.attendance_status_id
   WHERE p.is_deleted = FALSE AND (v_tenant_filter IS NULL OR p.tenant_id = v_tenant_filter)
@@ -2053,7 +2259,6 @@ BEGIN
   SET v_tenant_filter = IF(p_actor_role = 'super_admin', p_tenant_id_filter, p_actor_tenant_id);
 
   SELECT c.id AS component_id, c.name AS component_name, p.id AS program_id, p.name AS program_name,
-    iu.full_name AS instructor_name,
     COUNT(a.id) AS total_records,
     SUM(ast.code IN ('present', 'late')) AS present_count,
     SUM(ast.code = 'absent') AS absent_count,
@@ -2061,12 +2266,12 @@ BEGIN
     ROUND(100 * SUM(ast.code IN ('present', 'late')) / NULLIF(COUNT(a.id), 0), 1) AS attendance_rate
   FROM components c
   JOIN training_programs p ON p.id = c.program_id AND p.is_deleted = FALSE
-  LEFT JOIN users iu ON iu.id = c.instructor_id
-  JOIN topics t ON t.component_id = c.id AND t.is_deleted = FALSE
+  JOIN component_groups g ON g.component_id = c.id AND g.is_deleted = FALSE
+  JOIN topics t ON t.group_id = g.id AND t.is_deleted = FALSE
   JOIN attendance a ON a.topic_id = t.id AND a.is_deleted = FALSE
   JOIN master_catalog_values ast ON ast.id = a.attendance_status_id
   WHERE c.is_deleted = FALSE AND (v_tenant_filter IS NULL OR p.tenant_id = v_tenant_filter)
-  GROUP BY c.id, c.name, p.id, p.name, iu.full_name
+  GROUP BY c.id, c.name, p.id, p.name
   ORDER BY p.name, c.sort_order;
 END$$
 
@@ -2110,7 +2315,8 @@ BEGIN
   FROM attendance a
   JOIN users su ON su.id = a.student_id
   JOIN topics t ON t.id = a.topic_id
-  JOIN components c ON c.id = t.component_id
+  JOIN component_groups g ON g.id = t.group_id
+  JOIN components c ON c.id = g.component_id
   JOIN training_programs p ON p.id = c.program_id
   JOIN master_catalog_values ast ON ast.id = a.attendance_status_id
   LEFT JOIN master_catalog_values ar ON ar.id = a.reason_id
@@ -2138,7 +2344,8 @@ BEGIN
   FROM training_programs p
   JOIN master_catalog_values ps ON ps.id = p.status_id
   LEFT JOIN components c ON c.program_id = p.id AND c.is_deleted = FALSE
-  LEFT JOIN topics t ON t.component_id = c.id AND t.is_deleted = FALSE
+  LEFT JOIN component_groups g ON g.component_id = c.id AND g.is_deleted = FALSE
+  LEFT JOIN topics t ON t.group_id = g.id AND t.is_deleted = FALSE
   LEFT JOIN master_catalog_values ts ON ts.id = t.status_id
   WHERE p.is_deleted = FALSE AND (v_tenant_filter IS NULL OR p.tenant_id = v_tenant_filter)
   GROUP BY p.id, p.name, ps.label
@@ -2156,13 +2363,15 @@ BEGIN
   SET v_tenant_filter = IF(p_actor_role = 'super_admin', p_tenant_id_filter, p_actor_tenant_id);
 
   SELECT c.id AS component_id, c.name AS component_name, p.name AS program_name,
-    (SELECT COUNT(*) FROM component_enrollments ce WHERE ce.component_id = c.id AND ce.is_deleted = FALSE) AS enrolled_students,
+    (SELECT COUNT(*) FROM group_enrollments ge JOIN component_groups g2 ON g2.id = ge.group_id
+       WHERE g2.component_id = c.id AND ge.is_deleted = FALSE) AS enrolled_students,
     COUNT(t.id) AS total_topics,
     SUM(ts.code = 'completed') AS completed_topics,
     ROUND(100 * SUM(ts.code = 'completed') / NULLIF(COUNT(t.id), 0), 1) AS progress_pct
   FROM components c
   JOIN training_programs p ON p.id = c.program_id AND p.is_deleted = FALSE
-  LEFT JOIN topics t ON t.component_id = c.id AND t.is_deleted = FALSE
+  LEFT JOIN component_groups g ON g.component_id = c.id AND g.is_deleted = FALSE
+  LEFT JOIN topics t ON t.group_id = g.id AND t.is_deleted = FALSE
   LEFT JOIN master_catalog_values ts ON ts.id = t.status_id
   WHERE c.is_deleted = FALSE AND (v_tenant_filter IS NULL OR p.tenant_id = v_tenant_filter)
   GROUP BY c.id, c.name, p.name
@@ -2185,9 +2394,10 @@ BEGIN
     SUM(ts.code NOT IN ('completed', 'cancelled')) AS delayed_topics,
     ROUND(100 * SUM(ts.code = 'completed') / NULLIF(COUNT(t.id), 0), 1) AS compliance_pct
   FROM users iu
-  JOIN components c ON c.instructor_id = iu.id AND c.is_deleted = FALSE
+  JOIN component_groups g ON g.instructor_id = iu.id AND g.is_deleted = FALSE
+  JOIN components c ON c.id = g.component_id AND c.is_deleted = FALSE
   JOIN training_programs p ON p.id = c.program_id AND p.is_deleted = FALSE
-  JOIN topics t ON t.component_id = c.id AND t.is_deleted = FALSE
+  JOIN topics t ON t.group_id = g.id AND t.is_deleted = FALSE
     AND t.scheduled_on IS NOT NULL AND t.scheduled_on < CURDATE()
   JOIN master_catalog_values ts ON ts.id = t.status_id
   WHERE iu.is_deleted = FALSE AND (v_tenant_filter IS NULL OR p.tenant_id = v_tenant_filter)
@@ -2208,10 +2418,11 @@ BEGIN
   SELECT t.id AS topic_id, t.title, t.scheduled_on, p.name AS program_name, c.name AS component_name,
     iu.full_name AS instructor_name, DATEDIFF(CURDATE(), t.scheduled_on) AS days_late
   FROM topics t
-  JOIN components c ON c.id = t.component_id
+  JOIN component_groups g ON g.id = t.group_id
+  JOIN components c ON c.id = g.component_id
   JOIN training_programs p ON p.id = c.program_id
   JOIN master_catalog_values ts ON ts.id = t.status_id
-  LEFT JOIN users iu ON iu.id = c.instructor_id
+  LEFT JOIN users iu ON iu.id = g.instructor_id
   WHERE t.is_deleted = FALSE AND t.scheduled_on IS NOT NULL AND t.scheduled_on < CURDATE()
     AND ts.code NOT IN ('completed', 'cancelled')
     AND (v_tenant_filter IS NULL OR p.tenant_id = v_tenant_filter)
@@ -2232,9 +2443,10 @@ BEGIN
   SELECT t.id AS topic_id, t.title, t.scheduled_on, t.actual_date, p.name AS program_name, c.name AS component_name,
     iu.full_name AS instructor_name, DATEDIFF(t.scheduled_on, t.actual_date) AS days_ahead
   FROM topics t
-  JOIN components c ON c.id = t.component_id
+  JOIN component_groups g ON g.id = t.group_id
+  JOIN components c ON c.id = g.component_id
   JOIN training_programs p ON p.id = c.program_id
-  LEFT JOIN users iu ON iu.id = c.instructor_id
+  LEFT JOIN users iu ON iu.id = g.instructor_id
   WHERE t.is_deleted = FALSE AND t.actual_date IS NOT NULL AND t.scheduled_on IS NOT NULL
     AND t.actual_date < t.scheduled_on
     AND (v_tenant_filter IS NULL OR p.tenant_id = v_tenant_filter)
@@ -2285,16 +2497,16 @@ BEGIN
   SET v_prev_start = DATE_SUB(v_prev_end, INTERVAL v_days - 1 DAY);
 
   SELECT 'current' AS period_label, p_period_start AS period_start, p_period_end AS period_end,
-    (SELECT COUNT(*) FROM attendance a JOIN topics t ON t.id = a.topic_id JOIN components c ON c.id = t.component_id
+    (SELECT COUNT(*) FROM attendance a JOIN topics t ON t.id = a.topic_id JOIN component_groups g ON g.id = t.group_id JOIN components c ON c.id = g.component_id
        JOIN training_programs p ON p.id = c.program_id
        WHERE a.is_deleted = FALSE AND t.scheduled_on BETWEEN p_period_start AND p_period_end
          AND (v_tenant_filter IS NULL OR p.tenant_id = v_tenant_filter)) AS attendance_records,
     (SELECT ROUND(100 * SUM(ast.code IN ('present', 'late')) / NULLIF(COUNT(*), 0), 1)
-       FROM attendance a JOIN topics t ON t.id = a.topic_id JOIN components c ON c.id = t.component_id
+       FROM attendance a JOIN topics t ON t.id = a.topic_id JOIN component_groups g ON g.id = t.group_id JOIN components c ON c.id = g.component_id
        JOIN training_programs p ON p.id = c.program_id JOIN master_catalog_values ast ON ast.id = a.attendance_status_id
        WHERE a.is_deleted = FALSE AND t.scheduled_on BETWEEN p_period_start AND p_period_end
          AND (v_tenant_filter IS NULL OR p.tenant_id = v_tenant_filter)) AS attendance_rate,
-    (SELECT COUNT(*) FROM topics t JOIN components c ON c.id = t.component_id JOIN training_programs p ON p.id = c.program_id
+    (SELECT COUNT(*) FROM topics t JOIN component_groups g ON g.id = t.group_id JOIN components c ON c.id = g.component_id JOIN training_programs p ON p.id = c.program_id
        JOIN master_catalog_values ts ON ts.id = t.status_id
        WHERE t.is_deleted = FALSE AND ts.code = 'completed' AND t.actual_date BETWEEN p_period_start AND p_period_end
          AND (v_tenant_filter IS NULL OR p.tenant_id = v_tenant_filter)) AS topics_completed,
@@ -2305,16 +2517,16 @@ BEGIN
   UNION ALL
 
   SELECT 'previous', v_prev_start, v_prev_end,
-    (SELECT COUNT(*) FROM attendance a JOIN topics t ON t.id = a.topic_id JOIN components c ON c.id = t.component_id
+    (SELECT COUNT(*) FROM attendance a JOIN topics t ON t.id = a.topic_id JOIN component_groups g ON g.id = t.group_id JOIN components c ON c.id = g.component_id
        JOIN training_programs p ON p.id = c.program_id
        WHERE a.is_deleted = FALSE AND t.scheduled_on BETWEEN v_prev_start AND v_prev_end
          AND (v_tenant_filter IS NULL OR p.tenant_id = v_tenant_filter)),
     (SELECT ROUND(100 * SUM(ast.code IN ('present', 'late')) / NULLIF(COUNT(*), 0), 1)
-       FROM attendance a JOIN topics t ON t.id = a.topic_id JOIN components c ON c.id = t.component_id
+       FROM attendance a JOIN topics t ON t.id = a.topic_id JOIN component_groups g ON g.id = t.group_id JOIN components c ON c.id = g.component_id
        JOIN training_programs p ON p.id = c.program_id JOIN master_catalog_values ast ON ast.id = a.attendance_status_id
        WHERE a.is_deleted = FALSE AND t.scheduled_on BETWEEN v_prev_start AND v_prev_end
          AND (v_tenant_filter IS NULL OR p.tenant_id = v_tenant_filter)),
-    (SELECT COUNT(*) FROM topics t JOIN components c ON c.id = t.component_id JOIN training_programs p ON p.id = c.program_id
+    (SELECT COUNT(*) FROM topics t JOIN component_groups g ON g.id = t.group_id JOIN components c ON c.id = g.component_id JOIN training_programs p ON p.id = c.program_id
        JOIN master_catalog_values ts ON ts.id = t.status_id
        WHERE t.is_deleted = FALSE AND ts.code = 'completed' AND t.actual_date BETWEEN v_prev_start AND v_prev_end
          AND (v_tenant_filter IS NULL OR p.tenant_id = v_tenant_filter)),
@@ -2335,13 +2547,14 @@ BEGIN
 
   SELECT t.id AS topic_id, t.title, t.scheduled_on, t.duration_minutes,
     p.name AS program_name, c.name AS component_name, iu.full_name AS instructor_name, ts.code AS status_code, ts.label AS status_label
-  FROM component_enrollments ce
-  JOIN components c ON c.id = ce.component_id AND c.is_deleted = FALSE
+  FROM group_enrollments ge
+  JOIN component_groups g ON g.id = ge.group_id AND g.is_deleted = FALSE
+  JOIN components c ON c.id = g.component_id AND c.is_deleted = FALSE
   JOIN training_programs p ON p.id = c.program_id
-  JOIN topics t ON t.component_id = c.id AND t.is_deleted = FALSE
+  JOIN topics t ON t.group_id = g.id AND t.is_deleted = FALSE
   JOIN master_catalog_values ts ON ts.id = t.status_id
-  LEFT JOIN users iu ON iu.id = c.instructor_id
-  WHERE ce.student_id = p_actor_user_id AND ce.is_deleted = FALSE
+  LEFT JOIN users iu ON iu.id = g.instructor_id
+  WHERE ge.student_id = p_actor_user_id AND ge.is_deleted = FALSE
     AND t.scheduled_on IS NOT NULL AND t.scheduled_on >= CURDATE() AND ts.code NOT IN ('completed', 'cancelled')
   ORDER BY t.scheduled_on
   LIMIT 10;
@@ -2357,15 +2570,16 @@ BEGIN
     (SELECT ROUND(100 * SUM(ast.code IN ('present', 'late')) / NULLIF(COUNT(*), 0), 1)
        FROM attendance a JOIN master_catalog_values ast ON ast.id = a.attendance_status_id
        WHERE a.student_id = p_actor_user_id AND a.is_deleted = FALSE) AS attendance_rate,
-    (SELECT COUNT(*) FROM component_enrollments ce JOIN components c ON c.id = ce.component_id AND c.is_deleted = FALSE
-       JOIN topics t ON t.component_id = c.id AND t.is_deleted = FALSE JOIN master_catalog_values ts ON ts.id = t.status_id
-       WHERE ce.student_id = p_actor_user_id AND ce.is_deleted = FALSE AND ts.code NOT IN ('completed', 'cancelled')) AS topics_pending,
+    (SELECT COUNT(*) FROM group_enrollments ge JOIN component_groups g ON g.id = ge.group_id AND g.is_deleted = FALSE
+       JOIN topics t ON t.group_id = g.id AND t.is_deleted = FALSE JOIN master_catalog_values ts ON ts.id = t.status_id
+       WHERE ge.student_id = p_actor_user_id AND ge.is_deleted = FALSE AND ts.code NOT IN ('completed', 'cancelled')) AS topics_pending,
     (SELECT ROUND(AVG(prog.progress_pct), 1) FROM (
        SELECT p.id, ROUND(100 * SUM(ts.code = 'completed') / NULLIF(COUNT(t.id), 0), 1) AS progress_pct
        FROM program_enrollments pe
        JOIN training_programs p ON p.id = pe.program_id AND p.is_deleted = FALSE
        JOIN components c ON c.program_id = p.id AND c.is_deleted = FALSE
-       JOIN topics t ON t.component_id = c.id AND t.is_deleted = FALSE
+       JOIN component_groups g ON g.component_id = c.id AND g.is_deleted = FALSE
+       JOIN topics t ON t.group_id = g.id AND t.is_deleted = FALSE
        JOIN master_catalog_values ts ON ts.id = t.status_id
        WHERE pe.student_id = p_actor_user_id AND pe.is_deleted = FALSE
        GROUP BY p.id
@@ -2380,13 +2594,14 @@ BEGIN
 
   SELECT t.id AS topic_id, t.title, t.scheduled_on, t.duration_minutes,
     p.name AS program_name, c.name AS component_name,
-    (SELECT COUNT(*) FROM component_enrollments ce WHERE ce.component_id = c.id AND ce.is_deleted = FALSE) AS enrolled_students,
+    (SELECT COUNT(*) FROM group_enrollments ge WHERE ge.group_id = g.id AND ge.is_deleted = FALSE) AS enrolled_students,
     ts.code AS status_code, ts.label AS status_label
-  FROM components c
+  FROM component_groups g
+  JOIN components c ON c.id = g.component_id
   JOIN training_programs p ON p.id = c.program_id
-  JOIN topics t ON t.component_id = c.id AND t.is_deleted = FALSE
+  JOIN topics t ON t.group_id = g.id AND t.is_deleted = FALSE
   JOIN master_catalog_values ts ON ts.id = t.status_id
-  WHERE c.instructor_id = p_actor_user_id AND c.is_deleted = FALSE
+  WHERE g.instructor_id = p_actor_user_id AND g.is_deleted = FALSE
     AND t.scheduled_on IS NOT NULL AND t.scheduled_on >= CURDATE() AND ts.code NOT IN ('completed', 'cancelled')
   ORDER BY t.scheduled_on
   LIMIT 10;
@@ -2399,17 +2614,17 @@ BEGIN
   END IF;
 
   SELECT
-    (SELECT COUNT(*) FROM components c JOIN topics t ON t.component_id = c.id AND t.is_deleted = FALSE
-       WHERE c.instructor_id = p_actor_user_id AND c.is_deleted = FALSE
+    (SELECT COUNT(*) FROM component_groups g JOIN topics t ON t.group_id = g.id AND t.is_deleted = FALSE
+       WHERE g.instructor_id = p_actor_user_id AND g.is_deleted = FALSE
          AND t.scheduled_on BETWEEN DATE_SUB(CURDATE(), INTERVAL WEEKDAY(CURDATE()) DAY) AND DATE_ADD(DATE_SUB(CURDATE(), INTERVAL WEEKDAY(CURDATE()) DAY), INTERVAL 6 DAY)
     ) AS classes_this_week,
     (SELECT ROUND(100 * SUM(ast.code IN ('present', 'late')) / NULLIF(COUNT(*), 0), 1)
-       FROM attendance a JOIN topics t ON t.id = a.topic_id JOIN components c ON c.id = t.component_id
+       FROM attendance a JOIN topics t ON t.id = a.topic_id JOIN component_groups g ON g.id = t.group_id
        JOIN master_catalog_values ast ON ast.id = a.attendance_status_id
-       WHERE c.instructor_id = p_actor_user_id AND a.is_deleted = FALSE) AS group_attendance_rate,
-    (SELECT COUNT(*) FROM components c JOIN topics t ON t.component_id = c.id AND t.is_deleted = FALSE
+       WHERE g.instructor_id = p_actor_user_id AND a.is_deleted = FALSE) AS group_attendance_rate,
+    (SELECT COUNT(*) FROM component_groups g JOIN topics t ON t.group_id = g.id AND t.is_deleted = FALSE
        JOIN master_catalog_values ts ON ts.id = t.status_id
-       WHERE c.instructor_id = p_actor_user_id AND c.is_deleted = FALSE
+       WHERE g.instructor_id = p_actor_user_id AND g.is_deleted = FALSE
          AND t.scheduled_on IS NOT NULL AND t.scheduled_on < CURDATE() AND ts.code NOT IN ('completed', 'cancelled')
     ) AS delayed_topics;
 END$$

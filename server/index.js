@@ -231,9 +231,9 @@ app.get('/api/users', authenticate, async (req, res) => {
   }
 })
 
-app.get('/api/my/components', authenticate, async (req, res) => {
+app.get('/api/my/groups', authenticate, async (req, res) => {
   try {
-    const data = await callProcedure('sp_components_list_by_instructor', {
+    const data = await callProcedure('sp_groups_list_by_instructor', {
       p_actor_user_id: req.user.id, p_actor_role: req.user.roleCode,
     })
     res.json({ data })
@@ -350,7 +350,7 @@ app.get('/api/programs/:id/components', authenticate, async (req, res) => {
 
 app.post('/api/programs/:id/components', authenticate, async (req, res) => {
   const programId = Number(req.params.id)
-  const { name, description, sortOrder, instructorId } = req.body || {}
+  const { name, description, sortOrder } = req.body || {}
   if (!Number.isInteger(programId) || typeof name !== 'string' || !name.trim()) {
     return res.status(400).json({ message: 'Invalid request format' })
   }
@@ -358,8 +358,7 @@ app.post('/api/programs/:id/components', authenticate, async (req, res) => {
   try {
     const [result] = await callProcedure('sp_components_create', {
       p_actor_user_id: req.user.id, p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId,
-      p_program_id: programId, p_name: name, p_description: description || null,
-      p_sort_order: sortOrder ?? 0, p_instructor_id: instructorId ?? null,
+      p_program_id: programId, p_name: name, p_description: description || null, p_sort_order: sortOrder ?? 0,
     })
     res.status(201).json({ data: result })
   } catch (err) {
@@ -368,50 +367,12 @@ app.post('/api/programs/:id/components', authenticate, async (req, res) => {
   }
 })
 
-app.post('/api/components/:id/instructor', authenticate, async (req, res) => {
-  const componentId = Number(req.params.id)
-  const { instructorId } = req.body || {}
-  if (!Number.isInteger(componentId) || !Number.isInteger(instructorId)) {
-    return res.status(400).json({ message: 'Invalid request format' })
-  }
-
-  try {
-    await callProcedure('sp_components_assign_instructor', {
-      p_actor_user_id: req.user.id, p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId,
-      p_component_id: componentId, p_instructor_id: instructorId,
-    })
-    res.json({ ok: true })
-  } catch (err) {
-    const { status, message } = mapStoredProcedureError(err)
-    res.status(status).json({ message })
-  }
-})
-
-app.post('/api/components/:id/students', authenticate, async (req, res) => {
-  const componentId = Number(req.params.id)
-  const { studentId } = req.body || {}
-  if (!Number.isInteger(componentId) || !Number.isInteger(studentId)) {
-    return res.status(400).json({ message: 'Invalid request format' })
-  }
-
-  try {
-    await callProcedure('sp_components_enroll_student', {
-      p_actor_user_id: req.user.id, p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId,
-      p_component_id: componentId, p_student_id: studentId,
-    })
-    res.status(201).json({ ok: true })
-  } catch (err) {
-    const { status, message } = mapStoredProcedureError(err)
-    res.status(status).json({ message })
-  }
-})
-
-app.get('/api/components/:id/topics', authenticate, async (req, res) => {
+app.get('/api/components/:id/groups', authenticate, async (req, res) => {
   const componentId = Number(req.params.id)
   if (!Number.isInteger(componentId)) return res.status(400).json({ message: 'Invalid request format' })
 
   try {
-    const data = await callProcedure('sp_topics_list', {
+    const data = await callProcedure('sp_component_groups_list', {
       p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId, p_component_id: componentId,
     })
     res.json({ data })
@@ -421,17 +382,87 @@ app.get('/api/components/:id/topics', authenticate, async (req, res) => {
   }
 })
 
-app.post('/api/components/:id/topics', authenticate, async (req, res) => {
+app.post('/api/components/:id/groups', authenticate, async (req, res) => {
   const componentId = Number(req.params.id)
+  const { name, instructorId } = req.body || {}
+  if (!Number.isInteger(componentId) || typeof name !== 'string' || !name.trim()) {
+    return res.status(400).json({ message: 'Invalid request format' })
+  }
+
+  try {
+    const [result] = await callProcedure('sp_component_groups_create', {
+      p_actor_user_id: req.user.id, p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId,
+      p_component_id: componentId, p_name: name, p_instructor_id: instructorId ?? null,
+    })
+    res.status(201).json({ data: result })
+  } catch (err) {
+    const { status, message } = mapStoredProcedureError(err)
+    res.status(status).json({ message })
+  }
+})
+
+app.patch('/api/groups/:id', authenticate, async (req, res) => {
+  const groupId = Number(req.params.id)
+  const { name, instructorId } = req.body || {}
+  if (!Number.isInteger(groupId)) return res.status(400).json({ message: 'Invalid request format' })
+
+  try {
+    await callProcedure('sp_component_groups_update', {
+      p_actor_user_id: req.user.id, p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId,
+      p_group_id: groupId, p_name: name || '', p_instructor_id: instructorId ?? null,
+    })
+    res.json({ ok: true })
+  } catch (err) {
+    const { status, message } = mapStoredProcedureError(err)
+    res.status(status).json({ message })
+  }
+})
+
+app.post('/api/groups/:id/students', authenticate, async (req, res) => {
+  const groupId = Number(req.params.id)
+  const { studentId } = req.body || {}
+  if (!Number.isInteger(groupId) || !Number.isInteger(studentId)) {
+    return res.status(400).json({ message: 'Invalid request format' })
+  }
+
+  try {
+    await callProcedure('sp_group_enrollments_add', {
+      p_actor_user_id: req.user.id, p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId,
+      p_group_id: groupId, p_student_id: studentId,
+    })
+    res.status(201).json({ ok: true })
+  } catch (err) {
+    const { status, message } = mapStoredProcedureError(err)
+    res.status(status).json({ message })
+  }
+})
+
+app.get('/api/groups/:id/topics', authenticate, async (req, res) => {
+  const groupId = Number(req.params.id)
+  if (!Number.isInteger(groupId)) return res.status(400).json({ message: 'Invalid request format' })
+
+  try {
+    const data = await callProcedure('sp_topics_list', {
+      p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId, p_group_id: groupId,
+    })
+    res.json({ data })
+  } catch (err) {
+    const { status, message } = mapStoredProcedureError(err)
+    res.status(status).json({ message })
+  }
+})
+
+app.post('/api/groups/:id/topics', authenticate, async (req, res) => {
+  const groupId = Number(req.params.id)
   const { title, description, sortOrder, scheduledOn, durationMinutes } = req.body || {}
-  if (!Number.isInteger(componentId) || typeof title !== 'string' || !title.trim()) {
+  if (!Number.isInteger(groupId) || typeof title !== 'string' || !title.trim()) {
     return res.status(400).json({ message: 'Invalid request format' })
   }
 
   try {
     const [result] = await callProcedure('sp_topics_create', {
       p_actor_user_id: req.user.id, p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId,
-      p_component_id: componentId, p_title: title, p_description: description || null,
+      p_group_id: groupId, p_title: title, p_description: description || null,
       p_sort_order: sortOrder ?? 0, p_scheduled_on: scheduledOn || null, p_duration_minutes: durationMinutes ?? null,
     })
     res.status(201).json({ data: result })
@@ -479,13 +510,13 @@ app.post('/api/topics/:id/reschedule', authenticate, async (req, res) => {
   }
 })
 
-app.get('/api/programs/:id/schedule-days', authenticate, async (req, res) => {
-  const programId = Number(req.params.id)
-  if (!Number.isInteger(programId)) return res.status(400).json({ message: 'Invalid request format' })
+app.get('/api/groups/:id/schedule-days', authenticate, async (req, res) => {
+  const groupId = Number(req.params.id)
+  if (!Number.isInteger(groupId)) return res.status(400).json({ message: 'Invalid request format' })
 
   try {
-    const data = await callProcedure('sp_program_schedule_days_list', {
-      p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId, p_program_id: programId,
+    const data = await callProcedure('sp_group_schedule_days_list', {
+      p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId, p_group_id: groupId,
     })
     res.json({ data })
   } catch (err) {
@@ -494,18 +525,18 @@ app.get('/api/programs/:id/schedule-days', authenticate, async (req, res) => {
   }
 })
 
-app.post('/api/programs/:id/schedule-days', authenticate, async (req, res) => {
-  const programId = Number(req.params.id)
+app.post('/api/groups/:id/schedule-days', authenticate, async (req, res) => {
+  const groupId = Number(req.params.id)
   const { weekday, startTime, endTime } = req.body || {}
-  if (!Number.isInteger(programId) || !Number.isInteger(weekday) || weekday < 0 || weekday > 6 ||
+  if (!Number.isInteger(groupId) || !Number.isInteger(weekday) || weekday < 0 || weekday > 6 ||
       typeof startTime !== 'string' || typeof endTime !== 'string') {
     return res.status(400).json({ message: 'Invalid request format' })
   }
 
   try {
-    await callProcedure('sp_program_schedule_days_add', {
+    await callProcedure('sp_group_schedule_days_add', {
       p_actor_user_id: req.user.id, p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId,
-      p_program_id: programId, p_weekday: weekday, p_start_time: startTime, p_end_time: endTime,
+      p_group_id: groupId, p_weekday: weekday, p_start_time: startTime, p_end_time: endTime,
     })
     res.status(201).json({ ok: true })
   } catch (err) {
@@ -514,17 +545,17 @@ app.post('/api/programs/:id/schedule-days', authenticate, async (req, res) => {
   }
 })
 
-app.delete('/api/programs/:id/schedule-days/:weekday', authenticate, async (req, res) => {
-  const programId = Number(req.params.id)
+app.delete('/api/groups/:id/schedule-days/:weekday', authenticate, async (req, res) => {
+  const groupId = Number(req.params.id)
   const weekday = Number(req.params.weekday)
-  if (!Number.isInteger(programId) || !Number.isInteger(weekday) || weekday < 0 || weekday > 6) {
+  if (!Number.isInteger(groupId) || !Number.isInteger(weekday) || weekday < 0 || weekday > 6) {
     return res.status(400).json({ message: 'Invalid request format' })
   }
 
   try {
-    await callProcedure('sp_program_schedule_days_remove', {
+    await callProcedure('sp_group_schedule_days_remove', {
       p_actor_user_id: req.user.id, p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId,
-      p_program_id: programId, p_weekday: weekday,
+      p_group_id: groupId, p_weekday: weekday,
     })
     res.json({ ok: true })
   } catch (err) {
@@ -533,15 +564,15 @@ app.delete('/api/programs/:id/schedule-days/:weekday', authenticate, async (req,
   }
 })
 
-app.post('/api/components/:id/generate-schedule', authenticate, async (req, res) => {
-  const componentId = Number(req.params.id)
+app.post('/api/groups/:id/generate-schedule', authenticate, async (req, res) => {
+  const groupId = Number(req.params.id)
   const { startDate } = req.body || {}
-  if (!Number.isInteger(componentId)) return res.status(400).json({ message: 'Invalid request format' })
+  if (!Number.isInteger(groupId)) return res.status(400).json({ message: 'Invalid request format' })
 
   try {
     const [result] = await callProcedure('sp_topics_generate_schedule', {
       p_actor_user_id: req.user.id, p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId,
-      p_component_id: componentId, p_start_date: startDate || null,
+      p_group_id: groupId, p_start_date: startDate || null,
     })
     res.json({ data: result })
   } catch (err) {

@@ -213,9 +213,9 @@ export function UsersPanel({ session }) {
   )
 }
 
-function TopicsPanel({ session, component, onBack }) {
+function TopicsPanel({ session, group, onBack }) {
   const { token } = session
-  const { items, error, loading, reload } = useList(`/api/components/${component.id}/topics`, token)
+  const { items, error, loading, reload } = useList(`/api/groups/${group.id}/topics`, token)
   const [form, setForm] = useState({ title: '', description: '', scheduledOn: '', durationMinutes: '' })
   const [formError, setFormError] = useState('')
   const topicStatuses = useCatalog('TOPIC_STATUS', token)
@@ -224,7 +224,7 @@ function TopicsPanel({ session, component, onBack }) {
     e.preventDefault()
     setFormError('')
     try {
-      await apiRequest(`/api/components/${component.id}/topics`, {
+      await apiRequest(`/api/groups/${group.id}/topics`, {
         method: 'POST', token,
         body: { ...form, durationMinutes: form.durationMinutes ? Number(form.durationMinutes) : null },
       })
@@ -259,9 +259,9 @@ function TopicsPanel({ session, component, onBack }) {
 
   return (
     <div className="admin-wrap">
-      <button className="text-button crumb-back" onClick={onBack}>← Volver a {component.name}</button>
+      <button className="text-button crumb-back" onClick={onBack}>← Volver a {group.name}</button>
       <section className="panel admin-form-panel">
-        <h3>Nuevo tema — {component.name}</h3>
+        <h3>Nuevo tema — {group.name}</h3>
         <form className="admin-form" onSubmit={handleCreate}>
           <label>Título<input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} required /></label>
           <label>Descripción<input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></label>
@@ -301,138 +301,182 @@ function TopicsPanel({ session, component, onBack }) {
 }
 
 const WEEKDAY_LABELS = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado']
+const WEEKDAY_ORDER = [1, 2, 3, 4, 5, 6, 0]
+const SCHEDULE_HOURS = Array.from({ length: 14 }, (_, i) => i + 7)
 
-function ScheduleDaysPanel({ session, program }) {
+function timeToHour(t) { return Number((t || '00:00').slice(0, 2)) }
+function pad2(n) { return String(n).padStart(2, '0') }
+
+// Grilla semanal con drag-and-drop nativo (sin libreria nueva): soltar la
+// tarjeta del grupo en una celda asigna un bloque de 3h. El servidor es
+// quien decide si el instructor choca con otro grupo suyo -- este panel
+// solo muestra el error que devuelva.
+function GroupSchedulePanel({ session, group }) {
   const { token } = session
-  const { items, error, loading, reload } = useList(`/api/programs/${program.id}/schedule-days`, token)
-  const [form, setForm] = useState({ weekday: '1', startTime: '09:00', endTime: '12:00' })
-  const [formError, setFormError] = useState('')
+  const { items, error, loading, reload } = useList(`/api/groups/${group.id}/schedule-days`, token)
+  const [dropError, setDropError] = useState('')
 
-  async function handleAdd(e) {
-    e.preventDefault()
-    setFormError('')
+  function cellFor(weekday, hour) {
+    return items.find((d) => d.weekday === weekday && timeToHour(d.start_time) <= hour && hour < timeToHour(d.end_time))
+  }
+
+  async function assign(weekday, hour, sourceWeekday) {
+    setDropError('')
+    const startTime = `${pad2(hour)}:00`
+    const endTime = `${pad2(Math.min(hour + 3, 23))}:00`
     try {
-      await apiRequest(`/api/programs/${program.id}/schedule-days`, {
-        method: 'POST', token, body: { weekday: Number(form.weekday), startTime: form.startTime, endTime: form.endTime },
-      })
+      await apiRequest(`/api/groups/${group.id}/schedule-days`, { method: 'POST', token, body: { weekday, startTime, endTime } })
+      if (sourceWeekday !== null && sourceWeekday !== weekday) {
+        await apiRequest(`/api/groups/${group.id}/schedule-days/${sourceWeekday}`, { method: 'DELETE', token })
+      }
       reload()
     } catch (err) {
-      setFormError(err.message)
+      setDropError(err.message)
     }
   }
 
   async function remove(weekday) {
-    setFormError('')
+    setDropError('')
     try {
-      await apiRequest(`/api/programs/${program.id}/schedule-days/${weekday}`, { method: 'DELETE', token })
+      await apiRequest(`/api/groups/${group.id}/schedule-days/${weekday}`, { method: 'DELETE', token })
       reload()
     } catch (err) {
-      setFormError(err.message)
+      setDropError(err.message)
     }
   }
 
+  function handleDrop(e, weekday, hour) {
+    e.preventDefault()
+    const payload = e.dataTransfer.getData('text/plain')
+    const sourceWeekday = payload.startsWith('move:') ? Number(payload.slice(5)) : null
+    assign(weekday, hour, sourceWeekday)
+  }
+
   return (
-    <section className="panel admin-form-panel">
-      <h3>Horario base — {program.name}</h3>
-      <p className="muted">Días y franja horaria en que se dictan clases. El generador automático de fechas del temario solo usa estos días.</p>
-      <form className="admin-form" onSubmit={handleAdd}>
-        <label>Día
-          <select value={form.weekday} onChange={(e) => setForm({ ...form, weekday: e.target.value })}>
-            {WEEKDAY_LABELS.map((label, i) => <option key={i} value={i}>{label}</option>)}
-          </select>
-        </label>
-        <label>Hora inicio<input type="time" value={form.startTime} onChange={(e) => setForm({ ...form, startTime: e.target.value })} required /></label>
-        <label>Hora fin<input type="time" value={form.endTime} onChange={(e) => setForm({ ...form, endTime: e.target.value })} required /></label>
-        <ErrorNote message={formError || error} />
-        <button className="primary">Agregar día</button>
-      </form>
-      {!loading && items.length > 0 && (
-        <div className="schedule-day-pills">
-          {items.map((d) => (
-            <span className="pill schedule-day-pill" key={d.weekday}>
-              {WEEKDAY_LABELS[d.weekday]} {d.start_time.slice(0, 5)}–{d.end_time.slice(0, 5)}
-              <button className="pill-remove" onClick={() => remove(d.weekday)}>×</button>
-            </span>
-          ))}
+    <section className="panel">
+      <h3>Horario — {group.name}</h3>
+      <p className="muted">Arrastra la tarjeta a una celda para asignar un bloque de 3 horas. Un instructor no puede quedar en dos grupos con horario cruzado, sin importar el componente.</p>
+      <div className="schedule-chip-palette" draggable onDragStart={(e) => e.dataTransfer.setData('text/plain', 'assign')}>
+        {group.name} · {group.instructor_name || 'sin instructor'}
+      </div>
+      <ErrorNote message={error || dropError} />
+      {loading ? <p className="muted">Cargando…</p> : (
+        <div className="schedule-grid-scroll">
+          <table className="schedule-grid">
+            <thead>
+              <tr><th></th>{WEEKDAY_ORDER.map((w) => <th key={w}>{WEEKDAY_LABELS[w]}</th>)}</tr>
+            </thead>
+            <tbody>
+              {SCHEDULE_HOURS.map((hour) => (
+                <tr key={hour}>
+                  <td className="schedule-hour">{pad2(hour)}:00</td>
+                  {WEEKDAY_ORDER.map((w) => {
+                    const cell = cellFor(w, hour)
+                    const isStart = cell && timeToHour(cell.start_time) === hour
+                    return (
+                      <td
+                        key={w}
+                        className={cell ? 'schedule-cell filled' : 'schedule-cell'}
+                        onDragOver={(e) => e.preventDefault()}
+                        onDrop={(e) => handleDrop(e, w, hour)}
+                      >
+                        {isStart && (
+                          <div className="schedule-block" draggable onDragStart={(e) => e.dataTransfer.setData('text/plain', `move:${w}`)}>
+                            {cell.start_time.slice(0, 5)}–{cell.end_time.slice(0, 5)}
+                            <button className="pill-remove" onClick={() => remove(w)}>×</button>
+                          </div>
+                        )}
+                      </td>
+                    )
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
-      {!loading && items.length === 0 && <p className="muted">Sin días configurados todavía: el generador automático no podrá crear fechas hasta que agregues al menos uno.</p>}
     </section>
   )
 }
 
-function ComponentsPanel({ session, program, onBack }) {
-  const { token, profile } = session
-  const { items, error, loading, reload } = useList(`/api/programs/${program.id}/components`, token)
-  const { items: instructors } = useList(`/api/users?role=instructor`, token)
-  const { items: students } = useList(`/api/users?role=student`, token)
-  const [form, setForm] = useState({ name: '', description: '', sortOrder: 0, instructorId: '' })
+function GroupsPanel({ session, component, onBack }) {
+  const { token } = session
+  const { items, error, loading, reload } = useList(`/api/components/${component.id}/groups`, token)
+  const { items: instructors } = useList('/api/users?role=instructor', token)
+  const { items: students } = useList('/api/users?role=student', token)
+  const [form, setForm] = useState({ name: '', instructorId: '' })
   const [formError, setFormError] = useState('')
-  const [selectedComponent, setSelectedComponent] = useState(null)
   const [enrollStudentId, setEnrollStudentId] = useState({})
   const [scheduleMessage, setScheduleMessage] = useState('')
-
-  async function generateSchedule(component) {
-    setFormError('')
-    setScheduleMessage('')
-    try {
-      const res = await apiRequest(`/api/components/${component.id}/generate-schedule`, { method: 'POST', token, body: {} })
-      setScheduleMessage(`${component.name}: ${res.data.topics_scheduled} tema(s) programado(s) automáticamente.`)
-    } catch (err) {
-      setFormError(err.message)
-    }
-  }
+  const [view, setView] = useState(null)
 
   async function handleCreate(e) {
     e.preventDefault()
     setFormError('')
     try {
-      await apiRequest(`/api/programs/${program.id}/components`, {
-        method: 'POST', token,
-        body: { ...form, instructorId: form.instructorId ? Number(form.instructorId) : null },
+      await apiRequest(`/api/components/${component.id}/groups`, {
+        method: 'POST', token, body: { name: form.name, instructorId: form.instructorId ? Number(form.instructorId) : null },
       })
-      setForm({ name: '', description: '', sortOrder: 0, instructorId: '' })
+      setForm({ name: '', instructorId: '' })
       reload()
     } catch (err) {
       setFormError(err.message)
     }
   }
 
-  async function assignInstructor(component, instructorId) {
-    if (!instructorId) return
+  async function updateInstructor(group, instructorId) {
     try {
-      await apiRequest(`/api/components/${component.id}/instructor`, { method: 'POST', token, body: { instructorId: Number(instructorId) } })
+      await apiRequest(`/api/groups/${group.id}`, {
+        method: 'PATCH', token, body: { name: group.name, instructorId: instructorId ? Number(instructorId) : null },
+      })
       reload()
     } catch (err) {
       setFormError(err.message)
     }
   }
 
-  async function enrollStudent(component) {
-    const studentId = enrollStudentId[component.id]
+  async function enrollStudent(group) {
+    const studentId = enrollStudentId[group.id]
     if (!studentId) return
     try {
-      await apiRequest(`/api/components/${component.id}/students`, { method: 'POST', token, body: { studentId: Number(studentId) } })
-      setEnrollStudentId({ ...enrollStudentId, [component.id]: '' })
+      await apiRequest(`/api/groups/${group.id}/students`, { method: 'POST', token, body: { studentId: Number(studentId) } })
+      setEnrollStudentId({ ...enrollStudentId, [group.id]: '' })
     } catch (err) {
       setFormError(err.message)
     }
   }
 
-  if (selectedComponent) {
-    return <TopicsPanel session={session} component={selectedComponent} onBack={() => setSelectedComponent(null)} />
+  async function generateSchedule(group) {
+    setFormError('')
+    setScheduleMessage('')
+    try {
+      const res = await apiRequest(`/api/groups/${group.id}/generate-schedule`, { method: 'POST', token, body: {} })
+      setScheduleMessage(`${group.name}: ${res.data.topics_scheduled} tema(s) programado(s) automáticamente.`)
+    } catch (err) {
+      setFormError(err.message)
+    }
+  }
+
+  if (view?.mode === 'schedule') {
+    return (
+      <div className="admin-wrap">
+        <button className="text-button crumb-back" onClick={() => setView(null)}>← Volver a {component.name}</button>
+        <GroupSchedulePanel session={session} group={view.group} />
+      </div>
+    )
+  }
+  if (view?.mode === 'topics') {
+    return <TopicsPanel session={session} group={view.group} onBack={() => setView(null)} />
   }
 
   return (
     <div className="admin-wrap">
       <button className="text-button crumb-back" onClick={onBack}>← Volver a programas</button>
-      <ScheduleDaysPanel session={session} program={program} />
       <section className="panel admin-form-panel">
-        <h3>Nuevo componente — {program.name}</h3>
+        <h3>Nuevo grupo — {component.name}</h3>
+        <p className="muted">Un componente puede dictarse en paralelo por varios grupos: misma malla, instructor y horario propios.</p>
         <form className="admin-form" onSubmit={handleCreate}>
-          <label>Nombre<input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required /></label>
-          <label>Descripción<input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></label>
-          <label>Orden<input type="number" value={form.sortOrder} onChange={(e) => setForm({ ...form, sortOrder: e.target.value })} /></label>
+          <label>Nombre<input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Grupo A" required /></label>
           <label>Instructor
             <select value={form.instructorId} onChange={(e) => setForm({ ...form, instructorId: e.target.value })}>
               <option value="">Sin asignar</option>
@@ -440,36 +484,96 @@ function ComponentsPanel({ session, program, onBack }) {
             </select>
           </label>
           <ErrorNote message={formError} />
+          <button className="primary">Crear grupo</button>
+        </form>
+      </section>
+      <section className="panel">
+        <h3>Grupos de {component.name}</h3>
+        <ErrorNote message={error} />
+        {scheduleMessage && <p className="temp-password-box">{scheduleMessage}</p>}
+        {loading ? <p className="muted">Cargando…</p> : items.length === 0 ? <p className="muted">Este componente todavía no tiene grupos.</p> : (
+          <table className="admin-table">
+            <thead><tr><th>Nombre</th><th>Instructor</th><th>Alumnos</th><th>Inscribir</th><th>Horario</th><th>Calendario</th><th></th></tr></thead>
+            <tbody>
+              {items.map((g) => (
+                <tr key={g.id}>
+                  <td>{g.name}</td>
+                  <td>
+                    <select value={g.instructor_id || ''} onChange={(e) => updateInstructor(g, e.target.value)}>
+                      <option value="">Sin asignar</option>
+                      {instructors.map((i) => <option key={i.id} value={i.id}>{i.full_name}</option>)}
+                    </select>
+                  </td>
+                  <td>{g.enrolled_students}</td>
+                  <td className="row-actions">
+                    <select value={enrollStudentId[g.id] || ''} onChange={(e) => setEnrollStudentId({ ...enrollStudentId, [g.id]: e.target.value })}>
+                      <option value="">Selecciona alumno…</option>
+                      {students.map((s) => <option key={s.id} value={s.id}>{s.full_name}</option>)}
+                    </select>
+                    <button className="btn-mini" onClick={() => enrollStudent(g)}>Inscribir</button>
+                  </td>
+                  <td><button className="btn-mini" onClick={() => setView({ mode: 'schedule', group: g })}>Ver horario</button></td>
+                  <td><button className="btn-mini" onClick={() => generateSchedule(g)}>Generar fechas</button></td>
+                  <td><button className="btn-mini" onClick={() => setView({ mode: 'topics', group: g })}>Ver temario</button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </section>
+    </div>
+  )
+}
+
+function ComponentsPanel({ session, program, onBack }) {
+  const { token } = session
+  const { items, error, loading, reload } = useList(`/api/programs/${program.id}/components`, token)
+  const [form, setForm] = useState({ name: '', description: '', sortOrder: 0 })
+  const [formError, setFormError] = useState('')
+  const [selectedComponent, setSelectedComponent] = useState(null)
+
+  async function handleCreate(e) {
+    e.preventDefault()
+    setFormError('')
+    try {
+      await apiRequest(`/api/programs/${program.id}/components`, { method: 'POST', token, body: form })
+      setForm({ name: '', description: '', sortOrder: 0 })
+      reload()
+    } catch (err) {
+      setFormError(err.message)
+    }
+  }
+
+  if (selectedComponent) {
+    return <GroupsPanel session={session} component={selectedComponent} onBack={() => setSelectedComponent(null)} />
+  }
+
+  return (
+    <div className="admin-wrap">
+      <button className="text-button crumb-back" onClick={onBack}>← Volver a programas</button>
+      <section className="panel admin-form-panel">
+        <h3>Nuevo componente — {program.name}</h3>
+        <form className="admin-form" onSubmit={handleCreate}>
+          <label>Nombre<input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required /></label>
+          <label>Descripción<input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></label>
+          <label>Orden<input type="number" value={form.sortOrder} onChange={(e) => setForm({ ...form, sortOrder: e.target.value })} /></label>
+          <ErrorNote message={formError} />
           <button className="primary">Crear componente</button>
         </form>
       </section>
       <section className="panel">
         <h3>Componentes</h3>
-        <ErrorNote message={error || formError} />
-        {scheduleMessage && <p className="temp-password-box">{scheduleMessage}</p>}
+        <ErrorNote message={error} />
         {loading ? <p className="muted">Cargando…</p> : (
           <table className="admin-table">
-            <thead><tr><th>Nombre</th><th>Instructor</th><th>Estado</th><th>Inscribir alumno</th><th>Calendario</th><th></th></tr></thead>
+            <thead><tr><th>Nombre</th><th>Estado</th><th>Grupos</th><th></th></tr></thead>
             <tbody>
               {items.map((c) => (
                 <tr key={c.id}>
                   <td>{c.name}</td>
-                  <td>
-                    <select value={c.instructor_id || ''} onChange={(e) => assignInstructor(c, e.target.value)}>
-                      <option value="">Sin asignar</option>
-                      {instructors.map((i) => <option key={i.id} value={i.id}>{i.full_name}</option>)}
-                    </select>
-                  </td>
                   <td><StatusPill label={c.status_label} /></td>
-                  <td className="row-actions">
-                    <select value={enrollStudentId[c.id] || ''} onChange={(e) => setEnrollStudentId({ ...enrollStudentId, [c.id]: e.target.value })}>
-                      <option value="">Selecciona alumno…</option>
-                      {students.map((s) => <option key={s.id} value={s.id}>{s.full_name}</option>)}
-                    </select>
-                    <button className="btn-mini" onClick={() => enrollStudent(c)}>Inscribir</button>
-                  </td>
-                  <td><button className="btn-mini" onClick={() => generateSchedule(c)}>Generar fechas automáticas</button></td>
-                  <td><button className="btn-mini" onClick={() => setSelectedComponent(c)}>Ver temario</button></td>
+                  <td>{c.group_count}</td>
+                  <td><button className="btn-mini" onClick={() => setSelectedComponent(c)}>Ver grupos</button></td>
                 </tr>
               ))}
             </tbody>
@@ -822,9 +926,9 @@ function InstructorAttendancePanel({ session, topic, onBack }) {
   )
 }
 
-function InstructorTopicsPanel({ session, component, onBack }) {
+function InstructorTopicsPanel({ session, group, onBack }) {
   const { token } = session
-  const { items, error, loading } = useList(`/api/components/${component.id}/topics`, token)
+  const { items, error, loading } = useList(`/api/groups/${group.id}/topics`, token)
   const [selectedTopic, setSelectedTopic] = useState(null)
 
   if (selectedTopic) {
@@ -835,9 +939,9 @@ function InstructorTopicsPanel({ session, component, onBack }) {
     <div className="admin-wrap">
       <button className="text-button crumb-back" onClick={onBack}>← Volver a mis clases</button>
       <section className="panel">
-        <h3>Temario — {component.name}</h3>
+        <h3>Temario — {group.component_name} ({group.name})</h3>
         <ErrorNote message={error} />
-        {loading ? <p className="muted">Cargando…</p> : items.length === 0 ? <p className="muted">Este componente todavía no tiene temas.</p> : (
+        {loading ? <p className="muted">Cargando…</p> : items.length === 0 ? <p className="muted">Este grupo todavía no tiene temas.</p> : (
           <table className="admin-table">
             <thead><tr><th>Título</th><th>Programado</th><th>Estado</th><th></th></tr></thead>
             <tbody>
@@ -859,28 +963,29 @@ function InstructorTopicsPanel({ session, component, onBack }) {
 
 export function InstructorClassesPanel({ session }) {
   const { token } = session
-  const { items, error, loading } = useList('/api/my/components', token)
-  const [selectedComponent, setSelectedComponent] = useState(null)
+  const { items, error, loading } = useList('/api/my/groups', token)
+  const [selectedGroup, setSelectedGroup] = useState(null)
 
-  if (selectedComponent) {
-    return <InstructorTopicsPanel session={session} component={selectedComponent} onBack={() => setSelectedComponent(null)} />
+  if (selectedGroup) {
+    return <InstructorTopicsPanel session={session} group={selectedGroup} onBack={() => setSelectedGroup(null)} />
   }
 
   return (
     <div className="admin-wrap">
       <section className="panel">
-        <h3>Mis componentes</h3>
+        <h3>Mis grupos</h3>
         <ErrorNote message={error} />
-        {loading ? <p className="muted">Cargando…</p> : items.length === 0 ? <p className="muted">Todavía no tienes componentes asignados.</p> : (
+        {loading ? <p className="muted">Cargando…</p> : items.length === 0 ? <p className="muted">Todavía no tienes grupos asignados.</p> : (
           <table className="admin-table">
-            <thead><tr><th>Programa</th><th>Componente</th><th>Estado</th><th></th></tr></thead>
+            <thead><tr><th>Programa</th><th>Componente</th><th>Grupo</th><th>Estado</th><th></th></tr></thead>
             <tbody>
-              {items.map((c) => (
-                <tr key={c.id}>
-                  <td>{c.program_name} · {c.cohort}</td>
-                  <td>{c.name}</td>
-                  <td><StatusPill label={c.status_label} /></td>
-                  <td><button className="btn-mini" onClick={() => setSelectedComponent(c)}>Ver temario</button></td>
+              {items.map((g) => (
+                <tr key={g.id}>
+                  <td>{g.program_name} · {g.cohort}</td>
+                  <td>{g.component_name}</td>
+                  <td>{g.name}</td>
+                  <td><StatusPill label={g.status_label} /></td>
+                  <td><button className="btn-mini" onClick={() => setSelectedGroup(g)}>Ver temario</button></td>
                 </tr>
               ))}
             </tbody>

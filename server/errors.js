@@ -12,6 +12,7 @@ const STATUS_BY_SP_MESSAGE = {
   schedule_not_configured: 409,
   schedule_generation_failed: 409,
   instructor_not_available: 409,
+  instructor_schedule_conflict: 409,
   date_is_holiday: 409,
   tenant_inactive: 409,
   email_already_exists: 409,
@@ -23,6 +24,7 @@ const STATUS_BY_SP_MESSAGE = {
   target_not_found: 404,
   program_not_found: 404,
   component_not_found: 404,
+  group_not_found: 404,
 }
 
 // Los procedimientos almacenados comunican decisiones de negocio con
