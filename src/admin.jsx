@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { apiRequest } from './api'
+import { apiRequest, apiUpload } from './api'
 
 function useList(path, token) {
   const [items, setItems] = useState([])
@@ -35,6 +35,43 @@ function ErrorNote({ message }) {
 function StatusPill({ label }) {
   if (!label) return null
   return <span className="pill">{label}</span>
+}
+
+// El servidor guarda el archivo en un volumen persistente (UPLOADS_DIR), no
+// en el disco efimero del contenedor: sobrevive a los redeploys de Railway.
+function LogoUploader({ session, tenantId, currentLogoUrl, onUploaded }) {
+  const { token } = session
+  const [uploading, setUploading] = useState(false)
+  const [error, setError] = useState('')
+
+  async function handleFile(e) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setError('')
+    setUploading(true)
+    try {
+      const formData = new FormData()
+      formData.append('logo', file)
+      const res = await apiUpload(`/api/tenants/${tenantId}/logo`, { token, formData })
+      onUploaded?.(res.logoUrl)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setUploading(false)
+      e.target.value = ''
+    }
+  }
+
+  return (
+    <div className="logo-uploader">
+      {currentLogoUrl && <img src={currentLogoUrl} alt="Logo" className="logo-preview" />}
+      <label className="btn-mini logo-upload-label">
+        {uploading ? 'Subiendo…' : currentLogoUrl ? 'Cambiar logo' : 'Subir logo'}
+        <input type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml" onChange={handleFile} hidden />
+      </label>
+      {error && <ErrorNote message={error} />}
+    </div>
+  )
 }
 
 export function TenantsPanel({ session }) {
@@ -88,7 +125,7 @@ export function TenantsPanel({ session }) {
         <ErrorNote message={error} />
         {loading ? <p className="muted">Cargando…</p> : (
           <table className="admin-table">
-            <thead><tr><th>Nombre</th><th>Slug</th><th>Estado</th><th>Contacto</th><th></th></tr></thead>
+            <thead><tr><th>Nombre</th><th>Slug</th><th>Estado</th><th>Contacto</th><th>Logo</th><th></th></tr></thead>
             <tbody>
               {items.map((t) => (
                 <tr key={t.id}>
@@ -96,6 +133,7 @@ export function TenantsPanel({ session }) {
                   <td>{t.slug}</td>
                   <td><StatusPill label={t.status_label} /></td>
                   <td>{t.contact_email || '—'}</td>
+                  <td><LogoUploader session={session} tenantId={t.id} currentLogoUrl={t.logo_path ? `/uploads/${t.logo_path}` : null} onUploaded={reload} /></td>
                   <td><button className="btn-mini" onClick={() => toggleStatus(t)}>{t.status_code === 'active' ? 'Desactivar' : 'Activar'}</button></td>
                 </tr>
               ))}
@@ -1215,7 +1253,10 @@ export function ReportsPanel({ session }) {
 }
 
 export function ChangePasswordPanel({ session }) {
-  const { token } = session
+  const { token, profile } = session
+  const isTenantAdmin = profile.roleCode === 'tenant_admin'
+  const { items: myTenant, reload: reloadTenant } = useList(isTenantAdmin ? '/api/tenants/me' : '', token)
+  const tenant = isTenantAdmin ? myTenant : null
   const [form, setForm] = useState({ currentPassword: '', newPassword: '', confirmPassword: '' })
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
@@ -1245,6 +1286,18 @@ export function ChangePasswordPanel({ session }) {
 
   return (
     <div className="admin-wrap">
+      {isTenantAdmin && tenant && (
+        <section className="panel admin-form-panel">
+          <h3>Logo de {tenant.name}</h3>
+          <p className="muted">Se usa en la barra lateral de todos los usuarios de tu tenant.</p>
+          <LogoUploader
+            session={session}
+            tenantId={tenant.id}
+            currentLogoUrl={tenant.logo_path ? `/uploads/${tenant.logo_path}` : null}
+            onUploaded={reloadTenant}
+          />
+        </section>
+      )}
       <section className="panel admin-form-panel">
         <h3>Cambiar mi contraseña</h3>
         <p className="muted">Necesitas tu contraseña actual. No hay recuperación por correo: si la perdiste, pide a un administrador que te la resetee.</p>

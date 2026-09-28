@@ -1,12 +1,14 @@
 import 'dotenv/config'
 import express from 'express'
 import path from 'node:path'
+import fs from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import crypto from 'node:crypto'
 import { callProcedure } from './db.js'
 import { hashPassword, signSessionToken, verifyPassword } from './auth.js'
 import { authenticate } from './middleware/authenticate.js'
 import { mapStoredProcedureError } from './errors.js'
+import { uploadLogo, UPLOADS_DIR } from './uploads.js'
 
 const app = express()
 const port = Number(process.env.PORT || 3000)
@@ -14,6 +16,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const VALID_ROLES = new Set(['super_admin', 'tenant_admin', 'instructor', 'student'])
 
 app.use(express.json())
+// Publico a proposito (logos de tenant): sin datos sensibles, se sirve tal
+// cual desde el volumen persistente configurado en UPLOADS_DIR.
+app.use('/uploads', express.static(UPLOADS_DIR))
 
 app.get('/api/health', async (_req, res) => {
   try {
@@ -93,6 +98,7 @@ app.post('/api/auth/login', async (req, res) => {
       user: {
         id: context.user_id, tenantId: context.tenant_id, fullName: context.full_name,
         email: context.email, roleCode: context.role_code, mustChangePassword: !!context.must_change_password,
+        tenantLogoUrl: context.tenant_logo_path ? `/uploads/${context.tenant_logo_path}` : null,
       },
     })
   } catch (err) {
@@ -193,6 +199,46 @@ app.patch('/api/tenants/:id', authenticate, async (req, res) => {
     })
     res.json({ ok: true })
   } catch (err) {
+    const { status, message } = mapStoredProcedureError(err)
+    res.status(status).json({ message })
+  }
+})
+
+// Cualquier rol autenticado puede leer su propio tenant (nombre, logo);
+// super_admin no tiene tenant, asi que no aplica para ese rol.
+app.get('/api/tenants/me', authenticate, async (req, res) => {
+  if (!req.user.tenantId) return res.status(404).json({ message: 'tenant_not_found' })
+  try {
+    const [data] = await callProcedure('sp_tenants_get', {
+      p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId, p_tenant_id: req.user.tenantId,
+    })
+    res.json({ data: data || null })
+  } catch (err) {
+    const { status, message } = mapStoredProcedureError(err)
+    res.status(status).json({ message })
+  }
+})
+
+app.post('/api/tenants/:id/logo', authenticate, async (req, res) => {
+  const tenantId = Number(req.params.id)
+  if (!Number.isInteger(tenantId)) return res.status(400).json({ message: 'Invalid request format' })
+
+  try {
+    await uploadLogo(req, res)
+  } catch (err) {
+    return res.status(400).json({ message: err.message === 'invalid_file_type' ? 'invalid_file_type' : 'upload_failed' })
+  }
+  if (!req.file) return res.status(400).json({ message: 'Invalid request format' })
+
+  const logoPath = `tenants/${tenantId}/${req.file.filename}`
+  try {
+    await callProcedure('sp_tenants_set_logo', {
+      p_actor_user_id: req.user.id, p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId,
+      p_tenant_id: tenantId, p_logo_path: logoPath,
+    })
+    res.json({ logoUrl: `/uploads/${logoPath}` })
+  } catch (err) {
+    fs.unlink(path.join(UPLOADS_DIR, logoPath), () => {})
     const { status, message } = mapStoredProcedureError(err)
     res.status(status).json({ message })
   }

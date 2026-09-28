@@ -62,6 +62,7 @@ async function main() {
 
     console.log('Running one-time data migrations...')
     await connection.query('CALL sp_migrate_component_groups_v1()')
+    await connection.query('CALL sp_migrate_tenant_logo_v1()')
 
     console.log('Schema applied successfully.')
   } finally {

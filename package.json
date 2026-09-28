@@ -20,6 +20,7 @@
     "express": "latest",
     "jsonwebtoken": "latest",
     "lucide-react": "latest",
+    "multer": "latest",
     "mysql2": "latest",
     "react": "latest",
     "react-dom": "latest",

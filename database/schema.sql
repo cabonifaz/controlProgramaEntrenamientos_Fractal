@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS tenants (
   contact_name VARCHAR(160) NULL,
   contact_email VARCHAR(190) NULL,
   timezone VARCHAR(60) NOT NULL DEFAULT 'America/Lima',
+  logo_path VARCHAR(255) NULL,
   status_id BIGINT UNSIGNED NOT NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   created_by BIGINT UNSIGNED NULL,
@@ -451,6 +452,8 @@ INSERT IGNORE INTO master_catalog_values (catalog_id, code, label, sort_order) V
 -- Procedimientos almacenados
 -- ===================================================================
 DROP PROCEDURE IF EXISTS sp_migrate_component_groups_v1;
+DROP PROCEDURE IF EXISTS sp_migrate_tenant_logo_v1;
+DROP PROCEDURE IF EXISTS sp_tenants_set_logo;
 DROP PROCEDURE IF EXISTS sp_system_health;
 DROP PROCEDURE IF EXISTS sp_authenticate_user;
 DROP PROCEDURE IF EXISTS sp_auth_get_login_context;
@@ -462,6 +465,7 @@ DROP PROCEDURE IF EXISTS sp_users_get_credentials;
 DROP PROCEDURE IF EXISTS sp_auth_change_own_password;
 DROP PROCEDURE IF EXISTS sp_auth_admin_reset_password;
 DROP PROCEDURE IF EXISTS sp_tenants_list;
+DROP PROCEDURE IF EXISTS sp_tenants_get;
 DROP PROCEDURE IF EXISTS sp_tenants_create;
 DROP PROCEDURE IF EXISTS sp_tenants_update;
 DROP PROCEDURE IF EXISTS sp_tenants_set_status;
@@ -620,6 +624,16 @@ BEGIN
   END IF;
 END$$
 
+CREATE PROCEDURE sp_migrate_tenant_logo_v1()
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = DATABASE() AND table_name = 'tenants' AND column_name = 'logo_path'
+  ) THEN
+    ALTER TABLE tenants ADD COLUMN logo_path VARCHAR(255) NULL AFTER timezone;
+  END IF;
+END$$
+
 CREATE PROCEDURE sp_system_health()
 BEGIN
   SELECT 'ok' AS status, DATABASE() AS database_name;
@@ -647,6 +661,7 @@ BEGIN
     u.locked_until,
     (u.locked_until IS NOT NULL AND u.locked_until > NOW()) AS is_locked,
     t.id AS tenant_row_id,
+    t.logo_path AS tenant_logo_path,
     (t.id IS NULL OR ts.code = 'active') AS tenant_is_active,
     t.is_deleted AS tenant_is_deleted
   FROM users u
@@ -796,12 +811,29 @@ BEGIN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
   END IF;
 
-  SELECT t.id, t.name, t.slug, t.contact_name, t.contact_email, t.timezone,
+  SELECT t.id, t.name, t.slug, t.contact_name, t.contact_email, t.timezone, t.logo_path,
          ts.code AS status_code, ts.label AS status_label, t.created_at
   FROM tenants t
   JOIN master_catalog_values ts ON ts.id = t.status_id
   WHERE t.is_deleted = FALSE
   ORDER BY t.name;
+END$$
+
+-- Cualquier rol puede leer su PROPIO tenant (para pintar el logo de la
+-- barra lateral, etc.); super_admin puede leer cualquiera.
+CREATE PROCEDURE sp_tenants_get(
+  IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED, IN p_tenant_id BIGINT UNSIGNED
+)
+BEGIN
+  IF p_actor_role <> 'super_admin' AND p_tenant_id <> p_actor_tenant_id THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+
+  SELECT t.id, t.name, t.slug, t.contact_name, t.contact_email, t.timezone, t.logo_path,
+         ts.code AS status_code, ts.label AS status_label
+  FROM tenants t
+  JOIN master_catalog_values ts ON ts.id = t.status_id
+  WHERE t.id = p_tenant_id AND t.is_deleted = FALSE;
 END$$
 
 CREATE PROCEDURE sp_tenants_create(
@@ -874,6 +906,26 @@ BEGIN
   END IF;
 
   UPDATE tenants SET status_id = v_status_id, updated_at = NOW(), updated_by = p_actor_user_id WHERE id = p_tenant_id;
+END$$
+
+-- super_admin puede fijar el logo de cualquier tenant; tenant_admin solo el
+-- del suyo. p_logo_path es NULL para volver al logo por defecto.
+CREATE PROCEDURE sp_tenants_set_logo(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED,
+  IN p_tenant_id BIGINT UNSIGNED, IN p_logo_path VARCHAR(255)
+)
+BEGIN
+  IF p_actor_role = 'tenant_admin' AND p_tenant_id <> p_actor_tenant_id THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
+  ELSEIF p_actor_role NOT IN ('super_admin', 'tenant_admin') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+
+  IF NOT EXISTS (SELECT 1 FROM tenants WHERE id = p_tenant_id AND is_deleted = FALSE) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_not_found';
+  END IF;
+
+  UPDATE tenants SET logo_path = p_logo_path, updated_at = NOW(), updated_by = p_actor_user_id WHERE id = p_tenant_id;
 END$$
 
 -- ===================================================================
