@@ -9,6 +9,7 @@ const STATUS_BY_SP_MESSAGE = {
   student_not_enrolled_in_program: 400,
   invalid_date_range: 400,
   invalid_schedule_day: 400,
+  invalid_color_format: 400,
   schedule_not_configured: 409,
   schedule_generation_failed: 409,
   instructor_not_available: 409,

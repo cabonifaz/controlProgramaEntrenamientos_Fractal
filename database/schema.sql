@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS tenants (
   contact_email VARCHAR(190) NULL,
   timezone VARCHAR(60) NOT NULL DEFAULT 'America/Lima',
   logo_path VARCHAR(255) NULL,
+  brand_color VARCHAR(7) NULL,
   status_id BIGINT UNSIGNED NOT NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   created_by BIGINT UNSIGNED NULL,
@@ -454,6 +455,8 @@ INSERT IGNORE INTO master_catalog_values (catalog_id, code, label, sort_order) V
 DROP PROCEDURE IF EXISTS sp_migrate_component_groups_v1;
 DROP PROCEDURE IF EXISTS sp_migrate_tenant_logo_v1;
 DROP PROCEDURE IF EXISTS sp_tenants_set_logo;
+DROP PROCEDURE IF EXISTS sp_tenants_set_brand_color;
+DROP PROCEDURE IF EXISTS sp_tenants_get_public_branding;
 DROP PROCEDURE IF EXISTS sp_system_health;
 DROP PROCEDURE IF EXISTS sp_authenticate_user;
 DROP PROCEDURE IF EXISTS sp_auth_get_login_context;
@@ -632,6 +635,12 @@ BEGIN
   ) THEN
     ALTER TABLE tenants ADD COLUMN logo_path VARCHAR(255) NULL AFTER timezone;
   END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = DATABASE() AND table_name = 'tenants' AND column_name = 'brand_color'
+  ) THEN
+    ALTER TABLE tenants ADD COLUMN brand_color VARCHAR(7) NULL AFTER logo_path;
+  END IF;
 END$$
 
 CREATE PROCEDURE sp_system_health()
@@ -661,7 +670,9 @@ BEGIN
     u.locked_until,
     (u.locked_until IS NOT NULL AND u.locked_until > NOW()) AS is_locked,
     t.id AS tenant_row_id,
+    t.slug AS tenant_slug,
     t.logo_path AS tenant_logo_path,
+    t.brand_color AS tenant_brand_color,
     (t.id IS NULL OR ts.code = 'active') AS tenant_is_active,
     t.is_deleted AS tenant_is_deleted
   FROM users u
@@ -811,7 +822,7 @@ BEGIN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
   END IF;
 
-  SELECT t.id, t.name, t.slug, t.contact_name, t.contact_email, t.timezone, t.logo_path,
+  SELECT t.id, t.name, t.slug, t.contact_name, t.contact_email, t.timezone, t.logo_path, t.brand_color,
          ts.code AS status_code, ts.label AS status_label, t.created_at
   FROM tenants t
   JOIN master_catalog_values ts ON ts.id = t.status_id
@@ -829,7 +840,7 @@ BEGIN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
   END IF;
 
-  SELECT t.id, t.name, t.slug, t.contact_name, t.contact_email, t.timezone, t.logo_path,
+  SELECT t.id, t.name, t.slug, t.contact_name, t.contact_email, t.timezone, t.logo_path, t.brand_color,
          ts.code AS status_code, ts.label AS status_label
   FROM tenants t
   JOIN master_catalog_values ts ON ts.id = t.status_id
@@ -926,6 +937,38 @@ BEGIN
   END IF;
 
   UPDATE tenants SET logo_path = p_logo_path, updated_at = NOW(), updated_by = p_actor_user_id WHERE id = p_tenant_id;
+END$$
+
+CREATE PROCEDURE sp_tenants_set_brand_color(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED,
+  IN p_tenant_id BIGINT UNSIGNED, IN p_brand_color VARCHAR(7)
+)
+BEGIN
+  IF p_actor_role = 'tenant_admin' AND p_tenant_id <> p_actor_tenant_id THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
+  ELSEIF p_actor_role NOT IN ('super_admin', 'tenant_admin') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+
+  IF NOT EXISTS (SELECT 1 FROM tenants WHERE id = p_tenant_id AND is_deleted = FALSE) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_not_found';
+  END IF;
+
+  IF p_brand_color IS NOT NULL AND p_brand_color NOT REGEXP '^#[0-9A-Fa-f]{6}$' THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'invalid_color_format';
+  END IF;
+
+  UPDATE tenants SET brand_color = p_brand_color, updated_at = NOW(), updated_by = p_actor_user_id WHERE id = p_tenant_id;
+END$$
+
+-- Sin autenticar: alimenta la pagina de login propia del tenant
+-- (/t/:slug) con su logo y color, sin exponer datos de contacto.
+CREATE PROCEDURE sp_tenants_get_public_branding(IN p_slug VARCHAR(80))
+BEGIN
+  SELECT t.name, t.slug, t.logo_path, t.brand_color
+  FROM tenants t
+  JOIN master_catalog_values ts ON ts.id = t.status_id
+  WHERE t.slug = p_slug AND t.is_deleted = FALSE AND ts.code = 'active';
 END$$
 
 -- ===================================================================

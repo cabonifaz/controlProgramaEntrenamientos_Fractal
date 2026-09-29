@@ -74,6 +74,63 @@ function LogoUploader({ session, tenantId, currentLogoUrl, onUploaded }) {
   )
 }
 
+function BrandColorPicker({ session, tenantId, currentColor, onSaved }) {
+  const { token } = session
+  const [color, setColor] = useState(currentColor || '#f4a500')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+
+  useEffect(() => { setColor(currentColor || '#f4a500') }, [currentColor])
+
+  async function handleChange(e) {
+    const next = e.target.value
+    setColor(next)
+    setSaving(true)
+    setError('')
+    try {
+      await apiRequest(`/api/tenants/${tenantId}/brand-color`, { method: 'POST', token, body: { brandColor: next } })
+      onSaved?.(next)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="color-picker">
+      <input type="color" value={color} onChange={handleChange} title="Color de marca" />
+      {saving && <small className="muted">Guardando…</small>}
+      {error && <ErrorNote message={error} />}
+    </div>
+  )
+}
+
+// El link es publico (sin sesion) porque justamente sirve para llegar al
+// login de ESE tenant: el backend igual valida ahi que la cuenta pertenezca
+// a este tenant antes de autenticar a nadie.
+function TenantLoginLink({ slug }) {
+  const [copied, setCopied] = useState(false)
+  const url = `${window.location.origin}/t/${slug}`
+
+  async function handleCopy() {
+    try {
+      await navigator.clipboard.writeText(url)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch {
+      // Clipboard API puede fallar por permisos/contexto; no bloquea el flujo.
+    }
+  }
+
+  return (
+    <div className="tenant-link">
+      <code>{url}</code>
+      <button type="button" className="btn-mini" onClick={handleCopy}>{copied ? 'Copiado' : 'Copiar'}</button>
+    </div>
+  )
+}
+
 export function TenantsPanel({ session }) {
   const { token } = session
   const { items, error, loading, reload } = useList('/api/tenants', token)
@@ -125,7 +182,7 @@ export function TenantsPanel({ session }) {
         <ErrorNote message={error} />
         {loading ? <p className="muted">Cargando…</p> : (
           <table className="admin-table">
-            <thead><tr><th>Nombre</th><th>Slug</th><th>Estado</th><th>Contacto</th><th>Logo</th><th></th></tr></thead>
+            <thead><tr><th>Nombre</th><th>Slug</th><th>Estado</th><th>Contacto</th><th>Logo</th><th>Color</th><th>Link de acceso</th><th></th></tr></thead>
             <tbody>
               {items.map((t) => (
                 <tr key={t.id}>
@@ -134,6 +191,8 @@ export function TenantsPanel({ session }) {
                   <td><StatusPill label={t.status_label} /></td>
                   <td>{t.contact_email || '—'}</td>
                   <td><LogoUploader session={session} tenantId={t.id} currentLogoUrl={t.logo_path ? `/uploads/${t.logo_path}` : null} onUploaded={reload} /></td>
+                  <td><BrandColorPicker session={session} tenantId={t.id} currentColor={t.brand_color} onSaved={reload} /></td>
+                  <td><TenantLoginLink slug={t.slug} /></td>
                   <td><button className="btn-mini" onClick={() => toggleStatus(t)}>{t.status_code === 'active' ? 'Desactivar' : 'Activar'}</button></td>
                 </tr>
               ))}
@@ -1288,14 +1347,19 @@ export function ChangePasswordPanel({ session }) {
     <div className="admin-wrap">
       {isTenantAdmin && tenant && (
         <section className="panel admin-form-panel">
-          <h3>Logo de {tenant.name}</h3>
-          <p className="muted">Se usa en la barra lateral de todos los usuarios de tu tenant.</p>
+          <h3>Marca de {tenant.name}</h3>
+          <p className="muted">Logo y color se usan en la barra lateral y en el login propio de tu tenant.</p>
+          <label>Logo</label>
           <LogoUploader
             session={session}
             tenantId={tenant.id}
             currentLogoUrl={tenant.logo_path ? `/uploads/${tenant.logo_path}` : null}
             onUploaded={reloadTenant}
           />
+          <label>Color de marca</label>
+          <BrandColorPicker session={session} tenantId={tenant.id} currentColor={tenant.brand_color} onSaved={reloadTenant} />
+          <label>Link de acceso de tu tenant</label>
+          <TenantLoginLink slug={tenant.slug} />
         </section>
       )}
       <section className="panel admin-form-panel">

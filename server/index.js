@@ -38,13 +38,32 @@ app.get('/api/catalogs/:code', async (req, res) => {
   }
 })
 
+// Publico a proposito: el login propio de un tenant (/t/:slug) necesita su
+// logo y color ANTES de autenticar a nadie. No expone contacto ni datos internos.
+app.get('/api/public/tenants/:slug/branding', async (req, res) => {
+  try {
+    const [data] = await callProcedure('sp_tenants_get_public_branding', { p_slug: req.params.slug })
+    if (!data) return res.status(404).json({ message: 'tenant_not_found' })
+    res.json({
+      data: {
+        name: data.name,
+        slug: data.slug,
+        logoUrl: data.logo_path ? `/uploads/${data.logo_path}` : null,
+        brandColor: data.brand_color || null,
+      },
+    })
+  } catch {
+    res.status(500).json({ message: 'tenant_branding_unavailable' })
+  }
+})
+
 // El login no pide ni muestra rol: cada correo tiene un unico rol en la
 // cuenta (UNIQUE en users.email), asi que el SP lo determina el mismo, no
 // el cliente. La API solo valida formato basico, compara el hash de
 // contrasena (operacion criptografica, no regla de negocio) y traduce a
 // HTTP la decision que ya tomo el procedimiento almacenado.
 app.post('/api/auth/login', async (req, res) => {
-  const { email, password } = req.body || {}
+  const { email, password, tenantSlug } = req.body || {}
   if (typeof email !== 'string' || !email.includes('@') || typeof password !== 'string' || !password) {
     return res.status(400).json({ message: 'Invalid request format' })
   }
@@ -59,6 +78,17 @@ app.post('/api/auth/login', async (req, res) => {
       await callProcedure('sp_auth_log_access', {
         p_user_id: null, p_tenant_id: null, p_email: email, p_role_code: null,
         p_success: false, p_failure_reason: 'user_not_found', p_ip: ip, p_user_agent: userAgent,
+      })
+      return res.status(401).json({ message: 'Invalid credentials' })
+    }
+
+    // Login desde el link propio de un tenant (/t/:slug): solo autentica
+    // cuentas que pertenecen a ESE tenant. Se trata igual que "no existe"
+    // para no revelar si el correo existe en otro tenant.
+    if (tenantSlug && context.tenant_slug !== tenantSlug) {
+      await callProcedure('sp_auth_log_access', {
+        p_user_id: context.user_id, p_tenant_id: context.tenant_id, p_email: email, p_role_code: context.role_code,
+        p_success: false, p_failure_reason: 'tenant_mismatch', p_ip: ip, p_user_agent: userAgent,
       })
       return res.status(401).json({ message: 'Invalid credentials' })
     }
@@ -99,6 +129,7 @@ app.post('/api/auth/login', async (req, res) => {
         id: context.user_id, tenantId: context.tenant_id, fullName: context.full_name,
         email: context.email, roleCode: context.role_code, mustChangePassword: !!context.must_change_password,
         tenantLogoUrl: context.tenant_logo_path ? `/uploads/${context.tenant_logo_path}` : null,
+        tenantBrandColor: context.tenant_brand_color || null,
       },
     })
   } catch (err) {
@@ -239,6 +270,24 @@ app.post('/api/tenants/:id/logo', authenticate, async (req, res) => {
     res.json({ logoUrl: `/uploads/${logoPath}` })
   } catch (err) {
     fs.unlink(path.join(UPLOADS_DIR, logoPath), () => {})
+    const { status, message } = mapStoredProcedureError(err)
+    res.status(status).json({ message })
+  }
+})
+
+app.post('/api/tenants/:id/brand-color', authenticate, async (req, res) => {
+  const tenantId = Number(req.params.id)
+  const { brandColor } = req.body || {}
+  if (!Number.isInteger(tenantId) || (brandColor !== null && !/^#[0-9A-Fa-f]{6}$/.test(brandColor || ''))) {
+    return res.status(400).json({ message: 'Invalid request format' })
+  }
+  try {
+    await callProcedure('sp_tenants_set_brand_color', {
+      p_actor_user_id: req.user.id, p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId,
+      p_tenant_id: tenantId, p_brand_color: brandColor || null,
+    })
+    res.json({ brandColor: brandColor || null })
+  } catch (err) {
     const { status, message } = mapStoredProcedureError(err)
     res.status(status).json({ message })
   }

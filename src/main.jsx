@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { Bell, CalendarDays, ChevronDown, ClipboardCheck, LayoutDashboard, LogOut, Menu, Settings2, ShieldCheck, Users, X } from 'lucide-react'
 import { AlertsPanel, ChangePasswordPanel, HolidaysPanel, InstructorClassesPanel, LeaveRequestsPanel, ProgramsPanel, RealDashboard, ReportsPanel, StudentAttendancePanel, TenantsPanel, UsersPanel } from './admin.jsx'
@@ -25,7 +25,12 @@ const INSTRUCTOR_PANEL_BY_NAV = { Inicio: RealDashboard, 'Mis clases': Instructo
 const STUDENT_PANEL_BY_NAV = { Inicio: RealDashboard, Permisos: LeaveRequestsPanel, Asistencia: StudentAttendancePanel, Alertas: AlertsPanel, 'Mi cuenta': ChangePasswordPanel }
 const SECTION_PANELS_BY_ROLE = { admin: ADMIN_PANEL_BY_NAV, superAdmin: ADMIN_PANEL_BY_NAV, instructor: INSTRUCTOR_PANEL_BY_NAV, student: STUDENT_PANEL_BY_NAV }
 
-function Login({ onLogin }) {
+function getTenantSlugFromPath() {
+  const match = window.location.pathname.match(/^\/t\/([a-z0-9-]+)\/?$/i)
+  return match ? match[1] : null
+}
+
+function Login({ onLogin, tenantSlug, branding }) {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
@@ -40,7 +45,7 @@ function Login({ onLogin }) {
       const response = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify(tenantSlug ? { email, password, tenantSlug } : { email, password }),
       })
       const body = await response.json().catch(() => ({}))
       if (!response.ok) {
@@ -60,14 +65,42 @@ function Login({ onLogin }) {
     }
   }
 
-  return <main className="login-shell"><section className="login-art"><div className="logo-mark">F</div><p className="kicker">FRACTAL · TRAINING OS</p><h1>Aprender. Aplicar.<br /><em>Transformar.</em></h1><p className="art-copy">El espacio operativo donde cada talento convierte conocimiento en resultados visibles.</p><div className="art-foot"><span>01</span><span className="line" /><span>Control de entrenamiento</span></div></section><section className="login-panel"><form className="login-form" onSubmit={handleSubmit}><div className="mobile-logo logo-mark">F</div><p className="kicker">Bienvenido de nuevo</p><h2>Ingresa a tu espacio</h2><p className="muted">Tu rol se determina automáticamente al autenticarte.</p><label>Correo corporativo<input type="email" placeholder="tu@fractal.com" value={email} onChange={(e) => setEmail(e.target.value)} required /></label><label>Contraseña<div className="password"><input type="password" placeholder="••••••••" value={password} onChange={(e) => setPassword(e.target.value)} required /><span>Mostrar</span></div></label><div className="form-row"><label className="check"><input type="checkbox" defaultChecked /> Recordarme</label><a href="#forgot">¿Olvidaste tu contraseña?</a></div>{error && <p className="form-error">{error}</p>}<button type="submit" className="primary full" disabled={loading}>{loading ? 'Ingresando…' : <>Entrar <span>→</span></>}</button><p className="login-note">Acceso seguro · Tu información está protegida</p></form></section></main>
+  const brandColor = branding?.brandColor || null
+  const brandStyle = brandColor ? { '--orange': brandColor } : undefined
+  const brandName = branding?.name || null
+  const logoMark = branding?.logoUrl
+    ? <img src={branding.logoUrl} alt={brandName || 'Logo'} className="logo-mark logo-mark-image" />
+    : <div className="logo-mark">F</div>
+
+  return <main className="login-shell" style={brandStyle}><section className="login-art"><div className="logo-mark">{branding?.logoUrl ? <img src={branding.logoUrl} alt={brandName || 'Logo'} className="logo-mark-image" /> : 'F'}</div><p className="kicker">{brandName ? brandName.toUpperCase() : 'FRACTAL'} · TRAINING OS</p><h1>Aprender. Aplicar.<br /><em>Transformar.</em></h1><p className="art-copy">El espacio operativo donde cada talento convierte conocimiento en resultados visibles.</p><div className="art-foot"><span>01</span><span className="line" /><span>Control de entrenamiento</span></div></section><section className="login-panel"><form className="login-form" onSubmit={handleSubmit}><div className="mobile-logo logo-mark">{logoMark}</div><p className="kicker">Bienvenido de nuevo</p><h2>Ingresa a tu espacio{brandName ? ` · ${brandName}` : ''}</h2><p className="muted">Tu rol se determina automáticamente al autenticarte.</p><label>Correo corporativo<input type="email" placeholder="tu@fractal.com" value={email} onChange={(e) => setEmail(e.target.value)} required /></label><label>Contraseña<div className="password"><input type="password" placeholder="••••••••" value={password} onChange={(e) => setPassword(e.target.value)} required /><span>Mostrar</span></div></label><div className="form-row"><label className="check"><input type="checkbox" defaultChecked /> Recordarme</label><a href="#forgot">¿Olvidaste tu contraseña?</a></div>{error && <p className="form-error">{error}</p>}<button type="submit" className="primary full" disabled={loading}>{loading ? 'Ingresando…' : <>Entrar <span>→</span></>}</button><p className="login-note">Acceso seguro · Tu información está protegida</p></form></section></main>
+}
+
+function LoginGate({ onLogin }) {
+  const tenantSlug = getTenantSlugFromPath()
+  const [status, setStatus] = useState(tenantSlug ? 'loading' : 'ready')
+  const [branding, setBranding] = useState(null)
+
+  useEffect(() => {
+    if (!tenantSlug) return
+    let cancelled = false
+    fetch(`/api/public/tenants/${tenantSlug}/branding`)
+      .then((res) => res.ok ? res.json() : Promise.reject(res))
+      .then((body) => { if (!cancelled) { setBranding(body.data); setStatus('ready') } })
+      .catch(() => { if (!cancelled) setStatus('not_found') })
+    return () => { cancelled = true }
+  }, [tenantSlug])
+
+  if (status === 'loading') return <main className="login-shell"><section className="login-panel"><p className="muted">Cargando…</p></section></main>
+  if (status === 'not_found') return <main className="login-shell"><section className="login-panel"><div className="login-form"><h2>Tenant no encontrado</h2><p className="muted">Este link de acceso no corresponde a ningún tenant activo. Verifica la URL con tu administrador.</p></div></section></main>
+
+  return <Login onLogin={onLogin} tenantSlug={tenantSlug} branding={branding} />
 }
 
 function App() {
   const [session, setSession] = useState(null)
   const [active, setActive] = useState('Inicio')
   const [menuOpen, setMenuOpen] = useState(false)
-  if (!session) return <Login onLogin={setSession} />
+  if (!session) return <LoginGate onLogin={setSession} />
   const role = session.role
   const account = roles[role]
   const dashboard = data[role]
