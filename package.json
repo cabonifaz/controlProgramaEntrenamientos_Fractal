@@ -17,6 +17,7 @@
     "@vitejs/plugin-react": "latest",
     "bcryptjs": "latest",
     "dotenv": "latest",
+    "exceljs": "^4.4.0",
     "express": "latest",
     "jsonwebtoken": "latest",
     "lucide-react": "latest",

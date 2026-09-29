@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { apiRequest, apiUpload } from './api'
 
 function useList(path, token) {
@@ -70,6 +70,72 @@ function LogoUploader({ session, tenantId, currentLogoUrl, onUploaded }) {
         <input type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml" onChange={handleFile} hidden />
       </label>
       {error && <ErrorNote message={error} />}
+    </div>
+  )
+}
+
+// Plantilla publica (sin token: es un link normal, sin datos sensibles) +
+// carga que reusa el mismo SP fila a fila que el formulario manual. Los
+// errores de negocio se listan por fila; el resto del archivo igual se procesa.
+function ExcelImportBox({ session, templateUrl, importUrl, onImported }) {
+  const { token } = session
+  const [uploading, setUploading] = useState(false)
+  const [result, setResult] = useState(null)
+  const [error, setError] = useState('')
+
+  async function handleFile(e) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setError('')
+    setResult(null)
+    setUploading(true)
+    try {
+      const formData = new FormData()
+      formData.append('file', file)
+      const res = await apiUpload(importUrl, { token, formData })
+      setResult(res)
+      onImported?.()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setUploading(false)
+      e.target.value = ''
+    }
+  }
+
+  const failedRows = result?.results.filter((r) => !r.ok) || []
+  const withPassword = result?.results.filter((r) => r.ok && r.temporaryPassword) || []
+
+  return (
+    <div className="excel-import">
+      <div className="excel-import-actions">
+        <a className="btn-mini" href={templateUrl} download>Descargar plantilla</a>
+        <label className="btn-mini logo-upload-label">
+          {uploading ? 'Cargando…' : 'Cargar Excel'}
+          <input type="file" accept=".xlsx" onChange={handleFile} hidden />
+        </label>
+      </div>
+      <ErrorNote message={error} />
+      {result && (
+        <div className="excel-import-result">
+          <p className={failedRows.length ? 'form-error' : 'temp-password-box'}>
+            {result.created} creado(s), {result.failed} con error.
+          </p>
+          {failedRows.length > 0 && (
+            <ul className="excel-import-errors">
+              {failedRows.map((r) => <li key={r.row}>Fila {r.row}: {r.message}</li>)}
+            </ul>
+          )}
+          {withPassword.length > 0 && (
+            <div className="temp-password-box">
+              Contraseñas temporales (compártelas fuera del sistema; se pedirá cambiarla al ingresar):
+              <ul className="excel-import-errors">
+                {withPassword.map((r) => <li key={r.row}><strong>{r.email}</strong>: <code>{r.temporaryPassword}</code></li>)}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -283,6 +349,11 @@ export function UsersPanel({ session }) {
           </p>
         )}
       </section>
+      <section className="panel admin-form-panel">
+        <h3>Carga masiva</h3>
+        <p className="muted">Estudiantes e instructores en un solo Excel. El rol se indica por fila (instructor/estudiante).</p>
+        <ExcelImportBox session={session} templateUrl="/api/templates/users" importUrl="/api/users/import" onImported={reload} />
+      </section>
       <section className="panel">
         <h3>Usuarios</h3>
         <ErrorNote message={error} />
@@ -310,10 +381,14 @@ export function UsersPanel({ session }) {
   )
 }
 
+// Cada tema de un componente dura 45 min de forma fija (regla de negocio del
+// cliente): no se pide duracion en el formulario ni en la carga por Excel.
+const TOPIC_DURATION_MINUTES = 45
+
 function TopicsPanel({ session, group, onBack }) {
   const { token } = session
   const { items, error, loading, reload } = useList(`/api/groups/${group.id}/topics`, token)
-  const [form, setForm] = useState({ title: '', description: '', scheduledOn: '', durationMinutes: '' })
+  const [form, setForm] = useState({ title: '', description: '', scheduledOn: '' })
   const [formError, setFormError] = useState('')
   const topicStatuses = useCatalog('TOPIC_STATUS', token)
 
@@ -323,9 +398,9 @@ function TopicsPanel({ session, group, onBack }) {
     try {
       await apiRequest(`/api/groups/${group.id}/topics`, {
         method: 'POST', token,
-        body: { ...form, durationMinutes: form.durationMinutes ? Number(form.durationMinutes) : null },
+        body: { ...form, durationMinutes: TOPIC_DURATION_MINUTES },
       })
-      setForm({ title: '', description: '', scheduledOn: '', durationMinutes: '' })
+      setForm({ title: '', description: '', scheduledOn: '' })
       reload()
     } catch (err) {
       setFormError(err.message)
@@ -361,12 +436,16 @@ function TopicsPanel({ session, group, onBack }) {
         <h3>Nuevo tema — {group.name}</h3>
         <form className="admin-form" onSubmit={handleCreate}>
           <label>Título<input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} required /></label>
-          <label>Descripción<input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></label>
-          <label>Fecha programada<input type="date" value={form.scheduledOn} onChange={(e) => setForm({ ...form, scheduledOn: e.target.value })} /></label>
-          <label>Duración (min)<input type="number" min="0" value={form.durationMinutes} onChange={(e) => setForm({ ...form, durationMinutes: e.target.value })} /></label>
+          <label className="full-field">Descripción<textarea rows={3} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></label>
+          <label>Fecha programada (opcional)<input type="date" value={form.scheduledOn} onChange={(e) => setForm({ ...form, scheduledOn: e.target.value })} /></label>
           <ErrorNote message={formError} />
           <button className="primary">Crear tema</button>
         </form>
+      </section>
+      <section className="panel admin-form-panel">
+        <h3>Carga masiva</h3>
+        <p className="muted">Todo el temario de {group.name} en un solo Excel. Cada tema dura 45 min; la fecha es opcional.</p>
+        <ExcelImportBox session={session} templateUrl="/api/templates/topics" importUrl={`/api/groups/${group.id}/topics/import`} onImported={reload} />
       </section>
       <section className="panel">
         <h3>Temario</h3>
@@ -397,35 +476,92 @@ function TopicsPanel({ session, group, onBack }) {
   )
 }
 
+// Combo con busqueda al escribir: reemplaza <select> para listas largas de
+// instructores/alumnos, donde desplazarse por un desplegable es mala UX.
+function SearchSelect({ options, value, onChange, placeholder, allowEmpty = true, emptyLabel = 'Sin asignar' }) {
+  const [query, setQuery] = useState('')
+  const [open, setOpen] = useState(false)
+  const containerRef = useRef(null)
+
+  useEffect(() => {
+    function handleClickOutside(e) {
+      if (containerRef.current && !containerRef.current.contains(e.target)) { setOpen(false); setQuery('') }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
+
+  const selected = options.find((o) => String(o.id) === String(value))
+  const normalizedQuery = query.trim().toLowerCase()
+  const filtered = normalizedQuery
+    ? options.filter((o) => o.full_name.toLowerCase().includes(normalizedQuery) || (o.email || '').toLowerCase().includes(normalizedQuery))
+    : options
+
+  function pick(id) {
+    onChange(id)
+    setOpen(false)
+    setQuery('')
+  }
+
+  return (
+    <div className="search-select" ref={containerRef}>
+      <input
+        type="text"
+        placeholder={placeholder || 'Buscar…'}
+        value={open ? query : (selected ? selected.full_name : '')}
+        onFocus={() => setOpen(true)}
+        onChange={(e) => { setQuery(e.target.value); setOpen(true) }}
+      />
+      {open && (
+        <div className="search-select-menu">
+          {allowEmpty && <div className="search-select-option muted" onClick={() => pick('')}>— {emptyLabel} —</div>}
+          {filtered.map((o) => (
+            <div key={o.id} className="search-select-option" onClick={() => pick(String(o.id))}>
+              {o.full_name}{o.email ? <small> · {o.email}</small> : null}
+            </div>
+          ))}
+          {filtered.length === 0 && <div className="search-select-empty">Sin resultados</div>}
+        </div>
+      )}
+    </div>
+  )
+}
+
 const WEEKDAY_LABELS = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado']
 const WEEKDAY_ORDER = [1, 2, 3, 4, 5, 6, 0]
-const SCHEDULE_HOURS = Array.from({ length: 14 }, (_, i) => i + 7)
+const SCHEDULE_SLOT_MINUTES = 30
+const SCHEDULE_START_HOUR = 7
+const SCHEDULE_END_HOUR = 21
+// Minuto-del-dia de inicio de cada franja de 30 min entre 07:00 y 21:00.
+const SCHEDULE_SLOTS = Array.from(
+  { length: ((SCHEDULE_END_HOUR - SCHEDULE_START_HOUR) * 60) / SCHEDULE_SLOT_MINUTES },
+  (_, i) => SCHEDULE_START_HOUR * 60 + i * SCHEDULE_SLOT_MINUTES,
+)
 
-function timeToHour(t) { return Number((t || '00:00').slice(0, 2)) }
 function pad2(n) { return String(n).padStart(2, '0') }
+function minutesToTime(mins) { return `${pad2(Math.floor(mins / 60))}:${pad2(mins % 60)}` }
+function timeToMinutes(t) { const [h, m] = (t || '00:00').split(':').map(Number); return h * 60 + (m || 0) }
 
-// Grilla semanal con drag-and-drop nativo (sin libreria nueva): soltar la
-// tarjeta del grupo en una celda asigna un bloque de 3h. El servidor es
-// quien decide si el instructor choca con otro grupo suyo -- este panel
-// solo muestra el error que devuelva.
+// Grilla semanal en franjas de 30 min: clic y arrastre vertical dentro de un
+// dia va "pintando" el bloque (no solo horas completas). Al soltar el mouse
+// se manda el rango completo; el servidor decide si el instructor choca con
+// otro grupo suyo (ON DUPLICATE KEY reemplaza el bloque previo de ese dia).
 function GroupSchedulePanel({ session, group }) {
   const { token } = session
   const { items, error, loading, reload } = useList(`/api/groups/${group.id}/schedule-days`, token)
   const [dropError, setDropError] = useState('')
+  const [drag, setDrag] = useState(null) // { weekday, startIdx, endIdx }
+  const dragRef = useRef(null)
+  dragRef.current = drag
 
-  function cellFor(weekday, hour) {
-    return items.find((d) => d.weekday === weekday && timeToHour(d.start_time) <= hour && hour < timeToHour(d.end_time))
+  function cellFor(weekday, slotStart) {
+    return items.find((d) => d.weekday === weekday && timeToMinutes(d.start_time) <= slotStart && slotStart < timeToMinutes(d.end_time))
   }
 
-  async function assign(weekday, hour, sourceWeekday) {
+  async function assign(weekday, startTime, endTime) {
     setDropError('')
-    const startTime = `${pad2(hour)}:00`
-    const endTime = `${pad2(Math.min(hour + 3, 23))}:00`
     try {
       await apiRequest(`/api/groups/${group.id}/schedule-days`, { method: 'POST', token, body: { weekday, startTime, endTime } })
-      if (sourceWeekday !== null && sourceWeekday !== weekday) {
-        await apiRequest(`/api/groups/${group.id}/schedule-days/${sourceWeekday}`, { method: 'DELETE', token })
-      }
       reload()
     } catch (err) {
       setDropError(err.message)
@@ -442,45 +578,68 @@ function GroupSchedulePanel({ session, group }) {
     }
   }
 
-  function handleDrop(e, weekday, hour) {
-    e.preventDefault()
-    const payload = e.dataTransfer.getData('text/plain')
-    const sourceWeekday = payload.startsWith('move:') ? Number(payload.slice(5)) : null
-    assign(weekday, hour, sourceWeekday)
+  useEffect(() => {
+    function commit() {
+      const current = dragRef.current
+      setDrag(null)
+      if (!current) return
+      const lo = Math.min(current.startIdx, current.endIdx)
+      const hi = Math.max(current.startIdx, current.endIdx)
+      assign(current.weekday, minutesToTime(SCHEDULE_SLOTS[lo]), minutesToTime(SCHEDULE_SLOTS[hi] + SCHEDULE_SLOT_MINUTES))
+    }
+    window.addEventListener('mouseup', commit)
+    return () => window.removeEventListener('mouseup', commit)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [group.id])
+
+  function startDrag(weekday, idx) {
+    if (cellFor(weekday, SCHEDULE_SLOTS[idx])) return // ocupado: se quita con "x" antes de repintar
+    setDrag({ weekday, startIdx: idx, endIdx: idx })
+  }
+
+  function extendDrag(weekday, idx) {
+    setDrag((current) => (current && current.weekday === weekday ? { ...current, endIdx: idx } : current))
+  }
+
+  function isSelecting(weekday, idx) {
+    if (!drag || drag.weekday !== weekday) return false
+    const lo = Math.min(drag.startIdx, drag.endIdx)
+    const hi = Math.max(drag.startIdx, drag.endIdx)
+    return idx >= lo && idx <= hi
   }
 
   return (
     <section className="panel">
       <h3>Horario — {group.name}</h3>
-      <p className="muted">Arrastra la tarjeta a una celda para asignar un bloque de 3 horas. Un instructor no puede quedar en dos grupos con horario cruzado, sin importar el componente.</p>
-      <div className="schedule-chip-palette" draggable onDragStart={(e) => e.dataTransfer.setData('text/plain', 'assign')}>
-        {group.name} · {group.instructor_name || 'sin instructor'}
-      </div>
+      <p className="muted">Haz clic y arrastra verticalmente sobre un día para pintar el bloque (franjas de 30 min). Un instructor no puede quedar en dos grupos con horario cruzado, sin importar el componente.</p>
       <ErrorNote message={error || dropError} />
       {loading ? <p className="muted">Cargando…</p> : (
         <div className="schedule-grid-scroll">
-          <table className="schedule-grid">
+          <table className="schedule-grid" onMouseLeave={() => setDrag(null)}>
             <thead>
               <tr><th></th>{WEEKDAY_ORDER.map((w) => <th key={w}>{WEEKDAY_LABELS[w]}</th>)}</tr>
             </thead>
             <tbody>
-              {SCHEDULE_HOURS.map((hour) => (
-                <tr key={hour}>
-                  <td className="schedule-hour">{pad2(hour)}:00</td>
+              {SCHEDULE_SLOTS.map((slotStart, idx) => (
+                <tr key={slotStart}>
+                  <td className="schedule-hour">{slotStart % 60 === 0 ? minutesToTime(slotStart) : ''}</td>
                   {WEEKDAY_ORDER.map((w) => {
-                    const cell = cellFor(w, hour)
-                    const isStart = cell && timeToHour(cell.start_time) === hour
+                    const cell = cellFor(w, slotStart)
+                    const isStart = cell && timeToMinutes(cell.start_time) === slotStart
+                    const classes = ['schedule-cell']
+                    if (cell) classes.push('filled')
+                    if (isSelecting(w, idx)) classes.push('selecting')
                     return (
                       <td
                         key={w}
-                        className={cell ? 'schedule-cell filled' : 'schedule-cell'}
-                        onDragOver={(e) => e.preventDefault()}
-                        onDrop={(e) => handleDrop(e, w, hour)}
+                        className={classes.join(' ')}
+                        onMouseDown={() => startDrag(w, idx)}
+                        onMouseEnter={() => extendDrag(w, idx)}
                       >
                         {isStart && (
-                          <div className="schedule-block" draggable onDragStart={(e) => e.dataTransfer.setData('text/plain', `move:${w}`)}>
+                          <div className="schedule-block">
                             {cell.start_time.slice(0, 5)}–{cell.end_time.slice(0, 5)}
-                            <button className="pill-remove" onClick={() => remove(w)}>×</button>
+                            <button className="pill-remove" onMouseDown={(e) => e.stopPropagation()} onClick={() => remove(w)}>×</button>
                           </div>
                         )}
                       </td>
@@ -575,10 +734,7 @@ function GroupsPanel({ session, component, onBack }) {
         <form className="admin-form" onSubmit={handleCreate}>
           <label>Nombre<input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Grupo A" required /></label>
           <label>Instructor
-            <select value={form.instructorId} onChange={(e) => setForm({ ...form, instructorId: e.target.value })}>
-              <option value="">Sin asignar</option>
-              {instructors.map((i) => <option key={i.id} value={i.id}>{i.full_name}</option>)}
-            </select>
+            <SearchSelect options={instructors} value={form.instructorId} onChange={(id) => setForm({ ...form, instructorId: id })} placeholder="Buscar instructor…" />
           </label>
           <ErrorNote message={formError} />
           <button className="primary">Crear grupo</button>
@@ -596,17 +752,17 @@ function GroupsPanel({ session, component, onBack }) {
                 <tr key={g.id}>
                   <td>{g.name}</td>
                   <td>
-                    <select value={g.instructor_id || ''} onChange={(e) => updateInstructor(g, e.target.value)}>
-                      <option value="">Sin asignar</option>
-                      {instructors.map((i) => <option key={i.id} value={i.id}>{i.full_name}</option>)}
-                    </select>
+                    <SearchSelect options={instructors} value={g.instructor_id || ''} onChange={(id) => updateInstructor(g, id)} placeholder="Buscar instructor…" />
                   </td>
                   <td>{g.enrolled_students}</td>
                   <td className="row-actions">
-                    <select value={enrollStudentId[g.id] || ''} onChange={(e) => setEnrollStudentId({ ...enrollStudentId, [g.id]: e.target.value })}>
-                      <option value="">Selecciona alumno…</option>
-                      {students.map((s) => <option key={s.id} value={s.id}>{s.full_name}</option>)}
-                    </select>
+                    <SearchSelect
+                      options={students}
+                      value={enrollStudentId[g.id] || ''}
+                      onChange={(id) => setEnrollStudentId({ ...enrollStudentId, [g.id]: id })}
+                      placeholder="Buscar alumno…"
+                      allowEmpty={false}
+                    />
                     <button className="btn-mini" onClick={() => enrollStudent(g)}>Inscribir</button>
                   </td>
                   <td><button className="btn-mini" onClick={() => setView({ mode: 'schedule', group: g })}>Ver horario</button></td>
@@ -652,11 +808,16 @@ function ComponentsPanel({ session, program, onBack }) {
         <h3>Nuevo componente — {program.name}</h3>
         <form className="admin-form" onSubmit={handleCreate}>
           <label>Nombre<input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required /></label>
-          <label>Descripción<input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></label>
+          <label className="full-field">Descripción<textarea rows={3} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></label>
           <label>Orden<input type="number" value={form.sortOrder} onChange={(e) => setForm({ ...form, sortOrder: e.target.value })} /></label>
           <ErrorNote message={formError} />
           <button className="primary">Crear componente</button>
         </form>
+      </section>
+      <section className="panel admin-form-panel">
+        <h3>Carga masiva</h3>
+        <p className="muted">Varios componentes de {program.name} en un solo Excel. Cada uno crea automáticamente su "Grupo A"; el instructor es opcional.</p>
+        <ExcelImportBox session={session} templateUrl="/api/templates/components" importUrl={`/api/programs/${program.id}/components/import`} onImported={reload} />
       </section>
       <section className="panel">
         <h3>Componentes</h3>
@@ -736,7 +897,7 @@ export function ProgramsPanel({ session }) {
           )}
           <label>Nombre<input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required /></label>
           <label>Cohorte<input value={form.cohort} onChange={(e) => setForm({ ...form, cohort: e.target.value })} placeholder="2026-1" required /></label>
-          <label>Descripción<input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></label>
+          <label className="full-field">Descripción<textarea rows={3} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></label>
           <label>Modalidad
             <select value={form.modalityCode} onChange={(e) => setForm({ ...form, modalityCode: e.target.value })}>
               <option value="">Sin definir</option>
@@ -748,6 +909,11 @@ export function ProgramsPanel({ session }) {
           <ErrorNote message={formError} />
           <button className="primary">Crear programa</button>
         </form>
+      </section>
+      <section className="panel admin-form-panel">
+        <h3>Carga masiva</h3>
+        <p className="muted">Varios cursos en un solo Excel.{isSuperAdmin ? ' Indica el tenant por su slug en cada fila.' : ''}</p>
+        <ExcelImportBox session={session} templateUrl="/api/templates/programs" importUrl="/api/programs/import" onImported={reload} />
       </section>
       <section className="panel">
         <h3>Programas{isSuperAdmin ? ' (todos los tenants)' : ''}</h3>

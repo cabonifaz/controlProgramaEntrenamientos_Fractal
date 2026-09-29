@@ -41,3 +41,27 @@ export function uploadLogo(req, res) {
     uploadLogoMiddleware(req, res, (err) => (err ? reject(err) : resolve()))
   })
 }
+
+const SPREADSHEET_MIME_TYPES = new Set([
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.ms-excel',
+  'application/octet-stream', // algunos navegadores/SO no reconocen el MIME de .xlsx
+])
+
+// En memoria: se parsea y se descarta, nunca se guarda en disco/volumen.
+const uploadSpreadsheetMiddleware = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter(_req, file, cb) {
+    if (!SPREADSHEET_MIME_TYPES.has(file.mimetype) && !file.originalname.toLowerCase().endsWith('.xlsx')) {
+      return cb(new Error('invalid_file_type'))
+    }
+    cb(null, true)
+  },
+}).single('file')
+
+export function uploadSpreadsheet(req, res) {
+  return new Promise((resolve, reject) => {
+    uploadSpreadsheetMiddleware(req, res, (err) => (err ? reject(err) : resolve()))
+  })
+}

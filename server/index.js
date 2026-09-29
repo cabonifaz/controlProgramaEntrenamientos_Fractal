@@ -8,12 +8,16 @@ import { callProcedure } from './db.js'
 import { hashPassword, signSessionToken, verifyPassword } from './auth.js'
 import { authenticate } from './middleware/authenticate.js'
 import { mapStoredProcedureError } from './errors.js'
-import { uploadLogo, UPLOADS_DIR } from './uploads.js'
+import { uploadLogo, uploadSpreadsheet, UPLOADS_DIR } from './uploads.js'
+import { buildTemplateBuffer, parseUploadBuffer, toDateString, toTrimmedString, toIntOrNull } from './excel.js'
 
 const app = express()
 const port = Number(process.env.PORT || 3000)
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const VALID_ROLES = new Set(['super_admin', 'tenant_admin', 'instructor', 'student'])
+// Regla de negocio del cliente: todo tema de un componente dura 45 min fijo,
+// no se pide en el formulario ni en la carga por Excel.
+const TOPIC_DURATION_MINUTES = 45
 
 app.use(express.json())
 // Publico a proposito (logos de tenant): sin datos sensibles, se sirve tal
@@ -1005,6 +1009,284 @@ app.post('/api/leave-requests/:id/cancel', authenticate, async (req, res) => {
     const { status, message } = mapStoredProcedureError(err)
     res.status(status).json({ message })
   }
+})
+
+// ===================================================================
+// Carga masiva por Excel: una plantilla descargable y un endpoint de
+// import por entidad. Cada fila reutiliza el mismo SP que el formulario
+// manual (una llamada por fila); los errores de negocio (SIGNAL) se
+// reportan por fila y no abortan el resto del archivo.
+// ===================================================================
+const XLSX_CONTENT_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+
+function sendXlsx(res, buffer, filename) {
+  res.setHeader('Content-Type', XLSX_CONTENT_TYPE)
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`)
+  res.send(buffer)
+}
+
+async function readSpreadsheetUpload(req, res) {
+  try {
+    await uploadSpreadsheet(req, res)
+  } catch (err) {
+    res.status(400).json({ message: err.message === 'invalid_file_type' ? 'invalid_file_type' : 'upload_failed' })
+    return null
+  }
+  if (!req.file) {
+    res.status(400).json({ message: 'Invalid request format' })
+    return null
+  }
+  return req.file.buffer
+}
+
+function summarize(results) {
+  return { created: results.filter((r) => r.ok).length, failed: results.filter((r) => !r.ok).length, results }
+}
+
+const PROGRAM_IMPORT_COLUMNS = [
+  { header: 'Nombre', key: 'name' },
+  { header: 'Cohorte', key: 'cohort' },
+  { header: 'Descripción', key: 'description' },
+  { header: 'Modalidad (presencial/virtual/hibrida)', key: 'modality' },
+  { header: 'Fecha inicio (AAAA-MM-DD)', key: 'startsOn' },
+  { header: 'Fecha fin (AAAA-MM-DD)', key: 'endsOn' },
+  { header: 'Tenant (slug, solo super_admin)', key: 'tenantSlug' },
+]
+const MODALITY_LABEL_TO_CODE = { presencial: 'onsite', virtual: 'virtual', hibrida: 'hybrid', hibrido: 'hybrid' }
+
+app.get('/api/templates/programs', async (_req, res) => {
+  const buffer = await buildTemplateBuffer('Cursos', PROGRAM_IMPORT_COLUMNS, [
+    { name: 'Full-stack 2026', cohort: '2026-1', description: 'Programa completo de formación full-stack', modality: 'presencial', startsOn: '2026-03-02', endsOn: '2026-08-28', tenantSlug: '' },
+  ])
+  sendXlsx(res, buffer, 'plantilla-cursos.xlsx')
+})
+
+app.post('/api/programs/import', authenticate, async (req, res) => {
+  const buffer = await readSpreadsheetUpload(req, res)
+  if (!buffer) return
+
+  let tenantBySlug = null
+  if (req.user.roleCode === 'super_admin') {
+    const tenants = await callProcedure('sp_tenants_list', { p_actor_role: req.user.roleCode })
+    tenantBySlug = new Map(tenants.map((t) => [t.slug, t.id]))
+  }
+
+  const rows = await parseUploadBuffer(buffer, PROGRAM_IMPORT_COLUMNS)
+  const results = []
+  for (const row of rows) {
+    const name = toTrimmedString(row.name)
+    const cohort = toTrimmedString(row.cohort)
+    if (!name || !cohort) {
+      results.push({ row: row.__row, ok: false, message: 'Nombre y Cohorte son obligatorios' })
+      continue
+    }
+    let tenantId = req.user.tenantId
+    if (req.user.roleCode === 'super_admin') {
+      const slug = toTrimmedString(row.tenantSlug)
+      tenantId = tenantBySlug.get(slug)
+      if (!tenantId) {
+        results.push({ row: row.__row, ok: false, message: `Tenant "${slug}" no encontrado` })
+        continue
+      }
+    }
+    const modalityLabel = toTrimmedString(row.modality).toLowerCase()
+    const modalityCode = modalityLabel ? MODALITY_LABEL_TO_CODE[modalityLabel] : null
+    if (modalityLabel && !modalityCode) {
+      results.push({ row: row.__row, ok: false, message: `Modalidad "${row.modality}" no reconocida` })
+      continue
+    }
+    try {
+      const [result] = await callProcedure('sp_programs_create', {
+        p_actor_user_id: req.user.id, p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId,
+        p_tenant_id: tenantId, p_name: name, p_description: toTrimmedString(row.description) || null,
+        p_cohort: cohort, p_modality_code: modalityCode, p_starts_on: toDateString(row.startsOn), p_ends_on: toDateString(row.endsOn),
+      })
+      results.push({ row: row.__row, ok: true, id: result.program_id, name })
+    } catch (err) {
+      const { message } = mapStoredProcedureError(err)
+      results.push({ row: row.__row, ok: false, message })
+    }
+  }
+  res.json(summarize(results))
+})
+
+// El instructor es opcional: si no se da, el componente igual se crea con
+// un "Grupo A" sin instructor asignado (se puede asignar despues).
+const COMPONENT_IMPORT_COLUMNS = [
+  { header: 'Nombre', key: 'name' },
+  { header: 'Descripción', key: 'description' },
+  { header: 'Orden', key: 'sortOrder' },
+  { header: 'Instructor (correo, opcional)', key: 'instructorEmail' },
+]
+
+app.get('/api/templates/components', async (_req, res) => {
+  const buffer = await buildTemplateBuffer('Componentes', COMPONENT_IMPORT_COLUMNS, [
+    { name: 'Fundamentos de Frontend', description: 'HTML, CSS y JavaScript moderno', sortOrder: 1, instructorEmail: '' },
+  ])
+  sendXlsx(res, buffer, 'plantilla-componentes.xlsx')
+})
+
+app.post('/api/programs/:id/components/import', authenticate, async (req, res) => {
+  const programId = Number(req.params.id)
+  if (!Number.isInteger(programId)) return res.status(400).json({ message: 'Invalid request format' })
+  const buffer = await readSpreadsheetUpload(req, res)
+  if (!buffer) return
+
+  // El actor puede ser super_admin (sin tenant propio): se resuelve el
+  // tenant del PROGRAMA para no mezclar instructores de otros tenants.
+  const programs = await callProcedure('sp_programs_list', {
+    p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId, p_tenant_id_filter: null,
+  })
+  const program = programs.find((p) => p.id === programId)
+  if (!program) return res.status(404).json({ message: 'program_not_found' })
+
+  const instructors = await callProcedure('sp_users_list', {
+    p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId, p_tenant_id_filter: program.tenant_id, p_role_code_filter: 'instructor',
+  })
+  const instructorByEmail = new Map(instructors.map((i) => [i.email.toLowerCase(), i.id]))
+
+  const rows = await parseUploadBuffer(buffer, COMPONENT_IMPORT_COLUMNS)
+  const results = []
+  for (const row of rows) {
+    const name = toTrimmedString(row.name)
+    if (!name) {
+      results.push({ row: row.__row, ok: false, message: 'Nombre es obligatorio' })
+      continue
+    }
+    const instructorEmail = toTrimmedString(row.instructorEmail).toLowerCase()
+    let instructorId = null
+    if (instructorEmail) {
+      instructorId = instructorByEmail.get(instructorEmail)
+      if (!instructorId) {
+        results.push({ row: row.__row, ok: false, message: `Instructor "${row.instructorEmail}" no encontrado` })
+        continue
+      }
+    }
+    try {
+      const [component] = await callProcedure('sp_components_create', {
+        p_actor_user_id: req.user.id, p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId,
+        p_program_id: programId, p_name: name, p_description: toTrimmedString(row.description) || null,
+        p_sort_order: toIntOrNull(row.sortOrder) ?? 0,
+      })
+      const [group] = await callProcedure('sp_component_groups_create', {
+        p_actor_user_id: req.user.id, p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId,
+        p_component_id: component.component_id, p_name: 'Grupo A', p_instructor_id: instructorId,
+      })
+      results.push({ row: row.__row, ok: true, componentId: component.component_id, groupId: group.group_id, name })
+    } catch (err) {
+      const { message } = mapStoredProcedureError(err)
+      results.push({ row: row.__row, ok: false, message })
+    }
+  }
+  res.json(summarize(results))
+})
+
+// Sin columna de duracion: todo tema dura 45 min fijo (TOPIC_DURATION_MINUTES).
+const TOPIC_IMPORT_COLUMNS = [
+  { header: 'Orden', key: 'sortOrder' },
+  { header: 'Tema', key: 'title' },
+  { header: 'Descripción', key: 'description' },
+  { header: 'Fecha programada (AAAA-MM-DD, opcional)', key: 'scheduledOn' },
+]
+
+app.get('/api/templates/topics', async (_req, res) => {
+  const buffer = await buildTemplateBuffer('Temario', TOPIC_IMPORT_COLUMNS, [
+    { sortOrder: 1, title: 'Introducción a HTML semántico', description: '', scheduledOn: '' },
+  ])
+  sendXlsx(res, buffer, 'plantilla-temario.xlsx')
+})
+
+app.post('/api/groups/:id/topics/import', authenticate, async (req, res) => {
+  const groupId = Number(req.params.id)
+  if (!Number.isInteger(groupId)) return res.status(400).json({ message: 'Invalid request format' })
+  const buffer = await readSpreadsheetUpload(req, res)
+  if (!buffer) return
+
+  const rows = await parseUploadBuffer(buffer, TOPIC_IMPORT_COLUMNS)
+  const results = []
+  for (const row of rows) {
+    const title = toTrimmedString(row.title)
+    if (!title) {
+      results.push({ row: row.__row, ok: false, message: 'Tema es obligatorio' })
+      continue
+    }
+    try {
+      const [result] = await callProcedure('sp_topics_create', {
+        p_actor_user_id: req.user.id, p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId,
+        p_group_id: groupId, p_title: title, p_description: toTrimmedString(row.description) || null,
+        p_sort_order: toIntOrNull(row.sortOrder) ?? 0, p_scheduled_on: toDateString(row.scheduledOn), p_duration_minutes: TOPIC_DURATION_MINUTES,
+      })
+      results.push({ row: row.__row, ok: true, id: result.topic_id, title })
+    } catch (err) {
+      const { message } = mapStoredProcedureError(err)
+      results.push({ row: row.__row, ok: false, message })
+    }
+  }
+  res.json(summarize(results))
+})
+
+// Password temporal generada por fila (mismo patron que el reseteo por
+// admin): no hay servicio de correo, asi que el resumen de la carga trae
+// las contrasenas para que el admin las reparta fuera del sistema.
+const USER_IMPORT_COLUMNS = [
+  { header: 'Nombre completo', key: 'fullName' },
+  { header: 'Correo', key: 'email' },
+  { header: 'Rol (instructor/estudiante)', key: 'role' },
+  { header: 'Tenant (slug, solo super_admin)', key: 'tenantSlug' },
+]
+const ROLE_LABEL_TO_CODE = { instructor: 'instructor', estudiante: 'student', alumno: 'student', student: 'student' }
+
+app.get('/api/templates/users', async (_req, res) => {
+  const buffer = await buildTemplateBuffer('Usuarios', USER_IMPORT_COLUMNS, [
+    { fullName: 'Ana Torres', email: 'ana.torres@ejemplo.com', role: 'estudiante', tenantSlug: '' },
+  ])
+  sendXlsx(res, buffer, 'plantilla-usuarios.xlsx')
+})
+
+app.post('/api/users/import', authenticate, async (req, res) => {
+  const buffer = await readSpreadsheetUpload(req, res)
+  if (!buffer) return
+
+  let tenantBySlug = null
+  if (req.user.roleCode === 'super_admin') {
+    const tenants = await callProcedure('sp_tenants_list', { p_actor_role: req.user.roleCode })
+    tenantBySlug = new Map(tenants.map((t) => [t.slug, t.id]))
+  }
+
+  const rows = await parseUploadBuffer(buffer, USER_IMPORT_COLUMNS)
+  const results = []
+  for (const row of rows) {
+    const fullName = toTrimmedString(row.fullName)
+    const email = toTrimmedString(row.email)
+    const roleLabel = toTrimmedString(row.role).toLowerCase()
+    const roleCode = ROLE_LABEL_TO_CODE[roleLabel]
+    if (!fullName || !email || !email.includes('@') || !roleCode) {
+      results.push({ row: row.__row, ok: false, message: 'Nombre, Correo y Rol (instructor/estudiante) son obligatorios' })
+      continue
+    }
+    let tenantId = req.user.tenantId
+    if (req.user.roleCode === 'super_admin') {
+      const slug = toTrimmedString(row.tenantSlug)
+      tenantId = tenantBySlug.get(slug)
+      if (!tenantId) {
+        results.push({ row: row.__row, ok: false, message: `Tenant "${slug}" no encontrado` })
+        continue
+      }
+    }
+    try {
+      const temporaryPassword = crypto.randomBytes(9).toString('base64url')
+      const passwordHash = await hashPassword(temporaryPassword)
+      const [result] = await callProcedure('sp_users_create', {
+        p_actor_user_id: req.user.id, p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId,
+        p_target_tenant_id: tenantId, p_full_name: fullName, p_email: email, p_password_hash: passwordHash, p_role_code: roleCode,
+      })
+      results.push({ row: row.__row, ok: true, id: result.user_id, email, temporaryPassword })
+    } catch (err) {
+      const { message } = mapStoredProcedureError(err)
+      results.push({ row: row.__row, ok: false, message })
+    }
+  }
+  res.json(summarize(results))
 })
 
 if (process.env.NODE_ENV === 'production') {
