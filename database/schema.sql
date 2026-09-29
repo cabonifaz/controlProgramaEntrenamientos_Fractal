@@ -483,6 +483,8 @@ DROP PROCEDURE IF EXISTS sp_programs_enroll_student;
 DROP PROCEDURE IF EXISTS sp_components_list;
 DROP PROCEDURE IF EXISTS sp_components_create;
 DROP PROCEDURE IF EXISTS sp_component_groups_list;
+DROP PROCEDURE IF EXISTS sp_component_groups_list_by_program;
+DROP PROCEDURE IF EXISTS sp_group_schedule_days_list_by_program;
 DROP PROCEDURE IF EXISTS sp_component_groups_create;
 DROP PROCEDURE IF EXISTS sp_component_groups_update;
 DROP PROCEDURE IF EXISTS sp_group_enrollments_add;
@@ -1233,6 +1235,57 @@ BEGIN
   LEFT JOIN users iu ON iu.id = g.instructor_id
   WHERE g.component_id = p_component_id AND g.is_deleted = FALSE
   ORDER BY g.name;
+END$$
+
+-- Todos los grupos de TODOS los componentes de un programa en una sola
+-- llamada: alimenta el horario semanal unificado (un solo grid para armar
+-- toda la malla del programa, en vez de entrar grupo por grupo).
+CREATE PROCEDURE sp_component_groups_list_by_program(
+  IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED, IN p_program_id BIGINT UNSIGNED
+)
+BEGIN
+  DECLARE v_program_tenant_id BIGINT UNSIGNED;
+  SELECT tenant_id INTO v_program_tenant_id FROM training_programs WHERE id = p_program_id AND is_deleted = FALSE;
+
+  IF v_program_tenant_id IS NULL THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'program_not_found';
+  END IF;
+  IF p_actor_role <> 'super_admin' AND v_program_tenant_id <> p_actor_tenant_id THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
+  END IF;
+
+  SELECT g.id AS group_id, g.name AS group_name, c.id AS component_id, c.name AS component_name,
+         g.instructor_id, iu.full_name AS instructor_name,
+         (SELECT COUNT(*) FROM group_enrollments ge WHERE ge.group_id = g.id AND ge.is_deleted = FALSE) AS enrolled_students
+  FROM component_groups g
+  JOIN components c ON c.id = g.component_id
+  LEFT JOIN users iu ON iu.id = g.instructor_id
+  WHERE c.program_id = p_program_id AND g.is_deleted = FALSE AND c.is_deleted = FALSE
+  ORDER BY c.sort_order, c.name, g.name;
+END$$
+
+-- Los horarios de TODOS los grupos de un programa en una sola llamada
+-- (contraparte de arriba), para pintar el grid unificado sin N+1 requests.
+CREATE PROCEDURE sp_group_schedule_days_list_by_program(
+  IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED, IN p_program_id BIGINT UNSIGNED
+)
+BEGIN
+  DECLARE v_program_tenant_id BIGINT UNSIGNED;
+  SELECT tenant_id INTO v_program_tenant_id FROM training_programs WHERE id = p_program_id AND is_deleted = FALSE;
+
+  IF v_program_tenant_id IS NULL THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'program_not_found';
+  END IF;
+  IF p_actor_role <> 'super_admin' AND v_program_tenant_id <> p_actor_tenant_id THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
+  END IF;
+
+  SELECT d.id, d.group_id, d.weekday, d.start_time, d.end_time
+  FROM component_group_schedule_days d
+  JOIN component_groups g ON g.id = d.group_id
+  JOIN components c ON c.id = g.component_id
+  WHERE c.program_id = p_program_id AND d.is_deleted = FALSE AND g.is_deleted = FALSE AND c.is_deleted = FALSE
+  ORDER BY d.weekday, d.start_time;
 END$$
 
 CREATE PROCEDURE sp_component_groups_create(

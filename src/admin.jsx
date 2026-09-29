@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { apiRequest, apiUpload } from './api'
 
 function useList(path, token) {
@@ -27,9 +27,45 @@ function useCatalog(code, token) {
   return items
 }
 
+// Traduce los codigos que vienen de SIGNAL en los SPs (snake_case tecnico)
+// a un mensaje legible. Si no esta mapeado, se muestra tal cual (mejor un
+// codigo en ingles que nada).
+const ERROR_MESSAGES = {
+  not_authorized: 'No tienes permiso para esta acción.',
+  role_not_allowed_for_actor: 'Ese rol no está permitido para quien lo crea.',
+  tenant_required: 'Debes seleccionar un tenant.',
+  tenant_mismatch: 'Ese registro pertenece a otro tenant.',
+  tenant_not_found: 'Tenant no encontrado.',
+  tenant_inactive: 'El tenant está inactivo.',
+  invalid_status: 'Estado inválido.',
+  instructor_invalid: 'El instructor seleccionado no es válido.',
+  instructor_not_available: 'El instructor no está disponible en ese horario.',
+  instructor_schedule_conflict: 'Ese instructor ya tiene otro grupo en ese horario, aunque sea de otro componente.',
+  student_invalid: 'El alumno seleccionado no es válido.',
+  student_not_enrolled_in_program: 'El alumno no está inscrito en el programa.',
+  invalid_date_range: 'El rango de fechas no es válido.',
+  invalid_schedule_day: 'El horario ingresado no es válido.',
+  invalid_color_format: 'El color debe tener formato #RRGGBB.',
+  schedule_not_configured: 'Este grupo todavía no tiene un horario semanal. Ve a "Ver horario" (o al horario semanal del programa) y arrastra al menos un bloque antes de generar fechas.',
+  schedule_generation_failed: 'No se pudieron generar las fechas con el horario configurado.',
+  date_is_holiday: 'Esa fecha es un feriado.',
+  email_already_exists: 'Ese correo ya está registrado.',
+  slug_already_exists: 'Ese slug ya está en uso.',
+  holiday_already_exists: 'Ese feriado ya existe.',
+  already_enrolled: 'Ya está inscrito.',
+  leave_not_pending: 'Ese permiso ya no está pendiente.',
+  target_not_found: 'No se encontró el registro.',
+  program_not_found: 'Programa no encontrado.',
+  component_not_found: 'Componente no encontrado.',
+  group_not_found: 'Grupo no encontrado.',
+  tenant_branding_unavailable: 'No se pudo cargar la marca del tenant.',
+  invalid_file_type: 'Tipo de archivo no permitido.',
+  upload_failed: 'No se pudo subir el archivo.',
+}
+
 function ErrorNote({ message }) {
   if (!message) return null
-  return <p className="form-error">{message}</p>
+  return <p className="form-error">{ERROR_MESSAGES[message] || message}</p>
 }
 
 function StatusPill({ label }) {
@@ -655,6 +691,156 @@ function GroupSchedulePanel({ session, group }) {
   )
 }
 
+const GROUP_COLORS = ['#087fb8', '#f4a500', '#2e8b57', '#8e44ad', '#d35400', '#16a085', '#c0392b', '#2c3e50', '#7f8c8d', '#27ae60']
+
+// Horario semanal de TODO el programa: todos los grupos de todos sus
+// componentes en un solo grid, para ir "jalando" y armando la malla
+// completa en un solo lugar en vez de entrar grupo por grupo. Se elige un
+// grupo de la paleta (queda "armado") y se pinta con clic+arrastre; el
+// servidor sigue siendo quien decide si el instructor choca con otro grupo.
+function ProgramSchedulePanel({ session, program, onBack }) {
+  const { token } = session
+  const { items: groups, error: groupsError, loading: groupsLoading } = useList(`/api/programs/${program.id}/groups`, token)
+  const { items: scheduleDays, error: scheduleError, loading: scheduleLoading, reload: reloadSchedule } = useList(`/api/programs/${program.id}/schedule-days`, token)
+  const [selectedGroupId, setSelectedGroupId] = useState(null)
+  const [drag, setDrag] = useState(null)
+  const [dropError, setDropError] = useState('')
+  const dragRef = useRef(null)
+  dragRef.current = drag
+
+  useEffect(() => {
+    if (selectedGroupId === null && groups.length > 0) setSelectedGroupId(groups[0].group_id)
+  }, [groups, selectedGroupId])
+
+  const colorByGroupId = useMemo(() => {
+    const map = new Map()
+    groups.forEach((g, i) => map.set(g.group_id, GROUP_COLORS[i % GROUP_COLORS.length]))
+    return map
+  }, [groups])
+
+  function cellFor(weekday, slotStart) {
+    return scheduleDays.find((d) => d.weekday === weekday && timeToMinutes(d.start_time) <= slotStart && slotStart < timeToMinutes(d.end_time))
+  }
+
+  async function assign(groupId, weekday, startTime, endTime) {
+    setDropError('')
+    try {
+      await apiRequest(`/api/groups/${groupId}/schedule-days`, { method: 'POST', token, body: { weekday, startTime, endTime } })
+      reloadSchedule()
+    } catch (err) {
+      setDropError(err.message)
+    }
+  }
+
+  async function remove(groupId, weekday) {
+    setDropError('')
+    try {
+      await apiRequest(`/api/groups/${groupId}/schedule-days/${weekday}`, { method: 'DELETE', token })
+      reloadSchedule()
+    } catch (err) {
+      setDropError(err.message)
+    }
+  }
+
+  useEffect(() => {
+    function commit() {
+      const current = dragRef.current
+      setDrag(null)
+      if (!current) return
+      const lo = Math.min(current.startIdx, current.endIdx)
+      const hi = Math.max(current.startIdx, current.endIdx)
+      assign(current.groupId, current.weekday, minutesToTime(SCHEDULE_SLOTS[lo]), minutesToTime(SCHEDULE_SLOTS[hi] + SCHEDULE_SLOT_MINUTES))
+    }
+    window.addEventListener('mouseup', commit)
+    return () => window.removeEventListener('mouseup', commit)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [program.id])
+
+  function startDrag(weekday, idx) {
+    if (!selectedGroupId || cellFor(weekday, SCHEDULE_SLOTS[idx])) return
+    setDrag({ groupId: selectedGroupId, weekday, startIdx: idx, endIdx: idx })
+  }
+
+  function extendDrag(weekday, idx) {
+    setDrag((current) => (current && current.weekday === weekday ? { ...current, endIdx: idx } : current))
+  }
+
+  function isSelecting(weekday, idx) {
+    if (!drag || drag.weekday !== weekday) return false
+    const lo = Math.min(drag.startIdx, drag.endIdx)
+    const hi = Math.max(drag.startIdx, drag.endIdx)
+    return idx >= lo && idx <= hi
+  }
+
+  return (
+    <div className="admin-wrap">
+      <button className="text-button crumb-back" onClick={onBack}>← Volver a componentes</button>
+      <section className="panel">
+        <h3>Horario semanal — {program.name}</h3>
+        <p className="muted">Elige un grupo abajo y luego haz clic y arrastra sobre la grilla para pintar su horario (franjas de 30 min). Todos los componentes del programa se arman aquí juntos; un instructor no puede quedar en dos grupos con horario cruzado.</p>
+        <ErrorNote message={groupsError || scheduleError || dropError} />
+        {groupsLoading ? <p className="muted">Cargando…</p> : groups.length === 0 ? <p className="muted">Este programa todavía no tiene componentes con grupos.</p> : (
+          <>
+            <div className="group-palette">
+              {groups.map((g) => (
+                <button
+                  key={g.group_id}
+                  type="button"
+                  className={g.group_id === selectedGroupId ? 'group-chip active' : 'group-chip'}
+                  style={{ '--chip-color': colorByGroupId.get(g.group_id) }}
+                  onClick={() => setSelectedGroupId(g.group_id)}
+                >
+                  {g.component_name} · {g.group_name}
+                  <small>{g.instructor_name || 'sin instructor'}</small>
+                </button>
+              ))}
+            </div>
+            {scheduleLoading ? <p className="muted">Cargando horario…</p> : (
+              <div className="schedule-grid-scroll">
+                <table className="schedule-grid" onMouseLeave={() => setDrag(null)}>
+                  <thead><tr><th></th>{WEEKDAY_ORDER.map((w) => <th key={w}>{WEEKDAY_LABELS[w]}</th>)}</tr></thead>
+                  <tbody>
+                    {SCHEDULE_SLOTS.map((slotStart, idx) => (
+                      <tr key={slotStart}>
+                        <td className="schedule-hour">{slotStart % 60 === 0 ? minutesToTime(slotStart) : ''}</td>
+                        {WEEKDAY_ORDER.map((w) => {
+                          const cell = cellFor(w, slotStart)
+                          const isStart = cell && timeToMinutes(cell.start_time) === slotStart
+                          const group = cell && groups.find((g) => g.group_id === cell.group_id)
+                          const color = cell && colorByGroupId.get(cell.group_id)
+                          const classes = ['schedule-cell']
+                          if (cell) classes.push('filled')
+                          if (isSelecting(w, idx)) classes.push('selecting')
+                          return (
+                            <td
+                              key={w}
+                              className={classes.join(' ')}
+                              style={cell ? { background: `${color}22`, borderColor: color } : undefined}
+                              onMouseDown={() => startDrag(w, idx)}
+                              onMouseEnter={() => extendDrag(w, idx)}
+                            >
+                              {isStart && (
+                                <div className="schedule-block" style={{ background: color }}>
+                                  <span>{group ? `${group.component_name} · ${group.group_name}` : ''} {cell.start_time.slice(0, 5)}–{cell.end_time.slice(0, 5)}</span>
+                                  <button className="pill-remove" onMouseDown={(e) => e.stopPropagation()} onClick={() => remove(cell.group_id, w)}>×</button>
+                                </div>
+                              )}
+                            </td>
+                          )
+                        })}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </>
+        )}
+      </section>
+    </div>
+  )
+}
+
 function GroupsPanel({ session, component, onBack }) {
   const { token } = session
   const { items, error, loading, reload } = useList(`/api/components/${component.id}/groups`, token)
@@ -784,6 +970,7 @@ function ComponentsPanel({ session, program, onBack }) {
   const [form, setForm] = useState({ name: '', description: '', sortOrder: 0 })
   const [formError, setFormError] = useState('')
   const [selectedComponent, setSelectedComponent] = useState(null)
+  const [showSchedule, setShowSchedule] = useState(false)
 
   async function handleCreate(e) {
     e.preventDefault()
@@ -797,13 +984,19 @@ function ComponentsPanel({ session, program, onBack }) {
     }
   }
 
+  if (showSchedule) {
+    return <ProgramSchedulePanel session={session} program={program} onBack={() => setShowSchedule(false)} />
+  }
   if (selectedComponent) {
     return <GroupsPanel session={session} component={selectedComponent} onBack={() => setSelectedComponent(null)} />
   }
 
   return (
     <div className="admin-wrap">
-      <button className="text-button crumb-back" onClick={onBack}>← Volver a programas</button>
+      <div className="crumb-back-row">
+        <button className="text-button crumb-back" onClick={onBack}>← Volver a programas</button>
+        <button className="btn-mini" onClick={() => setShowSchedule(true)}>Horario semanal del programa</button>
+      </div>
       <section className="panel admin-form-panel">
         <h3>Nuevo componente — {program.name}</h3>
         <form className="admin-form" onSubmit={handleCreate}>

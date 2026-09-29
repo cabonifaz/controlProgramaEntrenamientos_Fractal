@@ -447,6 +447,39 @@ app.get('/api/programs/:id/components', authenticate, async (req, res) => {
   }
 })
 
+// Vista unificada: todos los grupos (de todos los componentes) de un
+// programa, y todos sus horarios, en dos llamadas -- alimenta el horario
+// semanal de programa completo (un solo grid para armar toda la malla).
+app.get('/api/programs/:id/groups', authenticate, async (req, res) => {
+  const programId = Number(req.params.id)
+  if (!Number.isInteger(programId)) return res.status(400).json({ message: 'Invalid request format' })
+
+  try {
+    const data = await callProcedure('sp_component_groups_list_by_program', {
+      p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId, p_program_id: programId,
+    })
+    res.json({ data })
+  } catch (err) {
+    const { status, message } = mapStoredProcedureError(err)
+    res.status(status).json({ message })
+  }
+})
+
+app.get('/api/programs/:id/schedule-days', authenticate, async (req, res) => {
+  const programId = Number(req.params.id)
+  if (!Number.isInteger(programId)) return res.status(400).json({ message: 'Invalid request format' })
+
+  try {
+    const data = await callProcedure('sp_group_schedule_days_list_by_program', {
+      p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId, p_program_id: programId,
+    })
+    res.json({ data })
+  } catch (err) {
+    const { status, message } = mapStoredProcedureError(err)
+    res.status(status).json({ message })
+  }
+})
+
 app.post('/api/programs/:id/components', authenticate, async (req, res) => {
   const programId = Number(req.params.id)
   const { name, description, sortOrder } = req.body || {}
