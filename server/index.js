@@ -483,6 +483,23 @@ app.get('/api/programs/:id/schedule-days', authenticate, async (req, res) => {
   }
 })
 
+// Temario real (con fecha) de todos los grupos del programa: alimenta la
+// vista de calendario semana por semana.
+app.get('/api/programs/:id/topics', authenticate, async (req, res) => {
+  const programId = Number(req.params.id)
+  if (!Number.isInteger(programId)) return res.status(400).json({ message: 'Invalid request format' })
+
+  try {
+    const data = await callProcedure('sp_topics_list_by_program', {
+      p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId, p_program_id: programId,
+    })
+    res.json({ data })
+  } catch (err) {
+    const { status, message } = mapStoredProcedureError(err)
+    res.status(status).json({ message })
+  }
+})
+
 app.post('/api/programs/:id/components', authenticate, async (req, res) => {
   const programId = Number(req.params.id)
   const { name, description, sortOrder } = req.body || {}

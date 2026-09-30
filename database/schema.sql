@@ -490,6 +490,7 @@ DROP PROCEDURE IF EXISTS sp_component_groups_create;
 DROP PROCEDURE IF EXISTS sp_component_groups_update;
 DROP PROCEDURE IF EXISTS sp_group_enrollments_add;
 DROP PROCEDURE IF EXISTS sp_topics_list;
+DROP PROCEDURE IF EXISTS sp_topics_list_by_program;
 DROP PROCEDURE IF EXISTS sp_topics_create;
 DROP PROCEDURE IF EXISTS sp_topics_update_status;
 DROP PROCEDURE IF EXISTS sp_topics_reschedule;
@@ -1473,6 +1474,35 @@ BEGIN
   JOIN master_catalog_values ts ON ts.id = t.status_id
   WHERE t.group_id = p_group_id AND t.is_deleted = FALSE
   ORDER BY t.sort_order, t.scheduled_on;
+END$$
+
+-- Todo el temario de TODOS los grupos de un programa en una sola llamada
+-- (con nombre de componente/grupo/instructor ya resueltos): alimenta la
+-- vista de calendario semana por semana con datos reales.
+CREATE PROCEDURE sp_topics_list_by_program(
+  IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED, IN p_program_id BIGINT UNSIGNED
+)
+BEGIN
+  DECLARE v_program_tenant_id BIGINT UNSIGNED;
+  SELECT tenant_id INTO v_program_tenant_id FROM training_programs WHERE id = p_program_id AND is_deleted = FALSE;
+
+  IF v_program_tenant_id IS NULL THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'program_not_found';
+  END IF;
+  IF p_actor_role <> 'super_admin' AND v_program_tenant_id <> p_actor_tenant_id THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
+  END IF;
+
+  SELECT t.id, t.title, t.scheduled_on, t.duration_minutes, ts.code AS status_code, ts.label AS status_label,
+         g.id AS group_id, g.name AS group_name, g.instructor_id, iu.full_name AS instructor_name,
+         c.id AS component_id, c.name AS component_name
+  FROM topics t
+  JOIN component_groups g ON g.id = t.group_id
+  JOIN components c ON c.id = g.component_id
+  JOIN master_catalog_values ts ON ts.id = t.status_id
+  LEFT JOIN users iu ON iu.id = g.instructor_id
+  WHERE c.program_id = p_program_id AND t.is_deleted = FALSE AND g.is_deleted = FALSE AND c.is_deleted = FALSE
+  ORDER BY t.scheduled_on, c.sort_order, g.name;
 END$$
 
 -- La fecha propuesta no puede caer en un feriado activo del tenant: la regla

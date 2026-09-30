@@ -766,7 +766,11 @@ const GROUP_COLORS = ['#087fb8', '#f4a500', '#2e8b57', '#8e44ad', '#d35400', '#1
 // completa en un solo lugar en vez de entrar grupo por grupo. Se elige un
 // grupo de la paleta (queda "armado") y se pinta con clic+arrastre; el
 // servidor sigue siendo quien decide si el instructor choca con otro grupo.
-function ProgramSchedulePanel({ session, program, onBack }) {
+// Grilla de configuracion del horario RECURRENTE (dia de semana + hora, sin
+// año/mes): sirve para armar el patron semanal de un grupo antes de tener
+// fechas reales. El calendario real (por semana, con fechas) es
+// ProgramWeeklyCalendar, mas abajo.
+function RecurringScheduleGrid({ session, program }) {
   const { token } = session
   const { items: groups, error: groupsError, loading: groupsLoading } = useList(`/api/programs/${program.id}/groups`, token)
   const { items: scheduleDays, error: scheduleError, loading: scheduleLoading, reload: reloadSchedule } = useList(`/api/programs/${program.id}/schedule-days`, token)
@@ -841,11 +845,9 @@ function ProgramSchedulePanel({ session, program, onBack }) {
   }
 
   return (
-    <div className="admin-wrap">
-      <button className="text-button crumb-back" onClick={onBack}>← Volver a componentes</button>
-      <section className="panel">
-        <h3>Horario semanal — {program.name}</h3>
-        <p className="muted">Elige un grupo abajo y luego haz clic y arrastra sobre la grilla para pintar su horario (franjas de 30 min). Todos los componentes del programa se arman aquí juntos; un instructor no puede quedar en dos grupos con horario cruzado.</p>
+    <section className="panel">
+        <h3>Horario recurrente (configuración)</h3>
+        <p className="muted">Elige un grupo abajo y luego haz clic y arrastra sobre la grilla para pintar su horario semanal (franjas de 30 min). Este patrón sirve para generar fechas de nuevos grupos; el calendario real por semana está en la otra pestaña. Un instructor no puede quedar en dos grupos con horario cruzado.</p>
         <ErrorNote message={groupsError || scheduleError || dropError} />
         {groupsLoading ? <p className="muted">Cargando…</p> : groups.length === 0 ? <p className="muted">Este programa todavía no tiene componentes con grupos.</p> : (
           <>
@@ -904,7 +906,106 @@ function ProgramSchedulePanel({ session, program, onBack }) {
             )}
           </>
         )}
+    </section>
+  )
+}
+
+// Calendario real, semana por semana: muestra las clases con sus fechas
+// verdaderas (viene de sp_topics_list_by_program), no el patron recurrente.
+// Es la vista principal al abrir "Horario semanal del programa".
+function startOfWeek(dateStr) {
+  const d = new Date(`${dateStr}T00:00:00Z`)
+  const day = d.getUTCDay()
+  const diff = day === 0 ? -6 : 1 - day
+  d.setUTCDate(d.getUTCDate() + diff)
+  return d
+}
+function addDays(date, n) {
+  const d = new Date(date)
+  d.setUTCDate(d.getUTCDate() + n)
+  return d
+}
+function toISODate(date) { return date.toISOString().slice(0, 10) }
+function formatDayLabel(date) {
+  return date.toLocaleDateString('es-PE', { weekday: 'long', day: 'numeric', month: 'short', timeZone: 'UTC' })
+}
+
+function ProgramWeeklyCalendar({ session, program }) {
+  const { token } = session
+  const { items: topics, loading, error } = useList(`/api/programs/${program.id}/topics`, token)
+  const { items: holidays } = useList(program.tenant_id ? `/api/holidays?tenantId=${program.tenant_id}` : '/api/holidays', token)
+  const [weekStart, setWeekStart] = useState(null)
+
+  const earliestDate = useMemo(() => {
+    const dates = topics.filter((t) => t.scheduled_on).map((t) => t.scheduled_on).sort()
+    return dates[0] || null
+  }, [topics])
+
+  useEffect(() => {
+    if (weekStart === null && earliestDate) setWeekStart(startOfWeek(earliestDate))
+  }, [earliestDate, weekStart])
+
+  if (loading) return <p className="muted">Cargando…</p>
+  if (!earliestDate) return <p className="muted">Este programa todavía no tiene temario con fechas. Usa la carga completa por Excel o "Generar fechas" en un grupo.</p>
+  if (!weekStart) return null
+
+  const days = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i))
+  const holidaySet = new Set(holidays.map((h) => h.holiday_on))
+  const topicsByDate = new Map()
+  topics.forEach((t) => {
+    if (!t.scheduled_on) return
+    if (!topicsByDate.has(t.scheduled_on)) topicsByDate.set(t.scheduled_on, [])
+    topicsByDate.get(t.scheduled_on).push(t)
+  })
+
+  return (
+    <div>
+      <div className="week-nav">
+        <button className="btn-mini" onClick={() => setWeekStart(addDays(weekStart, -7))}>← Semana anterior</button>
+        <strong>{formatDayLabel(days[0])} – {formatDayLabel(days[6])}</strong>
+        <button className="btn-mini" onClick={() => setWeekStart(addDays(weekStart, 7))}>Semana siguiente →</button>
+      </div>
+      <ErrorNote message={error} />
+      <div className="week-grid">
+        {days.map((d) => {
+          const iso = toISODate(d)
+          const dayTopics = (topicsByDate.get(iso) || []).slice().sort((a, b) => a.component_name.localeCompare(b.component_name))
+          const isHoliday = holidaySet.has(iso)
+          return (
+            <div key={iso} className={isHoliday ? 'week-day holiday' : 'week-day'}>
+              <div className="week-day-head">{formatDayLabel(d)}</div>
+              {isHoliday && <div className="week-day-holiday-tag">Feriado</div>}
+              {dayTopics.length === 0 && !isHoliday && <p className="muted week-day-empty">Sin clases</p>}
+              {dayTopics.map((t) => (
+                <div key={t.id} className="week-topic">
+                  <strong>{t.component_name}</strong>
+                  <span>{t.title}</span>
+                  <small>{t.group_name}{t.instructor_name ? ` · ${t.instructor_name}` : ''}</small>
+                </div>
+              ))}
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+function ProgramSchedulePanel({ session, program, onBack }) {
+  const [tab, setTab] = useState('calendar')
+  return (
+    <div className="admin-wrap">
+      <button className="text-button crumb-back" onClick={onBack}>← Volver a componentes</button>
+      <section className="panel">
+        <h3>Horario — {program.name}</h3>
+        <div className="tab-row">
+          <button className={tab === 'calendar' ? 'tab-button active' : 'tab-button'} onClick={() => setTab('calendar')}>Calendario semanal</button>
+          <button className={tab === 'recurring' ? 'tab-button active' : 'tab-button'} onClick={() => setTab('recurring')}>Horario recurrente</button>
+        </div>
       </section>
+      {tab === 'calendar'
+        ? <section className="panel"><ProgramWeeklyCalendar session={session} program={program} /></section>
+        : <RecurringScheduleGrid session={session} program={program} />}
     </div>
   )
 }
@@ -1032,6 +1133,87 @@ function GroupsPanel({ session, component, onBack }) {
   )
 }
 
+function Modal({ title, onClose, children, wide }) {
+  useEffect(() => {
+    function handleKey(e) { if (e.key === 'Escape') onClose() }
+    document.addEventListener('keydown', handleKey)
+    return () => document.removeEventListener('keydown', handleKey)
+  }, [onClose])
+
+  return (
+    <div className="modal-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose() }}>
+      <div className={wide ? 'modal-panel wide' : 'modal-panel'}>
+        <div className="modal-head">
+          <h3>{title}</h3>
+          <button className="modal-close" onClick={onClose} aria-label="Cerrar">×</button>
+        </div>
+        <div className="modal-body">{children}</div>
+      </div>
+    </div>
+  )
+}
+
+// Muestra el temario ya cargado de un grupo, de solo lectura: para que al
+// editar un componente se vea de una si el import trajo lo que debia.
+function ComponentGroupTopics({ session, group }) {
+  const { token } = session
+  const { items, loading } = useList(`/api/groups/${group.id}/topics`, token)
+  return (
+    <div className="component-detail-group">
+      <h4>{group.name}{group.instructor_name ? ` · ${group.instructor_name}` : ' · sin instructor'}</h4>
+      {loading ? <p className="muted">Cargando…</p> : items.length === 0 ? <p className="muted">Sin temario cargado.</p> : (
+        <ul className="topic-mini-list">
+          {items.map((t) => (
+            <li key={t.id}>
+              <span className="topic-mini-date">{t.scheduled_on || 'sin fecha'}</span> {t.title} <StatusPill label={t.status_label} />
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
+}
+
+function ComponentEditModal({ session, component, onClose, onSaved }) {
+  const { token } = session
+  const [form, setForm] = useState({ name: component.name, description: component.description || '', sortOrder: component.sort_order ?? 0 })
+  const [error, setError] = useState('')
+  const [saving, setSaving] = useState(false)
+  const { items: groups, loading: groupsLoading } = useList(`/api/components/${component.id}/groups`, token)
+
+  async function handleSave(e) {
+    e.preventDefault()
+    setError('')
+    setSaving(true)
+    try {
+      await apiRequest(`/api/components/${component.id}`, { method: 'PATCH', token, body: form })
+      onSaved?.()
+      onClose()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Modal title={`Editar componente — ${component.name}`} onClose={onClose} wide>
+      <form className="admin-form" onSubmit={handleSave}>
+        <label>Nombre<input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required /></label>
+        <label>Orden<input type="number" value={form.sortOrder} onChange={(e) => setForm({ ...form, sortOrder: e.target.value })} /></label>
+        <label className="full-field">Descripción<textarea rows={3} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></label>
+        <ErrorNote message={error} />
+        <button className="primary" disabled={saving}>{saving ? 'Guardando…' : 'Guardar cambios'}</button>
+      </form>
+      <hr className="modal-divider" />
+      <h4 className="modal-subhead">Temario cargado</h4>
+      {groupsLoading ? <p className="muted">Cargando…</p> : groups.length === 0 ? <p className="muted">Este componente todavía no tiene grupos.</p> : (
+        groups.map((g) => <ComponentGroupTopics key={g.id} session={session} group={g} />)
+      )}
+    </Modal>
+  )
+}
+
 const EMPTY_COMPONENT_FORM = { name: '', description: '', sortOrder: 0 }
 
 function ComponentsPanel({ session, program, onBack }) {
@@ -1039,32 +1221,15 @@ function ComponentsPanel({ session, program, onBack }) {
   const { items, error, loading, reload } = useList(`/api/programs/${program.id}/components`, token)
   const [form, setForm] = useState(EMPTY_COMPONENT_FORM)
   const [formError, setFormError] = useState('')
-  const [editingId, setEditingId] = useState(null)
+  const [editingComponent, setEditingComponent] = useState(null)
   const [selectedComponent, setSelectedComponent] = useState(null)
   const [showSchedule, setShowSchedule] = useState(false)
 
-  function startEdit(c) {
-    setEditingId(c.id)
-    setForm({ name: c.name, description: c.description || '', sortOrder: c.sort_order ?? 0 })
-    setFormError('')
-  }
-
-  function cancelEdit() {
-    setEditingId(null)
-    setForm(EMPTY_COMPONENT_FORM)
-    setFormError('')
-  }
-
-  async function handleSubmit(e) {
+  async function handleCreate(e) {
     e.preventDefault()
     setFormError('')
     try {
-      if (editingId) {
-        await apiRequest(`/api/components/${editingId}`, { method: 'PATCH', token, body: form })
-      } else {
-        await apiRequest(`/api/programs/${program.id}/components`, { method: 'POST', token, body: form })
-      }
-      setEditingId(null)
+      await apiRequest(`/api/programs/${program.id}/components`, { method: 'POST', token, body: form })
       setForm(EMPTY_COMPONENT_FORM)
       reload()
     } catch (err) {
@@ -1091,16 +1256,13 @@ function ComponentsPanel({ session, program, onBack }) {
         <FullProgramImportBox session={session} program={program} onImported={reload} />
       </section>
       <section className="panel admin-form-panel">
-        <h3>{editingId ? `Editar componente — ${program.name}` : `Nuevo componente — ${program.name}`}</h3>
-        <form className="admin-form" onSubmit={handleSubmit}>
+        <h3>Nuevo componente — {program.name}</h3>
+        <form className="admin-form" onSubmit={handleCreate}>
           <label>Nombre<input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required /></label>
           <label className="full-field">Descripción<textarea rows={3} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></label>
           <label>Orden<input type="number" value={form.sortOrder} onChange={(e) => setForm({ ...form, sortOrder: e.target.value })} /></label>
           <ErrorNote message={formError} />
-          <div className="row-actions">
-            <button className="primary">{editingId ? 'Guardar cambios' : 'Crear componente'}</button>
-            {editingId && <button type="button" className="btn-mini" onClick={cancelEdit}>Cancelar edición</button>}
-          </div>
+          <button className="primary">Crear componente</button>
         </form>
       </section>
       <section className="panel admin-form-panel">
@@ -1122,7 +1284,7 @@ function ComponentsPanel({ session, program, onBack }) {
                   <td><StatusPill label={c.status_label} /></td>
                   <td>{c.group_count}</td>
                   <td className="row-actions">
-                    <button className="btn-mini" onClick={() => startEdit(c)}>Editar</button>
+                    <button className="btn-mini" onClick={() => setEditingComponent(c)}>Editar</button>
                     <button className="btn-mini" onClick={() => setSelectedComponent(c)}>Ver grupos</button>
                   </td>
                 </tr>
@@ -1131,6 +1293,14 @@ function ComponentsPanel({ session, program, onBack }) {
           </table>
         )}
       </section>
+      {editingComponent && (
+        <ComponentEditModal
+          session={session}
+          component={editingComponent}
+          onClose={() => setEditingComponent(null)}
+          onSaved={reload}
+        />
+      )}
     </div>
   )
 }
