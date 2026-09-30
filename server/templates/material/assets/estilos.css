@@ -1,0 +1,36 @@
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Inter:wght@400;600&display=swap');
+
+:root {
+  --ink: #17232d;
+  --muted: #5d6e78;
+  --bg: #f4f7f9;
+  --card: #ffffff;
+  --accent: #1b6fa8;
+  --accent-2: #f0a830;
+  --ok: #1f9d6b;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; font-family: Inter, system-ui, sans-serif; color: var(--ink); background: var(--bg); line-height: 1.6; }
+h1, h2, h3 { font-family: 'Space Grotesk', sans-serif; letter-spacing: -.3px; }
+
+.hero { background: linear-gradient(135deg, #0f3b5c, var(--accent)); color: #fff; padding: 56px 24px 64px; }
+.hero .inner, main { max-width: 920px; margin: 0 auto; }
+.hero .tag { display: inline-block; background: var(--accent-2); color: #3a2a08; font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .6px; border-radius: 20px; padding: 5px 14px; }
+.hero h1 { font-size: clamp(28px, 5vw, 44px); margin: 14px 0 6px; }
+.hero p { color: #d6e7f2; margin: 0; }
+
+main { padding: 32px 16px 64px; display: grid; gap: 20px; }
+.card { background: var(--card); border-radius: 14px; padding: 24px; box-shadow: 0 6px 20px rgba(23, 35, 45, .07); }
+.card h2 { margin-top: 0; }
+.goals { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+.goal { background: #eaf3f9; border-radius: 10px; padding: 14px; font-weight: 600; }
+pre { background: #0f1c26; color: #d7e6f0; padding: 16px; border-radius: 10px; overflow-x: auto; }
+.exercise { border-left: 4px solid var(--accent-2); }
+.quiz label { display: block; padding: 10px 12px; border: 1px solid #dbe4ea; border-radius: 8px; margin: 6px 0; cursor: pointer; }
+.quiz label:hover { background: #f1f6f9; }
+.answer { border-left: 4px solid var(--ok); }
+.answer strong { color: var(--ok); }
+a { color: var(--accent); }
+.topic-list { list-style: none; padding: 0; display: grid; gap: 10px; }
+.topic-list a { display: block; background: var(--card); border-radius: 10px; padding: 14px 18px; text-decoration: none; font-weight: 600; box-shadow: 0 3px 10px rgba(23, 35, 45, .06); }

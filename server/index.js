@@ -5,10 +5,14 @@ import fs from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import crypto from 'node:crypto'
 import { callProcedure } from './db.js'
-import { hashPassword, signSessionToken, verifyPassword } from './auth.js'
+import { hashPassword, signSessionToken, verifyPassword, signMaterialToken, verifyMaterialToken } from './auth.js'
 import { authenticate } from './middleware/authenticate.js'
 import { mapStoredProcedureError } from './errors.js'
 import { uploadLogo, uploadSpreadsheet, UPLOADS_DIR } from './uploads.js'
+import {
+  uploadMaterialZip, extractMaterialZip, materialDir, removeMaterialDir, describeMaterial,
+  isSolutionsPath, buildMaterialTemplateZip, MATERIAL_RESPONSE_HEADERS,
+} from './materials.js'
 import {
   buildTemplateBuffer, parseUploadBuffer, toDateString, toTrimmedString, toIntOrNull,
   loadWorkbook, findSheetByHeaders, parseSheetRows, parseTimeRange, minutesToTime,
@@ -24,8 +28,10 @@ const TOPIC_DURATION_MINUTES = 45
 
 app.use(express.json())
 // Publico a proposito (logos de tenant): sin datos sensibles, se sirve tal
-// cual desde el volumen persistente configurado en UPLOADS_DIR.
-app.use('/uploads', express.static(UPLOADS_DIR))
+// cual desde el volumen persistente configurado en UPLOADS_DIR. Solo la
+// subcarpeta tenants/: el material didactico (materials/) tambien vive en
+// el volumen y NO debe quedar publico (lo sirve /material/<token>/...).
+app.use('/uploads/tenants', express.static(path.join(UPLOADS_DIR, 'tenants')))
 
 app.get('/api/health', async (_req, res) => {
   try {
@@ -347,9 +353,11 @@ app.get('/api/my/groups', authenticate, async (req, res) => {
 
 // Todo el temario del instructor (pasado y futuro): alimenta su calendario
 // semanal visual, sin el recorte a "solo proximas 10" de /api/me/agenda.
+// Para un alumno, todo su temario ("Mis temas", con acceso al material).
 app.get('/api/my/topics', authenticate, async (req, res) => {
   try {
-    const data = await callProcedure('sp_topics_list_by_instructor', {
+    const procedure = req.user.roleCode === 'student' ? 'sp_topics_list_by_student' : 'sp_topics_list_by_instructor'
+    const data = await callProcedure(procedure, {
       p_actor_user_id: req.user.id, p_actor_role: req.user.roleCode,
     })
     res.json({ data })
@@ -693,6 +701,210 @@ app.post('/api/topics/:id/reschedule', authenticate, async (req, res) => {
     const { status, message } = mapStoredProcedureError(err)
     res.status(status).json({ message })
   }
+})
+
+// ---------------------------------------------------------------------
+// Material didactico: un ZIP por componente (ver server/materials.js).
+// Quien puede ver/gestionar lo deciden los SPs; aqui solo se manejan los
+// archivos y se firman URLs temporales para el iframe.
+// ---------------------------------------------------------------------
+function materialBaseUrl(componentId, folder, withSolutions) {
+  return `/material/${signMaterialToken({ componentId, folder, withSolutions })}/`
+}
+
+function encodeMaterialPath(relativePath) {
+  return relativePath.split('/').map(encodeURIComponent).join('/')
+}
+
+app.get('/api/components/:id/material', authenticate, async (req, res) => {
+  const componentId = Number(req.params.id)
+  if (!Number.isInteger(componentId)) return res.status(400).json({ message: 'Invalid request format' })
+
+  try {
+    const [row] = await callProcedure('sp_component_materials_get', {
+      p_actor_user_id: req.user.id, p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId,
+      p_component_id: componentId,
+    })
+    const canManage = Boolean(row.can_manage)
+    let material = null
+    if (row.folder) {
+      const { indexFile, topics } = await describeMaterial(componentId, row.folder, { withSolutions: canManage })
+      const baseUrl = materialBaseUrl(componentId, row.folder, canManage)
+      material = {
+        originalName: row.original_name, sizeBytes: row.size_bytes, uploadedAt: row.uploaded_at, uploadedByName: row.uploaded_by_name,
+        indexUrl: indexFile ? baseUrl + encodeMaterialPath(indexFile) : null,
+        topics: topics.map((t) => ({
+          position: t.position, file: t.file, url: baseUrl + encodeMaterialPath(t.file),
+          solutionUrl: t.solutionFile ? baseUrl + encodeMaterialPath(t.solutionFile) : null,
+        })),
+      }
+    }
+    res.json({ data: { componentId, componentName: row.component_name, canManage, material } })
+  } catch (err) {
+    const { status, message } = mapStoredProcedureError(err)
+    res.status(status).json({ message })
+  }
+})
+
+// Datos para que el frontend arme el prompt de generacion del material:
+// temario numerado exactamente como los tema-NN.html que se esperan.
+app.get('/api/components/:id/material-prompt', authenticate, async (req, res) => {
+  const componentId = Number(req.params.id)
+  if (!Number.isInteger(componentId)) return res.status(400).json({ message: 'Invalid request format' })
+
+  try {
+    const rows = await callProcedure('sp_component_material_prompt_data', {
+      p_actor_user_id: req.user.id, p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId,
+      p_component_id: componentId,
+    })
+    const [first] = rows
+    res.json({
+      data: {
+        componentName: first.component_name, componentDescription: first.component_description,
+        programName: first.program_name, programDescription: first.program_description, cohort: first.cohort,
+        modality: first.modality_label, startsOn: first.starts_on, endsOn: first.ends_on,
+        topics: rows.filter((r) => r.topic_id).map((r, i) => ({
+          position: i + 1, title: r.topic_title, description: r.topic_description,
+          durationMinutes: r.duration_minutes ?? TOPIC_DURATION_MINUTES,
+        })),
+      },
+    })
+  } catch (err) {
+    const { status, message } = mapStoredProcedureError(err)
+    res.status(status).json({ message })
+  }
+})
+
+app.post('/api/components/:id/material', authenticate, async (req, res) => {
+  const componentId = Number(req.params.id)
+  if (!Number.isInteger(componentId)) return res.status(400).json({ message: 'Invalid request format' })
+  const actor = { p_actor_user_id: req.user.id, p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId }
+
+  // Autoriza ANTES de recibir y descomprimir el ZIP (el SP _set vuelve a
+  // validar al registrar): nadie sin permiso llega a escribir en el volumen.
+  try {
+    const [row] = await callProcedure('sp_component_materials_get', { ...actor, p_component_id: componentId })
+    if (!row?.can_manage) return res.status(403).json({ message: 'not_authorized' })
+  } catch (err) {
+    const { status, message } = mapStoredProcedureError(err)
+    return res.status(status).json({ message })
+  }
+
+  try {
+    await uploadMaterialZip(req, res)
+  } catch (err) {
+    return res.status(400).json({ message: err.materialCode || (err.message === 'invalid_file_type' ? 'invalid_file_type' : 'upload_failed') })
+  }
+  if (!req.file) return res.status(400).json({ message: 'Invalid request format' })
+
+  const folder = `${Date.now()}-${crypto.randomBytes(6).toString('hex')}`
+  let summary
+  try {
+    summary = await extractMaterialZip(req.file.buffer, materialDir(componentId, folder))
+  } catch (err) {
+    await removeMaterialDir(componentId, folder)
+    return res.status(400).json({ message: err.materialCode || 'invalid_zip' })
+  }
+
+  // multer entrega el nombre original como latin1 aunque venga en UTF-8.
+  const originalName = Buffer.from(req.file.originalname, 'latin1').toString('utf8').slice(0, 255)
+  try {
+    const [result] = await callProcedure('sp_component_materials_set', {
+      ...actor, p_component_id: componentId, p_folder: folder, p_original_name: originalName,
+      p_size_bytes: req.file.size, p_topic_file_count: summary.topicFileCount, p_solution_file_count: summary.solutionFileCount,
+    })
+    if (result?.previous_folder) await removeMaterialDir(componentId, result.previous_folder)
+    res.status(201).json({ data: summary })
+  } catch (err) {
+    await removeMaterialDir(componentId, folder)
+    const { status, message } = mapStoredProcedureError(err)
+    res.status(status).json({ message })
+  }
+})
+
+app.delete('/api/components/:id/material', authenticate, async (req, res) => {
+  const componentId = Number(req.params.id)
+  if (!Number.isInteger(componentId)) return res.status(400).json({ message: 'Invalid request format' })
+
+  try {
+    const [result] = await callProcedure('sp_component_materials_remove', {
+      p_actor_user_id: req.user.id, p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId,
+      p_component_id: componentId,
+    })
+    await removeMaterialDir(componentId, result?.removed_folder)
+    res.json({ ok: true })
+  } catch (err) {
+    const { status, message } = mapStoredProcedureError(err)
+    res.status(status).json({ message })
+  }
+})
+
+app.get('/api/topics/:id/material', authenticate, async (req, res) => {
+  const topicId = Number(req.params.id)
+  if (!Number.isInteger(topicId)) return res.status(400).json({ message: 'Invalid request format' })
+
+  try {
+    const [row] = await callProcedure('sp_topic_material_get', {
+      p_actor_user_id: req.user.id, p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId,
+      p_topic_id: topicId,
+    })
+    const position = Number(row.topic_position)
+    if (!row.folder) return res.json({ data: { available: false, reason: 'no_material', position } })
+
+    const withSolutions = Boolean(row.can_view_solutions)
+    const { indexFile, topics } = await describeMaterial(row.component_id, row.folder, { withSolutions })
+    const topic = topics.find((t) => t.position === position)
+    const baseUrl = materialBaseUrl(row.component_id, row.folder, withSolutions)
+    res.json({
+      data: {
+        available: Boolean(topic), reason: topic ? null : 'topic_file_missing', position,
+        url: topic ? baseUrl + encodeMaterialPath(topic.file) : null,
+        solutionUrl: topic?.solutionFile ? baseUrl + encodeMaterialPath(topic.solutionFile) : null,
+        indexUrl: indexFile ? baseUrl + encodeMaterialPath(indexFile) : null,
+      },
+    })
+  } catch (err) {
+    const { status, message } = mapStoredProcedureError(err)
+    res.status(status).json({ message })
+  }
+})
+
+// Sin authenticate: el permiso es el token firmado de la URL (un iframe no
+// puede mandar Authorization). Las rutas relativas del HTML (assets/...)
+// siguen funcionando porque el token es un segmento mas del path.
+app.get('/material/:token/{*filePath}', (req, res) => {
+  let claims
+  try {
+    claims = verifyMaterialToken(req.params.token)
+  } catch {
+    return res.status(401).type('text/plain; charset=utf-8').send('El enlace al material venció. Vuelve a abrirlo desde la plataforma.')
+  }
+
+  const segments = req.params.filePath?.length ? req.params.filePath : ['index.html']
+  if (segments.some((s) => s === '..' || s.includes('\\') || s.includes('\0'))) {
+    return res.status(400).end()
+  }
+  if (!claims.withSolutions && isSolutionsPath(segments)) {
+    return res.status(403).type('text/plain; charset=utf-8').send('Las soluciones solo están disponibles para el instructor.')
+  }
+
+  const base = path.resolve(materialDir(claims.componentId, claims.folder))
+  const filePath = path.resolve(base, ...segments)
+  if (!filePath.startsWith(base + path.sep)) return res.status(400).end()
+
+  res.set(MATERIAL_RESPONSE_HEADERS)
+  res.sendFile(filePath, (err) => {
+    if (err && !res.headersSent) res.status(404).type('text/plain; charset=utf-8').send('Archivo no encontrado.')
+  })
+})
+
+app.get('/api/templates/material', async (_req, res) => {
+  const buffer = await buildMaterialTemplateZip()
+  res.set({
+    'Content-Type': 'application/zip',
+    'Content-Disposition': 'attachment; filename="plantilla-material.zip"',
+  })
+  res.send(buffer)
 })
 
 app.get('/api/groups/:id/schedule-days', authenticate, async (req, res) => {

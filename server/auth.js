@@ -1,3 +1,4 @@
+import crypto from 'node:crypto'
 import bcrypt from 'bcryptjs'
 import jwt from 'jsonwebtoken'
 
@@ -27,4 +28,25 @@ export function signSessionToken({ userId, tenantId, roleCode, fullName }) {
 
 export function verifySessionToken(token) {
   return jwt.verify(token, getJwtSecret())
+}
+
+// Los archivos del material se cargan en un iframe/pestaña, que no puede
+// mandar el header Authorization: el permiso viaja en la URL como un token
+// de corta vida. Se firma con un secreto derivado para que un token de
+// material nunca sirva como sesion (ni al reves).
+function getMaterialSecret() {
+  return crypto.createHmac('sha256', getJwtSecret()).update('component-material').digest()
+}
+
+export function signMaterialToken({ componentId, folder, withSolutions }) {
+  return jwt.sign(
+    { c: componentId, f: folder, s: Boolean(withSolutions) },
+    getMaterialSecret(),
+    { expiresIn: '6h' },
+  )
+}
+
+export function verifyMaterialToken(token) {
+  const claims = jwt.verify(token, getMaterialSecret())
+  return { componentId: claims.c, folder: claims.f, withSolutions: claims.s === true }
 }

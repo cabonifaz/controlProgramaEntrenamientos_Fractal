@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { AlertTriangle, ArrowRight, Calendar, Users as UsersIcon } from 'lucide-react'
 import { apiRequest, apiUpload } from './api'
+import { buildMaterialPrompt, DEFAULT_PROMPT_OPTIONS, MATERIAL_LEVELS, suggestedBatchSize } from './materialPrompt'
 
 function useList(path, token) {
   const [items, setItems] = useState([])
@@ -62,6 +63,11 @@ const ERROR_MESSAGES = {
   tenant_branding_unavailable: 'No se pudo cargar la marca del tenant.',
   invalid_file_type: 'Tipo de archivo no permitido.',
   upload_failed: 'No se pudo subir el archivo.',
+  invalid_zip: 'El archivo no es un ZIP válido.',
+  material_missing_topics: 'El ZIP no tiene ningún tema-01.html, tema-02.html… en la raíz. Revisa la plantilla.',
+  material_invalid_path: 'El ZIP contiene rutas no permitidas (por ejemplo "../").',
+  material_too_large: 'El ZIP es demasiado grande (máximo 50 MB comprimido y 300 MB descomprimido).',
+  material_not_found: 'Este componente no tiene material subido.',
 }
 
 function ErrorNote({ message }) {
@@ -1256,7 +1262,7 @@ function GroupsPanel({ session, component, onBack }) {
   )
 }
 
-function Modal({ title, onClose, children, wide }) {
+function Modal({ title, onClose, children, wide, full }) {
   useEffect(() => {
     function handleKey(e) { if (e.key === 'Escape') onClose() }
     document.addEventListener('keydown', handleKey)
@@ -1265,13 +1271,263 @@ function Modal({ title, onClose, children, wide }) {
 
   return (
     <div className="modal-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose() }}>
-      <div className={wide ? 'modal-panel wide' : 'modal-panel'}>
+      <div className={full ? 'modal-panel full' : wide ? 'modal-panel wide' : 'modal-panel'}>
         <div className="modal-head">
           <h3>{title}</h3>
           <button className="modal-close" onClick={onClose} aria-label="Cerrar">×</button>
         </div>
         <div className="modal-body">{children}</div>
       </div>
+    </div>
+  )
+}
+
+// Mismo sandbox que manda el servidor en la cabecera CSP: el HTML del
+// material (hecho por una IA, fuera de la plataforma) corre en un origen
+// opaco y no puede leer la sesion del usuario.
+const MATERIAL_IFRAME_SANDBOX = 'allow-scripts allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-downloads'
+
+function formatBytes(bytes) {
+  const n = Number(bytes) || 0
+  if (n < 1024 * 1024) return `${Math.max(1, Math.round(n / 1024))} KB`
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`
+}
+
+// Material de UNA clase: su tema-NN.html y, para instructor/admin, un
+// boton para alternar a las respuestas (soluciones/tema-NN.html).
+function MaterialViewer({ session, topic, onClose }) {
+  const { token } = session
+  const [data, setData] = useState(null)
+  const [error, setError] = useState('')
+  const [showSolution, setShowSolution] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    apiRequest(`/api/topics/${topic.id}/material`, { token })
+      .then((res) => { if (!cancelled) setData(res.data) })
+      .catch((err) => { if (!cancelled) setError(err.message) })
+    return () => { cancelled = true }
+  }, [topic.id, token])
+
+  const src = data?.available ? (showSolution && data.solutionUrl ? data.solutionUrl : data.url) : null
+
+  return (
+    <Modal title={`Material — ${topic.title}`} onClose={onClose} full>
+      <ErrorNote message={error} />
+      {!data && !error && <p className="muted">Cargando…</p>}
+      {data && !data.available && (
+        <p className="muted">
+          {data.reason === 'no_material'
+            ? 'Este componente todavía no tiene material subido.'
+            : `El material subido no incluye este tema (falta tema-${pad2(data.position)}.html).`}
+        </p>
+      )}
+      {src && (
+        <>
+          <div className="material-toolbar">
+            {data.solutionUrl && (
+              <div className="material-tabs">
+                <button type="button" className={showSolution ? 'tab-button' : 'tab-button active'} onClick={() => setShowSolution(false)}>Material</button>
+                <button type="button" className={showSolution ? 'tab-button active solution' : 'tab-button'} onClick={() => setShowSolution(true)}>Mostrar respuestas</button>
+              </div>
+            )}
+            <div className="material-links">
+              {data.indexUrl && <a className="btn-mini" href={data.indexUrl} target="_blank" rel="noreferrer">Índice del curso</a>}
+              <a className="btn-mini" href={src} target="_blank" rel="noreferrer">Abrir en pestaña nueva</a>
+            </div>
+          </div>
+          <iframe key={src} className="material-frame" src={src} title={`Material — ${topic.title}`} sandbox={MATERIAL_IFRAME_SANDBOX} />
+        </>
+      )}
+    </Modal>
+  )
+}
+
+// Prompt sugerido para generar TODO el material del componente con una IA
+// externa, con el temario real y la numeracion que espera la subida.
+// Las respuestas del formulario se recuerdan por componente en este navegador.
+function MaterialPromptBuilder({ session, componentId }) {
+  const { token } = session
+  const storageKey = `material-prompt-options:${componentId}`
+  const [data, setData] = useState(null)
+  const [error, setError] = useState('')
+  const [copied, setCopied] = useState(false)
+  const [options, setOptions] = useState(() => {
+    try { return { ...DEFAULT_PROMPT_OPTIONS, ...JSON.parse(localStorage.getItem(storageKey) || '{}') } } catch { return DEFAULT_PROMPT_OPTIONS }
+  })
+
+  useEffect(() => {
+    let cancelled = false
+    apiRequest(`/api/components/${componentId}/material-prompt`, { token })
+      .then((res) => { if (!cancelled) setData(res.data) })
+      .catch((err) => { if (!cancelled) setError(err.message) })
+    return () => { cancelled = true }
+  }, [componentId, token])
+
+  useEffect(() => {
+    try { localStorage.setItem(storageKey, JSON.stringify(options)) } catch { /* sin almacenamiento: solo no se recuerda */ }
+  }, [storageKey, options])
+
+  const prompt = useMemo(() => (data && data.topics.length > 0 ? buildMaterialPrompt(data, options) : ''), [data, options])
+  const set = (field) => (e) => { setCopied(false); setOptions({ ...options, [field]: e.target.value }) }
+
+  async function copyPrompt(e) {
+    try {
+      await navigator.clipboard.writeText(prompt)
+    } catch {
+      const textarea = e.currentTarget.closest('.material-prompt').querySelector('textarea.material-prompt-output')
+      textarea.select()
+      document.execCommand('copy')
+    }
+    setCopied(true)
+  }
+
+  if (error) return <ErrorNote message={error} />
+  if (!data) return <p className="muted">Cargando temario…</p>
+  if (data.topics.length === 0) return <p className="muted">Este componente todavía no tiene temario cargado. Cárgalo primero: el prompt se arma con los temas en orden.</p>
+
+  return (
+    <div className="material-prompt">
+      <p className="muted">
+        Se arma con los {data.topics.length} temas del temario en orden, así que cada archivo que genere la IA coincidirá con su clase.
+        Completa lo que sepas, copia el prompt y pégalo en Claude (con la creación de archivos activada).
+      </p>
+      <div className="admin-form">
+        <label className="full-field">Perfil de los alumnos
+          <textarea rows={2} value={options.audience} onChange={set('audience')} placeholder="Ej.: jóvenes de 18 a 25 años, bachillerato terminado, sin experiencia previa en programación" />
+        </label>
+        <label>Nivel
+          <select value={options.level} onChange={set('level')}>
+            {MATERIAL_LEVELS.map((l) => <option key={l} value={l}>{l}</option>)}
+          </select>
+        </label>
+        <label>Temas por lote
+          <select value={options.batchSize} onChange={set('batchSize')}>
+            <option value="auto">Automático ({suggestedBatchSize(data.topics)})</option>
+            {[1, 2, 3, 4, 5, 6].map((n) => <option key={n} value={n}>{n}</option>)}
+          </select>
+        </label>
+        <label>Sector de los ejemplos (opcional)
+          <input value={options.sector} onChange={set('sector')} placeholder="Ej.: banca, retail, salud" />
+        </label>
+        <label>Colores / identidad (opcional)
+          <input value={options.brand} onChange={set('brand')} placeholder="Ej.: azul #1b6fa8 y naranja #f0a830" />
+        </label>
+        <label className="full-field">Indicaciones adicionales (opcional)
+          <textarea rows={2} value={options.extra} onChange={set('extra')} placeholder="Ej.: usar Python 3.12 en los ejemplos; incluir un caso integrador al final" />
+        </label>
+      </div>
+      <div className="material-prompt-head">
+        <strong>Prompt sugerido</strong>
+        <button type="button" className="primary" onClick={copyPrompt}>{copied ? '¡Copiado!' : 'Copiar prompt'}</button>
+      </div>
+      <textarea className="material-prompt-output" readOnly rows={14} value={prompt} />
+      <p className="muted material-prompt-tip">
+        Con temarios largos, la IA entrega el material por lotes: escribe "continuar" hasta que entregue el ZIP. Luego súbelo aquí con "Subir ZIP".
+      </p>
+    </div>
+  )
+}
+
+// Subida/reemplazo del ZIP de material de un componente e inventario de
+// que archivo abrira cada tema. Para admins e instructores del componente.
+function ComponentMaterialBox({ session, componentId }) {
+  const { token } = session
+  const [info, setInfo] = useState(null)
+  const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
+  const [uploading, setUploading] = useState(false)
+  const [reloadKey, setReloadKey] = useState(0)
+  const [showPrompt, setShowPrompt] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    apiRequest(`/api/components/${componentId}/material`, { token })
+      .then((res) => { if (!cancelled) setInfo(res.data) })
+      .catch((err) => { if (!cancelled) setError(err.message) })
+    return () => { cancelled = true }
+  }, [componentId, token, reloadKey])
+
+  async function handleFile(e) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setError('')
+    setNotice('')
+    setUploading(true)
+    try {
+      const formData = new FormData()
+      formData.append('file', file)
+      const res = await apiUpload(`/api/components/${componentId}/material`, { token, formData })
+      setNotice(`Material subido: ${res.data.topicFileCount} tema(s), ${res.data.solutionFileCount} con respuestas.`)
+      setReloadKey((k) => k + 1)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setUploading(false)
+      e.target.value = ''
+    }
+  }
+
+  async function handleRemove() {
+    if (!window.confirm('¿Eliminar el material de este componente? Los alumnos dejarán de verlo.')) return
+    setError('')
+    setNotice('')
+    try {
+      await apiRequest(`/api/components/${componentId}/material`, { method: 'DELETE', token })
+      setReloadKey((k) => k + 1)
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
+  const material = info?.material
+
+  return (
+    <div className="material-box">
+      <p className="muted">
+        Un solo ZIP por componente, con un HTML por tema (<code>tema-01.html</code>, <code>tema-02.html</code>…) y las respuestas en <code>soluciones/</code>.
+        La clase N del temario de cada grupo abre <code>tema-N</code>. Los alumnos nunca reciben las soluciones.
+      </p>
+      <div className="excel-import-actions">
+        {info?.canManage && (
+          <button type="button" className={showPrompt ? 'btn-mini active' : 'btn-mini'} onClick={() => setShowPrompt((v) => !v)}>
+            {showPrompt ? 'Ocultar prompt' : 'Generar prompt para IA'}
+          </button>
+        )}
+        <a className="btn-mini" href="/api/templates/material">Descargar plantilla de ejemplo</a>
+        {info?.canManage && (
+          <label className="btn-mini logo-upload-label">
+            {uploading ? 'Subiendo…' : material ? 'Reemplazar ZIP' : 'Subir ZIP'}
+            <input type="file" accept=".zip,application/zip" onChange={handleFile} disabled={uploading} hidden />
+          </label>
+        )}
+        {info?.canManage && material && <button type="button" className="btn-mini btn-mini-danger" onClick={handleRemove}>Eliminar material</button>}
+      </div>
+      {showPrompt && <MaterialPromptBuilder session={session} componentId={componentId} />}
+      <ErrorNote message={error} />
+      {notice && <p className="temp-password-box">{notice}</p>}
+      {info && !material && <p className="muted">Todavía no hay material subido.</p>}
+      {material && (
+        <>
+          <p className="material-meta">
+            <strong>{material.originalName}</strong> · {formatBytes(material.sizeBytes)} · subido el {String(material.uploadedAt).slice(0, 16)}
+            {material.uploadedByName ? ` por ${material.uploadedByName}` : ''}
+          </p>
+          <ul className="topic-mini-list material-file-list">
+            {material.indexUrl && (
+              <li><span className="topic-mini-date">Portada</span><span className="material-file">index.html</span><a className="btn-mini" href={material.indexUrl} target="_blank" rel="noreferrer">Ver</a></li>
+            )}
+            {material.topics.map((t) => (
+              <li key={t.position}>
+                <span className="topic-mini-date">Tema {t.position}</span>
+                <span className="material-file">{t.file}</span>
+                <a className="btn-mini" href={t.url} target="_blank" rel="noreferrer">Ver</a>
+                {t.solutionUrl ? <a className="btn-mini" href={t.solutionUrl} target="_blank" rel="noreferrer">Respuestas</a> : <span className="muted">sin respuestas</span>}
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
     </div>
   )
 }
@@ -1329,6 +1585,9 @@ function ComponentEditModal({ session, component, onClose, onSaved }) {
         <button className="primary" disabled={saving}>{saving ? 'Guardando…' : 'Guardar cambios'}</button>
       </form>
       <hr className="modal-divider" />
+      <h4 className="modal-subhead">Material del temario</h4>
+      <ComponentMaterialBox session={session} componentId={component.id} />
+      <hr className="modal-divider" />
       <h4 className="modal-subhead">Temario cargado</h4>
       {groupsLoading ? <p className="muted">Cargando…</p> : groups.length === 0 ? <p className="muted">Este componente todavía no tiene grupos.</p> : (
         groups.map((g) => <ComponentGroupTopics key={g.id} session={session} group={g} />)
@@ -1345,6 +1604,7 @@ function ComponentsPanel({ session, program, onBack }) {
   const [form, setForm] = useState(EMPTY_COMPONENT_FORM)
   const [formError, setFormError] = useState('')
   const [editingComponent, setEditingComponent] = useState(null)
+  const [materialComponent, setMaterialComponent] = useState(null)
   const [selectedComponent, setSelectedComponent] = useState(null)
   const [showSchedule, setShowSchedule] = useState(false)
 
@@ -1408,6 +1668,7 @@ function ComponentsPanel({ session, program, onBack }) {
                   <td>{c.group_count}</td>
                   <td className="row-actions">
                     <button className="btn-mini" onClick={() => setEditingComponent(c)}>Editar</button>
+                    <button className="btn-mini" onClick={() => setMaterialComponent(c)}>Material</button>
                     <button className="btn-mini" onClick={() => setSelectedComponent(c)}>Ver grupos</button>
                   </td>
                 </tr>
@@ -1423,6 +1684,11 @@ function ComponentsPanel({ session, program, onBack }) {
           onClose={() => setEditingComponent(null)}
           onSaved={reload}
         />
+      )}
+      {materialComponent && (
+        <Modal title={`Material — ${materialComponent.name}`} onClose={() => setMaterialComponent(null)} wide>
+          <ComponentMaterialBox session={session} componentId={materialComponent.id} />
+        </Modal>
       )}
     </div>
   )
@@ -1722,6 +1988,7 @@ function InstructorAttendancePanel({ session, topic, onBack }) {
   const [saveResult, setSaveResult] = useState('')
   const [topicStatus, setTopicStatus] = useState(topic.status_code)
   const [completionSaving, setCompletionSaving] = useState(false)
+  const [showMaterial, setShowMaterial] = useState(false)
 
   function statusFor(row) {
     return draft[row.student_id]?.statusCode ?? row.status_code ?? DEFAULT_ATTENDANCE_STATUS
@@ -1775,7 +2042,10 @@ function InstructorAttendancePanel({ session, topic, onBack }) {
     <div className="admin-wrap">
       <button className="text-button crumb-back" onClick={onBack}>← Volver al temario</button>
       <section className="panel">
-        <h3>Asistencia — {topic.title}</h3>
+        <div className="panel-title-row">
+          <h3>Asistencia — {topic.title}</h3>
+          <button type="button" className="btn-mini" onClick={() => setShowMaterial(true)}>Ver material</button>
+        </div>
         <p className="muted">{topic.scheduled_on ? `Programado: ${topic.scheduled_on}` : 'Sin fecha programada'}</p>
         <div className="completion-check">
           <span>¿Se completó el tema en la hora asignada?</span>
@@ -1825,6 +2095,7 @@ function InstructorAttendancePanel({ session, topic, onBack }) {
           </>
         )}
       </section>
+      {showMaterial && <MaterialViewer session={session} topic={topic} onClose={() => setShowMaterial(false)} />}
     </div>
   )
 }
@@ -1833,6 +2104,7 @@ function InstructorTopicsPanel({ session, group, onBack }) {
   const { token } = session
   const { items, error, loading } = useList(`/api/groups/${group.id}/topics`, token)
   const [selectedTopic, setSelectedTopic] = useState(null)
+  const [materialTopic, setMaterialTopic] = useState(null)
 
   if (selectedTopic) {
     return <InstructorAttendancePanel session={session} topic={selectedTopic} onBack={() => setSelectedTopic(null)} />
@@ -1853,13 +2125,17 @@ function InstructorTopicsPanel({ session, group, onBack }) {
                   <td>{t.title}</td>
                   <td>{t.scheduled_on || '—'}</td>
                   <td><StatusPill label={t.status_label} /></td>
-                  <td><button className="btn-mini" onClick={() => setSelectedTopic(t)}>Tomar asistencia</button></td>
+                  <td className="row-actions">
+                    <button className="btn-mini" onClick={() => setMaterialTopic(t)}>Ver material</button>
+                    <button className="btn-mini" onClick={() => setSelectedTopic(t)}>Tomar asistencia</button>
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
         )}
       </section>
+      {materialTopic && <MaterialViewer session={session} topic={materialTopic} onClose={() => setMaterialTopic(null)} />}
     </div>
   )
 }
@@ -1941,6 +2217,7 @@ export function InstructorClassesPanel({ session }) {
   const { items, error, loading } = useList('/api/my/groups', token)
   const [selectedGroup, setSelectedGroup] = useState(null)
   const [selectedTopic, setSelectedTopic] = useState(null)
+  const [materialGroup, setMaterialGroup] = useState(null)
 
   if (selectedTopic) {
     return <InstructorAttendancePanel session={session} topic={selectedTopic} onBack={() => setSelectedTopic(null)} />
@@ -1965,13 +2242,21 @@ export function InstructorClassesPanel({ session }) {
                   <td>{g.component_name}</td>
                   <td>{g.name}</td>
                   <td><StatusPill label={g.status_label} /></td>
-                  <td><button className="btn-mini" onClick={() => setSelectedGroup(g)}>Ver temario</button></td>
+                  <td className="row-actions">
+                    <button className="btn-mini" onClick={() => setSelectedGroup(g)}>Ver temario</button>
+                    <button className="btn-mini" onClick={() => setMaterialGroup(g)}>Material</button>
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
         )}
       </section>
+      {materialGroup && (
+        <Modal title={`Material — ${materialGroup.component_name}`} onClose={() => setMaterialGroup(null)} wide>
+          <ComponentMaterialBox session={session} componentId={materialGroup.component_id} />
+        </Modal>
+      )}
     </div>
   )
 }
@@ -2001,6 +2286,52 @@ export function StudentAttendancePanel({ session }) {
           </table>
         )}
       </section>
+    </div>
+  )
+}
+
+// "Mis temas" del alumno: todo su temario agrupado por componente, con el
+// material de cada clase (sin soluciones: el servidor nunca se las entrega).
+export function StudentTopicsPanel({ session }) {
+  const { token } = session
+  const { items, error, loading } = useList('/api/my/topics', token)
+  const [materialTopic, setMaterialTopic] = useState(null)
+
+  const groups = useMemo(() => {
+    const byGroup = new Map()
+    items.forEach((t) => {
+      if (!byGroup.has(t.group_id)) byGroup.set(t.group_id, { ...t, topics: [] })
+      byGroup.get(t.group_id).topics.push(t)
+    })
+    return [...byGroup.values()]
+  }, [items])
+
+  return (
+    <div className="admin-wrap">
+      <ErrorNote message={error} />
+      {loading ? <p className="muted">Cargando…</p> : groups.length === 0 ? (
+        <section className="panel"><p className="muted">Todavía no estás inscrito en ningún componente.</p></section>
+      ) : groups.map((g) => (
+        <section className="panel" key={g.group_id}>
+          <h3>{g.component_name}</h3>
+          <p className="muted">{g.program_name} · {g.group_name}{g.instructor_name ? ` · ${g.instructor_name}` : ''}</p>
+          <table className="admin-table">
+            <thead><tr><th>#</th><th>Tema</th><th>Fecha</th><th>Estado</th><th></th></tr></thead>
+            <tbody>
+              {g.topics.map((t, i) => (
+                <tr key={t.id}>
+                  <td>{i + 1}</td>
+                  <td>{t.title}</td>
+                  <td>{t.scheduled_on || '—'}</td>
+                  <td><StatusPill label={t.status_label} /></td>
+                  <td>{t.has_material ? <button className="btn-mini" onClick={() => setMaterialTopic(t)}>Ver material</button> : <span className="muted">Sin material</span>}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+      ))}
+      {materialTopic && <MaterialViewer session={session} topic={materialTopic} onClose={() => setMaterialTopic(null)} />}
     </div>
   )
 }

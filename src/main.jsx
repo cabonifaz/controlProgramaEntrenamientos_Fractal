@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { Bell, CalendarDays, ChevronDown, ClipboardCheck, LayoutDashboard, LogOut, Menu, Settings2, ShieldCheck, Users, X } from 'lucide-react'
-import { AlertsPanel, ChangePasswordPanel, HolidaysPanel, InstructorClassesPanel, LeaveRequestsPanel, ProgramsPanel, RealDashboard, ReportsPanel, StudentAttendancePanel, TenantsPanel, UsersPanel } from './admin.jsx'
+import { AlertsPanel, ChangePasswordPanel, HolidaysPanel, InstructorClassesPanel, LeaveRequestsPanel, ProgramsPanel, RealDashboard, ReportsPanel, StudentAttendancePanel, StudentTopicsPanel, TenantsPanel, UsersPanel } from './admin.jsx'
 import './styles.css'
 
 const roles = {
@@ -22,7 +22,7 @@ const roleKeyByCode = { student: 'student', instructor: 'instructor', tenant_adm
 
 const ADMIN_PANEL_BY_NAV = { Tenants: TenantsPanel, Usuarios: UsersPanel, Programas: ProgramsPanel, Calendario: HolidaysPanel, Permisos: LeaveRequestsPanel, Alertas: AlertsPanel, Reportes: ReportsPanel, Configuracion: ChangePasswordPanel }
 const INSTRUCTOR_PANEL_BY_NAV = { Inicio: RealDashboard, 'Mis clases': InstructorClassesPanel, Temarios: InstructorClassesPanel, Asistencia: InstructorClassesPanel, Alertas: AlertsPanel, 'Mi cuenta': ChangePasswordPanel }
-const STUDENT_PANEL_BY_NAV = { Inicio: RealDashboard, Permisos: LeaveRequestsPanel, Asistencia: StudentAttendancePanel, Alertas: AlertsPanel, 'Mi cuenta': ChangePasswordPanel }
+const STUDENT_PANEL_BY_NAV = { Inicio: RealDashboard, 'Mis temas': StudentTopicsPanel, Permisos: LeaveRequestsPanel, Asistencia: StudentAttendancePanel, Alertas: AlertsPanel, 'Mi cuenta': ChangePasswordPanel }
 const SECTION_PANELS_BY_ROLE = { admin: ADMIN_PANEL_BY_NAV, superAdmin: ADMIN_PANEL_BY_NAV, instructor: INSTRUCTOR_PANEL_BY_NAV, student: STUDENT_PANEL_BY_NAV }
 
 function getTenantSlugFromPath() {

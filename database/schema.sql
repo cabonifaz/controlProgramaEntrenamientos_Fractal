@@ -214,6 +214,30 @@ CREATE TABLE IF NOT EXISTS topics (
   CONSTRAINT fk_topic_status FOREIGN KEY (status_id) REFERENCES master_catalog_values(id)
 );
 
+-- Material didactico de un componente: un ZIP (HTML + assets) preparado
+-- fuera de la plataforma y descomprimido en
+-- UPLOADS_DIR/materials/components/<component_id>/<folder>. Solo una
+-- version vigente por componente (subir otra da de baja la anterior).
+-- tema-NN.html corresponde al tema NN (por sort_order) de CADA grupo del
+-- componente; soluciones/ nunca se sirve a alumnos.
+CREATE TABLE IF NOT EXISTS component_materials (
+  id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+  component_id BIGINT UNSIGNED NOT NULL,
+  folder VARCHAR(64) NOT NULL,
+  original_name VARCHAR(255) NOT NULL,
+  size_bytes BIGINT UNSIGNED NOT NULL,
+  topic_file_count INT UNSIGNED NOT NULL,
+  solution_file_count INT UNSIGNED NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  created_by BIGINT UNSIGNED NULL,
+  deleted_at DATETIME NULL,
+  deleted_by BIGINT UNSIGNED NULL,
+  is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+  KEY ix_component_materials_component (component_id, is_deleted),
+  CONSTRAINT fk_component_material_component FOREIGN KEY (component_id) REFERENCES components(id),
+  CONSTRAINT fk_component_material_creator FOREIGN KEY (created_by) REFERENCES users(id)
+);
+
 CREATE TABLE IF NOT EXISTS holidays (
   id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
   tenant_id BIGINT UNSIGNED NOT NULL,
@@ -529,6 +553,12 @@ DROP PROCEDURE IF EXISTS sp_topics_list_by_instructor;
 DROP PROCEDURE IF EXISTS sp_instructor_metrics;
 DROP PROCEDURE IF EXISTS sp_dashboard_get;
 DROP PROCEDURE IF EXISTS sp_attendance_record;
+DROP PROCEDURE IF EXISTS sp_component_materials_get;
+DROP PROCEDURE IF EXISTS sp_component_materials_set;
+DROP PROCEDURE IF EXISTS sp_component_materials_remove;
+DROP PROCEDURE IF EXISTS sp_topic_material_get;
+DROP PROCEDURE IF EXISTS sp_topics_list_by_student;
+DROP PROCEDURE IF EXISTS sp_component_material_prompt_data;
 -- Renombradas/eliminadas por el refactor a grupos (component_groups): estos
 -- guards se quedan para limpiar cualquier entorno que todavia las tenga.
 DROP PROCEDURE IF EXISTS sp_components_assign_instructor;
@@ -2864,6 +2894,256 @@ BEGIN
        WHERE g.instructor_id = p_actor_user_id AND g.is_deleted = FALSE
          AND t.scheduled_on IS NOT NULL AND t.scheduled_on < CURDATE() AND ts.code NOT IN ('completed', 'cancelled')
     ) AS delayed_topics;
+END$$
+
+-- ===================================================================
+-- Material didactico (ZIP por componente). La API descomprime y sirve los
+-- archivos; estos SPs deciden quien puede ver/gestionar y a que archivo
+-- corresponde cada tema. Gestionan: admins del tenant e instructores de
+-- algun grupo del componente. Ven: ademas, los alumnos inscritos. Las
+-- soluciones (soluciones/) nunca se entregan al rol student.
+-- ===================================================================
+CREATE PROCEDURE sp_component_materials_get(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED,
+  IN p_component_id BIGINT UNSIGNED
+)
+BEGIN
+  DECLARE v_program_tenant_id BIGINT UNSIGNED;
+
+  SELECT p.tenant_id INTO v_program_tenant_id
+  FROM components c JOIN training_programs p ON p.id = c.program_id
+  WHERE c.id = p_component_id AND c.is_deleted = FALSE;
+
+  IF v_program_tenant_id IS NULL THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'component_not_found';
+  END IF;
+  IF p_actor_role NOT IN ('super_admin', 'tenant_admin', 'instructor', 'student') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  ELSEIF p_actor_role <> 'super_admin' AND v_program_tenant_id <> p_actor_tenant_id THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
+  ELSEIF p_actor_role = 'instructor' AND NOT EXISTS (
+    SELECT 1 FROM component_groups g
+    WHERE g.component_id = p_component_id AND g.instructor_id = p_actor_user_id AND g.is_deleted = FALSE
+  ) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  ELSEIF p_actor_role = 'student' AND NOT EXISTS (
+    SELECT 1 FROM group_enrollments ge JOIN component_groups g ON g.id = ge.group_id
+    WHERE g.component_id = p_component_id AND ge.student_id = p_actor_user_id AND ge.is_deleted = FALSE AND g.is_deleted = FALSE
+  ) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+
+  SELECT c.id AS component_id, c.name AS component_name,
+         m.id AS material_id, m.folder, m.original_name, m.size_bytes, m.topic_file_count, m.solution_file_count,
+         m.created_at AS uploaded_at, u.full_name AS uploaded_by_name,
+         p_actor_role <> 'student' AS can_manage
+  FROM components c
+  LEFT JOIN component_materials m ON m.component_id = c.id AND m.is_deleted = FALSE
+  LEFT JOIN users u ON u.id = m.created_by
+  WHERE c.id = p_component_id;
+END$$
+
+-- Registra la version recien descomprimida y da de baja la anterior;
+-- devuelve la carpeta anterior para que la API la borre del volumen.
+CREATE PROCEDURE sp_component_materials_set(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED,
+  IN p_component_id BIGINT UNSIGNED, IN p_folder VARCHAR(64), IN p_original_name VARCHAR(255),
+  IN p_size_bytes BIGINT UNSIGNED, IN p_topic_file_count INT UNSIGNED, IN p_solution_file_count INT UNSIGNED
+)
+BEGIN
+  DECLARE v_program_tenant_id BIGINT UNSIGNED;
+  DECLARE v_previous_folder VARCHAR(64);
+
+  SELECT p.tenant_id INTO v_program_tenant_id
+  FROM components c JOIN training_programs p ON p.id = c.program_id
+  WHERE c.id = p_component_id AND c.is_deleted = FALSE;
+
+  IF v_program_tenant_id IS NULL THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'component_not_found';
+  END IF;
+  IF p_actor_role NOT IN ('super_admin', 'tenant_admin', 'instructor') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  ELSEIF p_actor_role <> 'super_admin' AND v_program_tenant_id <> p_actor_tenant_id THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
+  ELSEIF p_actor_role = 'instructor' AND NOT EXISTS (
+    SELECT 1 FROM component_groups g
+    WHERE g.component_id = p_component_id AND g.instructor_id = p_actor_user_id AND g.is_deleted = FALSE
+  ) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+
+  SELECT folder INTO v_previous_folder FROM component_materials
+  WHERE component_id = p_component_id AND is_deleted = FALSE
+  ORDER BY id DESC LIMIT 1;
+
+  UPDATE component_materials SET is_deleted = TRUE, deleted_at = NOW(), deleted_by = p_actor_user_id
+  WHERE component_id = p_component_id AND is_deleted = FALSE;
+
+  INSERT INTO component_materials (component_id, folder, original_name, size_bytes, topic_file_count, solution_file_count, created_by)
+  VALUES (p_component_id, p_folder, p_original_name, p_size_bytes, p_topic_file_count, p_solution_file_count, p_actor_user_id);
+
+  SELECT LAST_INSERT_ID() AS material_id, v_previous_folder AS previous_folder;
+END$$
+
+CREATE PROCEDURE sp_component_materials_remove(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED,
+  IN p_component_id BIGINT UNSIGNED
+)
+BEGIN
+  DECLARE v_program_tenant_id BIGINT UNSIGNED;
+  DECLARE v_folder VARCHAR(64);
+
+  SELECT p.tenant_id INTO v_program_tenant_id
+  FROM components c JOIN training_programs p ON p.id = c.program_id
+  WHERE c.id = p_component_id AND c.is_deleted = FALSE;
+
+  IF v_program_tenant_id IS NULL THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'component_not_found';
+  END IF;
+  IF p_actor_role NOT IN ('super_admin', 'tenant_admin', 'instructor') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  ELSEIF p_actor_role <> 'super_admin' AND v_program_tenant_id <> p_actor_tenant_id THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
+  ELSEIF p_actor_role = 'instructor' AND NOT EXISTS (
+    SELECT 1 FROM component_groups g
+    WHERE g.component_id = p_component_id AND g.instructor_id = p_actor_user_id AND g.is_deleted = FALSE
+  ) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+
+  SELECT folder INTO v_folder FROM component_materials
+  WHERE component_id = p_component_id AND is_deleted = FALSE
+  ORDER BY id DESC LIMIT 1;
+
+  IF v_folder IS NULL THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'material_not_found';
+  END IF;
+
+  UPDATE component_materials SET is_deleted = TRUE, deleted_at = NOW(), deleted_by = p_actor_user_id
+  WHERE component_id = p_component_id AND is_deleted = FALSE;
+
+  SELECT v_folder AS removed_folder;
+END$$
+
+-- Material de UNA clase: el tema en la posicion N del temario de su grupo
+-- (por sort_order, que no cambia al reprogramar) abre tema-NN.html del ZIP
+-- del componente. Solo el instructor de ESE grupo, admins del tenant o
+-- alumnos inscritos en ese grupo.
+CREATE PROCEDURE sp_topic_material_get(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED,
+  IN p_topic_id BIGINT UNSIGNED
+)
+BEGIN
+  DECLARE v_program_tenant_id BIGINT UNSIGNED;
+  DECLARE v_group_id BIGINT UNSIGNED;
+  DECLARE v_group_instructor_id BIGINT UNSIGNED;
+  DECLARE v_component_id BIGINT UNSIGNED;
+  DECLARE v_sort_order INT;
+
+  SELECT p.tenant_id, g.id, g.instructor_id, c.id, t.sort_order
+    INTO v_program_tenant_id, v_group_id, v_group_instructor_id, v_component_id, v_sort_order
+  FROM topics t
+  JOIN component_groups g ON g.id = t.group_id
+  JOIN components c ON c.id = g.component_id
+  JOIN training_programs p ON p.id = c.program_id
+  WHERE t.id = p_topic_id AND t.is_deleted = FALSE;
+
+  IF v_program_tenant_id IS NULL THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'target_not_found';
+  END IF;
+  IF p_actor_role NOT IN ('super_admin', 'tenant_admin', 'instructor', 'student') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  ELSEIF p_actor_role <> 'super_admin' AND v_program_tenant_id <> p_actor_tenant_id THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
+  ELSEIF p_actor_role = 'instructor' AND NOT (v_group_instructor_id <=> p_actor_user_id) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  ELSEIF p_actor_role = 'student' AND NOT EXISTS (
+    SELECT 1 FROM group_enrollments ge
+    WHERE ge.group_id = v_group_id AND ge.student_id = p_actor_user_id AND ge.is_deleted = FALSE
+  ) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+
+  SELECT v_component_id AS component_id, m.folder,
+         (SELECT COUNT(*) FROM topics t2
+          WHERE t2.group_id = v_group_id AND t2.is_deleted = FALSE
+            AND (t2.sort_order < v_sort_order OR (t2.sort_order = v_sort_order AND t2.id <= p_topic_id))) AS topic_position,
+         p_actor_role <> 'student' AS can_view_solutions
+  FROM (SELECT 1) AS one
+  LEFT JOIN component_materials m ON m.component_id = v_component_id AND m.is_deleted = FALSE;
+END$$
+
+-- Datos para armar el prompt que genera el material con una IA: el
+-- componente, su programa y el temario numerado igual que tema-NN.html.
+-- Todos los grupos comparten malla; se toma el grupo con mas temas como
+-- referencia. Una fila por tema (o una sola con tema NULL si no hay).
+CREATE PROCEDURE sp_component_material_prompt_data(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED,
+  IN p_component_id BIGINT UNSIGNED
+)
+BEGIN
+  DECLARE v_program_tenant_id BIGINT UNSIGNED;
+  DECLARE v_reference_group_id BIGINT UNSIGNED;
+
+  SELECT p.tenant_id INTO v_program_tenant_id
+  FROM components c JOIN training_programs p ON p.id = c.program_id
+  WHERE c.id = p_component_id AND c.is_deleted = FALSE;
+
+  IF v_program_tenant_id IS NULL THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'component_not_found';
+  END IF;
+  IF p_actor_role NOT IN ('super_admin', 'tenant_admin', 'instructor') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  ELSEIF p_actor_role <> 'super_admin' AND v_program_tenant_id <> p_actor_tenant_id THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
+  ELSEIF p_actor_role = 'instructor' AND NOT EXISTS (
+    SELECT 1 FROM component_groups g
+    WHERE g.component_id = p_component_id AND g.instructor_id = p_actor_user_id AND g.is_deleted = FALSE
+  ) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+
+  SELECT g.id INTO v_reference_group_id
+  FROM component_groups g
+  LEFT JOIN topics t ON t.group_id = g.id AND t.is_deleted = FALSE
+  WHERE g.component_id = p_component_id AND g.is_deleted = FALSE
+  GROUP BY g.id
+  ORDER BY COUNT(t.id) DESC, g.id
+  LIMIT 1;
+
+  SELECT c.id AS component_id, c.name AS component_name, c.description AS component_description,
+         p.name AS program_name, p.description AS program_description, p.cohort,
+         pm.label AS modality_label, p.starts_on, p.ends_on,
+         t.id AS topic_id, t.title AS topic_title, t.description AS topic_description, t.duration_minutes
+  FROM components c
+  JOIN training_programs p ON p.id = c.program_id
+  LEFT JOIN master_catalog_values pm ON pm.id = p.modality_id
+  LEFT JOIN topics t ON t.group_id = v_reference_group_id AND t.is_deleted = FALSE
+  WHERE c.id = p_component_id
+  ORDER BY t.sort_order, t.id;
+END$$
+
+-- Todo el temario del alumno (pasado y futuro), para "Mis temas": desde
+-- ahi abre el material de cada clase.
+CREATE PROCEDURE sp_topics_list_by_student(IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80))
+BEGIN
+  IF p_actor_role <> 'student' THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+
+  SELECT t.id, t.title, t.description, t.sort_order, t.scheduled_on, ts.code AS status_code, ts.label AS status_label,
+         g.id AS group_id, g.name AS group_name, c.id AS component_id, c.name AS component_name,
+         p.id AS program_id, p.name AS program_name, iu.full_name AS instructor_name,
+         EXISTS (SELECT 1 FROM component_materials m WHERE m.component_id = c.id AND m.is_deleted = FALSE) AS has_material
+  FROM group_enrollments ge
+  JOIN component_groups g ON g.id = ge.group_id AND g.is_deleted = FALSE
+  JOIN components c ON c.id = g.component_id AND c.is_deleted = FALSE
+  JOIN training_programs p ON p.id = c.program_id AND p.is_deleted = FALSE
+  JOIN topics t ON t.group_id = g.id AND t.is_deleted = FALSE
+  JOIN master_catalog_values ts ON ts.id = t.status_id
+  LEFT JOIN users iu ON iu.id = g.instructor_id
+  WHERE ge.student_id = p_actor_user_id AND ge.is_deleted = FALSE
+  ORDER BY p.name, c.sort_order, c.name, t.sort_order, t.id;
 END$$
 
 CREATE PROCEDURE sp_dashboard_get(IN p_user_id BIGINT, IN p_role VARCHAR(80), IN p_tenant_id BIGINT)

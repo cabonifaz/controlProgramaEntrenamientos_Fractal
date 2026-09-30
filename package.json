@@ -20,6 +20,7 @@
     "exceljs": "^4.4.0",
     "express": "latest",
     "jsonwebtoken": "latest",
+    "jszip": "^3.10.2",
     "lucide-react": "latest",
     "multer": "latest",
     "mysql2": "latest",
