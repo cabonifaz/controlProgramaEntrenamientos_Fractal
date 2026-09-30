@@ -1795,12 +1795,22 @@ function InstructorAttendancePanel({ session, topic, onBack }) {
                   <tr key={row.student_id}>
                     <td>{row.student_name}{row.student_is_active === false && <span className="pill pill-inactive">Inactivo</span>}</td>
                     <td>
-                      <select value={statusFor(row)} onChange={(e) => patch(row.student_id, { statusCode: e.target.value })}>
+                      <select
+                        value={statusFor(row)}
+                        onChange={(e) => {
+                          const statusCode = e.target.value
+                          patch(row.student_id, statusCode === 'present' ? { statusCode, reasonCode: '' } : { statusCode })
+                        }}
+                      >
                         {statuses.map((s) => <option key={s.code} value={s.code}>{s.label}</option>)}
                       </select>
                     </td>
                     <td>
-                      <select value={draft[row.student_id]?.reasonCode ?? row.reason_code ?? ''} onChange={(e) => patch(row.student_id, { reasonCode: e.target.value })}>
+                      <select
+                        value={draft[row.student_id]?.reasonCode ?? row.reason_code ?? ''}
+                        onChange={(e) => patch(row.student_id, { reasonCode: e.target.value })}
+                        disabled={statusFor(row) === 'present'}
+                      >
                         <option value="">—</option>
                         {reasons.map((r) => <option key={r.code} value={r.code}>{r.label}</option>)}
                       </select>
