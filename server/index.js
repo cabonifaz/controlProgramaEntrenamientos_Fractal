@@ -1368,6 +1368,10 @@ const HORARIO_SHEET_COLUMNS = [
   { header: 'Contenidos', key: 'description' },
   { header: 'Horas académicas', key: 'academicHours' },
 ]
+const HOLIDAY_SHEET_COLUMNS = [
+  { header: 'Fecha', key: 'holidayOn' },
+  { header: 'Feriado', key: 'name' },
+]
 
 app.get('/api/templates/program-full', (_req, res) => {
   res.setHeader('Content-Type', XLSX_CONTENT_TYPE)
@@ -1393,11 +1397,40 @@ app.post('/api/programs/:id/full-import', authenticate, async (req, res) => {
     return res.status(400).json({ message: 'El archivo no tiene una hoja de horario con las columnas Semana/Día/Fecha/Componente/Tema.' })
   }
   const componentsSheet = findSheetByHeaders(workbook, ['Nombre', 'Descripción'])
+  const holidaysSheet = findSheetByHeaders(workbook, ['Fecha', 'Feriado'])
 
   const instructors = await callProcedure('sp_users_list', {
     p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId, p_tenant_id_filter: null, p_role_code_filter: 'instructor',
   })
   const instructorByEmail = new Map(instructors.map((i) => [i.email.toLowerCase(), i.id]))
+
+  // 0) Feriados (opcional): antes que el temario, para que las fechas que
+  // caigan en feriado se rechacen de una (regla ya aplicada en sp_topics_create).
+  // Alimentan tambien el calendario semanal visible para todos los roles.
+  const holidayResults = []
+  if (holidaysSheet) {
+    const programs = await callProcedure('sp_programs_list', {
+      p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId, p_tenant_id_filter: null,
+    })
+    const program = programs.find((p) => p.id === programId)
+    const tenantId = program ? program.tenant_id : req.user.tenantId
+    const rows = parseSheetRows(holidaysSheet, HOLIDAY_SHEET_COLUMNS)
+    for (const row of rows) {
+      const holidayOn = toDateString(row.holidayOn)
+      const name = toTrimmedString(row.name)
+      if (!holidayOn || !name) continue
+      try {
+        await callProcedure('sp_holidays_create', {
+          p_actor_user_id: req.user.id, p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId,
+          p_tenant_id: tenantId, p_holiday_on: holidayOn, p_name: name, p_type_code: 'national',
+        })
+        holidayResults.push({ row: row.__row, ok: true, name })
+      } catch (err) {
+        const { message } = mapStoredProcedureError(err)
+        holidayResults.push({ row: row.__row, ok: false, message })
+      }
+    }
+  }
 
   // 1) Componentes: reusa por nombre (actualiza descripcion/orden) o crea.
   //    Cada uno recibe (o conserva) un grupo por defecto "Grupo A".
@@ -1546,6 +1579,7 @@ app.post('/api/programs/:id/full-import', authenticate, async (req, res) => {
   }
 
   res.json({
+    holidays: summarize(holidayResults),
     components: summarize(componentResults),
     topics: summarize(topicResults),
     scheduleDays: summarize(scheduleResults),

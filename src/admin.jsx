@@ -234,6 +234,7 @@ function FullProgramImportBox({ session, program, onImported }) {
       <ErrorNote message={error} />
       {result && (
         <div className="excel-import-result">
+          <Block title="Feriados" summary={result.holidays} />
           <Block title="Componentes" summary={result.components} />
           <Block title="Temario" summary={result.topics} />
           <Block title="Horario semanal" summary={result.scheduleDays} />
@@ -1086,7 +1087,7 @@ function ComponentsPanel({ session, program, onBack }) {
       </div>
       <section className="panel admin-form-panel">
         <h3>Cargar la estructura completa del programa (recomendado)</h3>
-        <p className="muted">Un solo Excel con componentes, temario y horario reales (fecha y hora de cada clase). Este es el formato estándar para subir un programa completo de una vez; sirve para 6, 8, 10 semanas, etc.</p>
+        <p className="muted">Un solo Excel con componentes, temario, horario real (fecha y hora de cada clase) y feriados del tenant. Este es el formato estándar para subir un programa completo de una vez; sirve para 6, 8, 10 semanas, etc.</p>
         <FullProgramImportBox session={session} program={program} onImported={reload} />
       </section>
       <section className="panel admin-form-panel">
