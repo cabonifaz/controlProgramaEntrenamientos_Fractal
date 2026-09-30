@@ -1866,7 +1866,7 @@ function InstructorTopicsPanel({ session, group, onBack }) {
 // Calendario semanal del instructor (todas sus clases, cualquier
 // componente/programa), coloreado por grupo para distinguirlas de un
 // vistazo. "Hoy" vuelve a la semana actual.
-function InstructorWeeklyCalendar({ session }) {
+function InstructorWeeklyCalendar({ session, onSelectTopic }) {
   const { token, profile } = session
   const { items: topics, loading, error } = useList('/api/my/topics', token)
   const { items: holidays } = useList(profile.tenantId ? `/api/holidays?tenantId=${profile.tenantId}` : '/api/holidays', token)
@@ -1915,11 +1915,17 @@ function InstructorWeeklyCalendar({ session }) {
               {isHoliday && <div className="week-day-holiday-tag">Feriado</div>}
               {dayTopics.length === 0 && !isHoliday && <p className="muted week-day-empty">Sin clases</p>}
               {dayTopics.map((t) => (
-                <div key={t.id} className="week-topic" style={{ borderLeft: `3px solid ${colorByGroupId.get(t.group_id)}` }}>
+                <button
+                  type="button"
+                  key={t.id}
+                  className="week-topic week-topic-clickable"
+                  style={{ borderLeft: `3px solid ${colorByGroupId.get(t.group_id)}` }}
+                  onClick={() => onSelectTopic?.(t)}
+                >
                   <strong>{t.component_name}</strong>
                   <span>{t.title}</span>
                   <small>{t.group_name} · {t.program_name}</small>
-                </div>
+                </button>
               ))}
             </div>
           )
@@ -1933,14 +1939,18 @@ export function InstructorClassesPanel({ session }) {
   const { token } = session
   const { items, error, loading } = useList('/api/my/groups', token)
   const [selectedGroup, setSelectedGroup] = useState(null)
+  const [selectedTopic, setSelectedTopic] = useState(null)
 
+  if (selectedTopic) {
+    return <InstructorAttendancePanel session={session} topic={selectedTopic} onBack={() => setSelectedTopic(null)} />
+  }
   if (selectedGroup) {
     return <InstructorTopicsPanel session={session} group={selectedGroup} onBack={() => setSelectedGroup(null)} />
   }
 
   return (
     <div className="admin-wrap">
-      <InstructorWeeklyCalendar session={session} />
+      <InstructorWeeklyCalendar session={session} onSelectTopic={setSelectedTopic} />
       <section className="panel">
         <h3>Mis grupos</h3>
         <ErrorNote message={error} />
