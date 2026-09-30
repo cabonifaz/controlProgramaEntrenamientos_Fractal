@@ -1010,6 +1010,93 @@ function ProgramSchedulePanel({ session, program, onBack }) {
   )
 }
 
+// Semanas reales de UN grupo, con sus sesiones y temas (usa las fechas
+// reales del temario, no el patron recurrente). La hora se deriva del
+// horario recurrente del grupo para ese dia de semana, cuando existe.
+function GroupWeeksView({ session, group }) {
+  const { token } = session
+  const { items: topics, loading, error } = useList(`/api/groups/${group.id}/topics`, token)
+  const { items: scheduleDays } = useList(`/api/groups/${group.id}/schedule-days`, token)
+
+  const weeks = useMemo(() => {
+    const dated = topics.filter((t) => t.scheduled_on).slice().sort((a, b) => a.scheduled_on.localeCompare(b.scheduled_on))
+    const map = new Map()
+    dated.forEach((t) => {
+      const weekKey = toISODate(startOfWeek(t.scheduled_on))
+      if (!map.has(weekKey)) map.set(weekKey, [])
+      map.get(weekKey).push(t)
+    })
+    return [...map.entries()].sort(([a], [b]) => a.localeCompare(b))
+  }, [topics])
+
+  function timeFor(topic) {
+    const weekday = new Date(`${topic.scheduled_on}T00:00:00Z`).getUTCDay()
+    const day = scheduleDays.find((d) => d.weekday === weekday)
+    return day ? `${day.start_time.slice(0, 5)}–${day.end_time.slice(0, 5)}` : null
+  }
+
+  if (loading) return <p className="muted">Cargando…</p>
+
+  const undated = topics.filter((t) => !t.scheduled_on)
+
+  return (
+    <div>
+      <ErrorNote message={error} />
+      {weeks.length === 0 && undated.length === 0 && (
+        <p className="muted">Este grupo todavía no tiene temario. Cárgalo con el Excel completo del programa o crea temas manualmente.</p>
+      )}
+      {weeks.map(([weekKey, weekTopics], i) => {
+        const weekStartDate = new Date(`${weekKey}T00:00:00Z`)
+        const weekEndDate = addDays(weekStartDate, 6)
+        return (
+          <div className="week-block" key={weekKey}>
+            <h4>Semana {i + 1} · {formatDayLabel(weekStartDate)} – {formatDayLabel(weekEndDate)}</h4>
+            <ul className="session-list">
+              {weekTopics.map((t) => (
+                <li key={t.id}>
+                  <span className="session-date">{formatDayLabel(new Date(`${t.scheduled_on}T00:00:00Z`))}</span>
+                  {timeFor(t) && <span className="session-time">{timeFor(t)}</span>}
+                  <span className="session-title">{t.title}</span>
+                  <StatusPill label={t.status_label} />
+                </li>
+              ))}
+            </ul>
+          </div>
+        )
+      })}
+      {undated.length > 0 && (
+        <div className="week-block">
+          <h4>Sin fecha programada</h4>
+          <ul className="session-list">
+            {undated.map((t) => (
+              <li key={t.id}><span className="session-title">{t.title}</span><StatusPill label={t.status_label} /></li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function GroupHorarioPanel({ session, group, onBack }) {
+  const [tab, setTab] = useState('weeks')
+  return (
+    <div className="admin-wrap">
+      <button className="text-button crumb-back" onClick={onBack}>← Volver</button>
+      <section className="panel">
+        <h3>Horario — {group.name}</h3>
+        <div className="tab-row">
+          <button className={tab === 'weeks' ? 'tab-button active' : 'tab-button'} onClick={() => setTab('weeks')}>Semanas</button>
+          <button className={tab === 'recurring' ? 'tab-button active' : 'tab-button'} onClick={() => setTab('recurring')}>Horario recurrente</button>
+        </div>
+      </section>
+      {tab === 'weeks'
+        ? <section className="panel"><GroupWeeksView session={session} group={group} /></section>
+        : <GroupSchedulePanel session={session} group={group} />}
+    </div>
+  )
+}
+
 function GroupsPanel({ session, component, onBack }) {
   const { token } = session
   const { items, error, loading, reload } = useList(`/api/components/${component.id}/groups`, token)
@@ -1069,12 +1156,7 @@ function GroupsPanel({ session, component, onBack }) {
   }
 
   if (view?.mode === 'schedule') {
-    return (
-      <div className="admin-wrap">
-        <button className="text-button crumb-back" onClick={() => setView(null)}>← Volver a {component.name}</button>
-        <GroupSchedulePanel session={session} group={view.group} />
-      </div>
-    )
+    return <GroupHorarioPanel session={session} group={view.group} onBack={() => setView(null)} />
   }
   if (view?.mode === 'topics') {
     return <TopicsPanel session={session} group={view.group} onBack={() => setView(null)} />
