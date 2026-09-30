@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
+import { AlertTriangle, ArrowRight, Calendar, Users as UsersIcon } from 'lucide-react'
 import { apiRequest, apiUpload } from './api'
 
 function useList(path, token) {
@@ -2343,6 +2344,11 @@ export function RealDashboard({ session }) {
     return <InstructorAttendancePanel session={session} topic={selectedTopic} onBack={() => setSelectedTopic(null)} />
   }
 
+  const attendanceRate = metrics?.group_attendance_rate
+  const attendanceClass = attendanceRate == null ? '' : attendanceRate >= 85 ? 'metric-good' : attendanceRate >= 70 ? 'metric-warning' : 'metric-danger'
+  const delayedCount = metrics?.delayed_topics
+  const delayedClass = delayedCount == null ? '' : delayedCount === 0 ? 'metric-good' : delayedCount <= 2 ? 'metric-warning' : 'metric-danger'
+
   return (
     <div className="admin-wrap">
       {!isStudent && <NextClassBanner session={session} onOpenAttendance={setSelectedTopic} />}
@@ -2358,9 +2364,18 @@ export function RealDashboard({ session }) {
             </>
           ) : (
             <>
-              <article className="metric"><div className="metric-head"><span>Clases esta semana</span></div><strong>{metrics?.classes_this_week ?? '—'}</strong></article>
-              <article className="metric"><div className="metric-head"><span>Asistencia del grupo</span></div><strong>{metrics?.group_attendance_rate ?? '—'}%</strong></article>
-              <article className="metric"><div className="metric-head"><span>Temas atrasados</span></div><strong>{metrics?.delayed_topics ?? '—'}</strong></article>
+              <article className="metric metric-accent-blue">
+                <div className="metric-head-icon"><Calendar size={16} /><span>Clases esta semana</span></div>
+                <strong>{metrics?.classes_this_week ?? '—'}</strong>
+              </article>
+              <article className={`metric ${attendanceClass}`}>
+                <div className="metric-head-icon"><UsersIcon size={16} /><span>Asistencia del grupo</span></div>
+                <strong>{metrics?.group_attendance_rate ?? '—'}%</strong>
+              </article>
+              <article className={`metric ${delayedClass}`}>
+                <div className="metric-head-icon"><AlertTriangle size={16} /><span>Temas atrasados</span></div>
+                <strong>{metrics?.delayed_topics ?? '—'}</strong>
+              </article>
             </>
           )}
         </div>
@@ -2368,20 +2383,41 @@ export function RealDashboard({ session }) {
       <section className="panel">
         <h3>{isStudent ? 'Próximas sesiones' : 'Tu agenda'}</h3>
         <ErrorNote message={agendaError} />
-        {agendaLoading ? <p className="muted">Cargando…</p> : agenda.length === 0 ? <p className="muted">No hay temas programados próximamente.</p> : (
+        {agendaLoading ? <p className="muted">Cargando…</p> : agenda.length === 0 ? <p className="muted">No hay temas programados próximamente.</p> : isStudent ? (
           <table className="admin-table">
-            <thead><tr><th>Tema</th><th>Fecha</th><th>Componente</th><th>{isStudent ? 'Instructor' : 'Alumnos inscritos'}</th></tr></thead>
+            <thead><tr><th>Tema</th><th>Fecha</th><th>Componente</th><th>Instructor</th></tr></thead>
             <tbody>
               {agenda.map((t) => (
                 <tr key={t.topic_id}>
                   <td>{t.title}</td>
                   <td>{t.scheduled_on}</td>
                   <td>{t.component_name} · {t.program_name}</td>
-                  <td>{isStudent ? (t.instructor_name || '—') : `${t.enrolled_students} alumno(s)`}</td>
+                  <td>{t.instructor_name || '—'}</td>
                 </tr>
               ))}
             </tbody>
           </table>
+        ) : (
+          <div className="agenda-card-list">
+            {agenda.map((t) => (
+              <button
+                type="button"
+                key={t.topic_id}
+                className="agenda-card"
+                onClick={() => setSelectedTopic({ id: t.topic_id, title: t.title, scheduled_on: t.scheduled_on, status_code: t.status_code })}
+              >
+                <div className="agenda-card-date"><Calendar size={14} /><span>{t.scheduled_on}</span></div>
+                <div className="agenda-card-body">
+                  <strong>{t.title}</strong>
+                  <small>{t.component_name} · {t.program_name}</small>
+                </div>
+                <div className="agenda-card-side">
+                  <span className="agenda-card-count"><UsersIcon size={13} /> {t.enrolled_students}</span>
+                  <ArrowRight size={16} />
+                </div>
+              </button>
+            ))}
+          </div>
         )}
       </section>
     </div>
