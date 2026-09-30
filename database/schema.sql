@@ -482,6 +482,7 @@ DROP PROCEDURE IF EXISTS sp_programs_set_status;
 DROP PROCEDURE IF EXISTS sp_programs_enroll_student;
 DROP PROCEDURE IF EXISTS sp_components_list;
 DROP PROCEDURE IF EXISTS sp_components_create;
+DROP PROCEDURE IF EXISTS sp_components_update;
 DROP PROCEDURE IF EXISTS sp_component_groups_list;
 DROP PROCEDURE IF EXISTS sp_component_groups_list_by_program;
 DROP PROCEDURE IF EXISTS sp_group_schedule_days_list_by_program;
@@ -1204,6 +1205,32 @@ BEGIN
   VALUES (p_program_id, p_name, p_description, COALESCE(p_sort_order, 0), v_status_id, p_actor_user_id);
 
   SELECT LAST_INSERT_ID() AS component_id;
+END$$
+
+CREATE PROCEDURE sp_components_update(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED,
+  IN p_component_id BIGINT UNSIGNED, IN p_name VARCHAR(180), IN p_description TEXT, IN p_sort_order INT
+)
+BEGIN
+  DECLARE v_program_tenant_id BIGINT UNSIGNED;
+
+  SELECT p.tenant_id INTO v_program_tenant_id
+  FROM components c JOIN training_programs p ON p.id = c.program_id
+  WHERE c.id = p_component_id AND c.is_deleted = FALSE;
+
+  IF v_program_tenant_id IS NULL THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'component_not_found';
+  END IF;
+  IF p_actor_role = 'tenant_admin' AND v_program_tenant_id <> p_actor_tenant_id THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
+  ELSEIF p_actor_role NOT IN ('super_admin', 'tenant_admin') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+
+  UPDATE components
+  SET name = p_name, description = p_description, sort_order = COALESCE(p_sort_order, sort_order),
+      updated_at = NOW(), updated_by = p_actor_user_id
+  WHERE id = p_component_id;
 END$$
 
 -- ===================================================================

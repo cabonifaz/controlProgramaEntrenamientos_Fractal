@@ -20,15 +20,30 @@ function cellToPlainValue(cell) {
   return value
 }
 
-// Lee la primera hoja de un .xlsx subido y la mapea a objetos planos usando
-// el texto del encabezado (no la posicion de columna) para tolerar orden
-// distinto o columnas de mas.
-export async function parseUploadBuffer(buffer, columns) {
+export async function loadWorkbook(buffer) {
   const workbook = new ExcelJS.Workbook()
   await workbook.xlsx.load(buffer)
-  const sheet = workbook.worksheets[0]
-  if (!sheet) return []
+  return workbook
+}
 
+// Encuentra la hoja cuya fila de encabezados contiene TODOS los textos
+// dados (sin importar el orden ni el nombre de la hoja). Sirve para ubicar
+// "la hoja de horario" en un archivo de varias hojas sin depender de que
+// se llame exactamente "Horario 8 semanas" (para reusar el formato con
+// programas de distinta cantidad de semanas).
+export function findSheetByHeaders(workbook, requiredHeaders) {
+  return workbook.worksheets.find((sheet) => {
+    const headers = new Set()
+    sheet.getRow(1).eachCell((cell) => headers.add(String(cell.value || '').trim()))
+    return requiredHeaders.every((h) => headers.has(h))
+  })
+}
+
+// Mapea las filas de UNA hoja a objetos planos usando el texto del
+// encabezado (no la posicion de columna), para tolerar orden distinto o
+// columnas de mas.
+export function parseSheetRows(sheet, columns) {
+  if (!sheet) return []
   const keyByColumnIndex = {}
   sheet.getRow(1).eachCell((cell, colNumber) => {
     const header = String(cell.value || '').trim()
@@ -53,6 +68,34 @@ export async function parseUploadBuffer(buffer, columns) {
   return rows
 }
 
+// Lee la primera hoja de un .xlsx subido y la mapea a objetos planos.
+// Usado por las plantillas simples (una sola hoja).
+export async function parseUploadBuffer(buffer, columns) {
+  const workbook = await loadWorkbook(buffer)
+  return parseSheetRows(workbook.worksheets[0], columns)
+}
+
+// Acepta "18:30 – 20:00", "18:30-20:00" o "18:30 - 20:00" (guion normal,
+// en-dash o em-dash). Devuelve null si no calza el patron o el rango es
+// invalido.
+export function parseTimeRange(value) {
+  const text = toTrimmedString(value)
+  const match = text.match(/(\d{1,2}):(\d{2})\s*[-–—]\s*(\d{1,2}):(\d{2})/)
+  if (!match) return null
+  const [, sh, sm, eh, em] = match.map(Number)
+  const startMinutes = sh * 60 + sm
+  const endMinutes = eh * 60 + em
+  if (endMinutes <= startMinutes) return null
+  const pad = (n) => String(n).padStart(2, '0')
+  return {
+    startTime: `${pad(sh)}:${pad(sm)}`,
+    endTime: `${pad(eh)}:${pad(em)}`,
+    durationMinutes: endMinutes - startMinutes,
+    startMinutes,
+    endMinutes,
+  }
+}
+
 // Excel puede entregar una fecha como objeto Date (celda con formato fecha)
 // o como texto "2026-03-05"; normaliza a YYYY-MM-DD o null.
 export function toDateString(value) {
@@ -65,6 +108,11 @@ export function toDateString(value) {
 export function toTrimmedString(value) {
   if (value === null || value === undefined) return ''
   return String(value).trim()
+}
+
+export function minutesToTime(mins) {
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${pad(Math.floor(mins / 60))}:${pad(mins % 60)}`
 }
 
 export function toIntOrNull(value) {

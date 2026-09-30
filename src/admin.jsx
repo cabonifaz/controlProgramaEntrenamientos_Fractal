@@ -176,6 +176,73 @@ function ExcelImportBox({ session, templateUrl, importUrl, onImported }) {
   )
 }
 
+// Carga completa: un solo Excel (Componentes + hoja de horario con fecha/
+// hora reales) crea o actualiza componentes, su grupo por defecto, todo
+// el temario con fecha real, y el horario semanal recurrente de cada
+// grupo. Resumen mas rico que ExcelImportBox: tres bloques (componentes,
+// temas, horario) en vez de uno.
+function FullProgramImportBox({ session, program, onImported }) {
+  const { token } = session
+  const [uploading, setUploading] = useState(false)
+  const [result, setResult] = useState(null)
+  const [error, setError] = useState('')
+
+  async function handleFile(e) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setError('')
+    setResult(null)
+    setUploading(true)
+    try {
+      const formData = new FormData()
+      formData.append('file', file)
+      const res = await apiUpload(`/api/programs/${program.id}/full-import`, { token, formData })
+      setResult(res)
+      onImported?.()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setUploading(false)
+      e.target.value = ''
+    }
+  }
+
+  function Block({ title, summary }) {
+    if (!summary) return null
+    const failedRows = summary.results.filter((r) => !r.ok)
+    return (
+      <div className="excel-import-block">
+        <strong>{title}:</strong> {summary.created} creado(s), {summary.failed} con error.
+        {failedRows.length > 0 && (
+          <ul className="excel-import-errors">
+            {failedRows.map((r, i) => <li key={i}>{r.row ? `Fila ${r.row}: ` : ''}{r.message}</li>)}
+          </ul>
+        )}
+      </div>
+    )
+  }
+
+  return (
+    <div className="excel-import">
+      <div className="excel-import-actions">
+        <a className="btn-mini" href="/api/templates/program-full" download>Descargar plantilla</a>
+        <label className="btn-mini logo-upload-label">
+          {uploading ? 'Cargando…' : 'Cargar Excel completo'}
+          <input type="file" accept=".xlsx" onChange={handleFile} hidden />
+        </label>
+      </div>
+      <ErrorNote message={error} />
+      {result && (
+        <div className="excel-import-result">
+          <Block title="Componentes" summary={result.components} />
+          <Block title="Temario" summary={result.topics} />
+          <Block title="Horario semanal" summary={result.scheduleDays} />
+        </div>
+      )}
+    </div>
+  )
+}
+
 function BrandColorPicker({ session, tenantId, currentColor, onSaved }) {
   const { token } = session
   const [color, setColor] = useState(currentColor || '#f4a500')
@@ -964,20 +1031,40 @@ function GroupsPanel({ session, component, onBack }) {
   )
 }
 
+const EMPTY_COMPONENT_FORM = { name: '', description: '', sortOrder: 0 }
+
 function ComponentsPanel({ session, program, onBack }) {
   const { token } = session
   const { items, error, loading, reload } = useList(`/api/programs/${program.id}/components`, token)
-  const [form, setForm] = useState({ name: '', description: '', sortOrder: 0 })
+  const [form, setForm] = useState(EMPTY_COMPONENT_FORM)
   const [formError, setFormError] = useState('')
+  const [editingId, setEditingId] = useState(null)
   const [selectedComponent, setSelectedComponent] = useState(null)
   const [showSchedule, setShowSchedule] = useState(false)
 
-  async function handleCreate(e) {
+  function startEdit(c) {
+    setEditingId(c.id)
+    setForm({ name: c.name, description: c.description || '', sortOrder: c.sort_order ?? 0 })
+    setFormError('')
+  }
+
+  function cancelEdit() {
+    setEditingId(null)
+    setForm(EMPTY_COMPONENT_FORM)
+    setFormError('')
+  }
+
+  async function handleSubmit(e) {
     e.preventDefault()
     setFormError('')
     try {
-      await apiRequest(`/api/programs/${program.id}/components`, { method: 'POST', token, body: form })
-      setForm({ name: '', description: '', sortOrder: 0 })
+      if (editingId) {
+        await apiRequest(`/api/components/${editingId}`, { method: 'PATCH', token, body: form })
+      } else {
+        await apiRequest(`/api/programs/${program.id}/components`, { method: 'POST', token, body: form })
+      }
+      setEditingId(null)
+      setForm(EMPTY_COMPONENT_FORM)
       reload()
     } catch (err) {
       setFormError(err.message)
@@ -998,17 +1085,25 @@ function ComponentsPanel({ session, program, onBack }) {
         <button className="btn-mini" onClick={() => setShowSchedule(true)}>Horario semanal del programa</button>
       </div>
       <section className="panel admin-form-panel">
-        <h3>Nuevo componente — {program.name}</h3>
-        <form className="admin-form" onSubmit={handleCreate}>
+        <h3>Cargar la estructura completa del programa (recomendado)</h3>
+        <p className="muted">Un solo Excel con componentes, temario y horario reales (fecha y hora de cada clase). Este es el formato estándar para subir un programa completo de una vez; sirve para 6, 8, 10 semanas, etc.</p>
+        <FullProgramImportBox session={session} program={program} onImported={reload} />
+      </section>
+      <section className="panel admin-form-panel">
+        <h3>{editingId ? `Editar componente — ${program.name}` : `Nuevo componente — ${program.name}`}</h3>
+        <form className="admin-form" onSubmit={handleSubmit}>
           <label>Nombre<input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required /></label>
           <label className="full-field">Descripción<textarea rows={3} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></label>
           <label>Orden<input type="number" value={form.sortOrder} onChange={(e) => setForm({ ...form, sortOrder: e.target.value })} /></label>
           <ErrorNote message={formError} />
-          <button className="primary">Crear componente</button>
+          <div className="row-actions">
+            <button className="primary">{editingId ? 'Guardar cambios' : 'Crear componente'}</button>
+            {editingId && <button type="button" className="btn-mini" onClick={cancelEdit}>Cancelar edición</button>}
+          </div>
         </form>
       </section>
       <section className="panel admin-form-panel">
-        <h3>Carga masiva</h3>
+        <h3>Carga masiva de componentes (solo componentes, sin temario)</h3>
         <p className="muted">Varios componentes de {program.name} en un solo Excel. Cada uno crea automáticamente su "Grupo A"; el instructor es opcional.</p>
         <ExcelImportBox session={session} templateUrl="/api/templates/components" importUrl={`/api/programs/${program.id}/components/import`} onImported={reload} />
       </section>
@@ -1017,14 +1112,18 @@ function ComponentsPanel({ session, program, onBack }) {
         <ErrorNote message={error} />
         {loading ? <p className="muted">Cargando…</p> : (
           <table className="admin-table">
-            <thead><tr><th>Nombre</th><th>Estado</th><th>Grupos</th><th></th></tr></thead>
+            <thead><tr><th>Nombre</th><th>Descripción</th><th>Estado</th><th>Grupos</th><th></th></tr></thead>
             <tbody>
               {items.map((c) => (
                 <tr key={c.id}>
                   <td>{c.name}</td>
+                  <td className="cell-truncate" title={c.description || ''}>{c.description || '—'}</td>
                   <td><StatusPill label={c.status_label} /></td>
                   <td>{c.group_count}</td>
-                  <td><button className="btn-mini" onClick={() => setSelectedComponent(c)}>Ver grupos</button></td>
+                  <td className="row-actions">
+                    <button className="btn-mini" onClick={() => startEdit(c)}>Editar</button>
+                    <button className="btn-mini" onClick={() => setSelectedComponent(c)}>Ver grupos</button>
+                  </td>
                 </tr>
               ))}
             </tbody>

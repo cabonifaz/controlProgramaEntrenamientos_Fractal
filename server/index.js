@@ -9,7 +9,10 @@ import { hashPassword, signSessionToken, verifyPassword } from './auth.js'
 import { authenticate } from './middleware/authenticate.js'
 import { mapStoredProcedureError } from './errors.js'
 import { uploadLogo, uploadSpreadsheet, UPLOADS_DIR } from './uploads.js'
-import { buildTemplateBuffer, parseUploadBuffer, toDateString, toTrimmedString, toIntOrNull } from './excel.js'
+import {
+  buildTemplateBuffer, parseUploadBuffer, toDateString, toTrimmedString, toIntOrNull,
+  loadWorkbook, findSheetByHeaders, parseSheetRows, parseTimeRange, minutesToTime,
+} from './excel.js'
 
 const app = express()
 const port = Number(process.env.PORT || 3000)
@@ -493,6 +496,25 @@ app.post('/api/programs/:id/components', authenticate, async (req, res) => {
       p_program_id: programId, p_name: name, p_description: description || null, p_sort_order: sortOrder ?? 0,
     })
     res.status(201).json({ data: result })
+  } catch (err) {
+    const { status, message } = mapStoredProcedureError(err)
+    res.status(status).json({ message })
+  }
+})
+
+app.patch('/api/components/:id', authenticate, async (req, res) => {
+  const componentId = Number(req.params.id)
+  const { name, description, sortOrder } = req.body || {}
+  if (!Number.isInteger(componentId) || typeof name !== 'string' || !name.trim()) {
+    return res.status(400).json({ message: 'Invalid request format' })
+  }
+
+  try {
+    await callProcedure('sp_components_update', {
+      p_actor_user_id: req.user.id, p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId,
+      p_component_id: componentId, p_name: name, p_description: description || null, p_sort_order: sortOrder ?? null,
+    })
+    res.json({ ok: true })
   } catch (err) {
     const { status, message } = mapStoredProcedureError(err)
     res.status(status).json({ message })
@@ -1320,6 +1342,214 @@ app.post('/api/users/import', authenticate, async (req, res) => {
     }
   }
   res.json(summarize(results))
+})
+
+// ===================================================================
+// Carga completa de un programa: un solo Excel con 3 hojas (Componentes,
+// una hoja de horario con columnas Semana/Dia/Fecha/.../Componente/Tema/
+// Contenidos, y Resumen con parametros) crea o actualiza los componentes,
+// su grupo por defecto, TODO el temario con fecha y hora reales, y el
+// horario semanal recurrente de cada grupo (rango fusionado por dia de
+// semana). Es EL formato estandar para cargar la estructura completa de
+// un programa de una sola vez; la hoja de horario se ubica por sus
+// encabezados, no por el nombre de la hoja, para que sirva igual con
+// programas de 6, 8 o 10 semanas.
+const PROGRAM_FULL_TEMPLATE_PATH = path.resolve(__dirname, 'templates/programa-completo.xlsx')
+const HORARIO_SHEET_REQUIRED_HEADERS = ['Semana', 'Día', 'Fecha', 'Componente', 'Tema']
+const HORARIO_SHEET_COLUMNS = [
+  { header: 'Semana', key: 'week' },
+  { header: 'Día', key: 'weekdayLabel' },
+  { header: 'Fecha', key: 'scheduledOn' },
+  { header: 'Sesión', key: 'session' },
+  { header: 'Bloque', key: 'block' },
+  { header: 'Horario', key: 'timeRange' },
+  { header: 'Componente', key: 'componentName' },
+  { header: 'Tema', key: 'title' },
+  { header: 'Contenidos', key: 'description' },
+  { header: 'Horas académicas', key: 'academicHours' },
+]
+
+app.get('/api/templates/program-full', (_req, res) => {
+  res.setHeader('Content-Type', XLSX_CONTENT_TYPE)
+  res.setHeader('Content-Disposition', 'attachment; filename="plantilla-programa-completo.xlsx"')
+  res.sendFile(PROGRAM_FULL_TEMPLATE_PATH)
+})
+
+app.post('/api/programs/:id/full-import', authenticate, async (req, res) => {
+  const programId = Number(req.params.id)
+  if (!Number.isInteger(programId)) return res.status(400).json({ message: 'Invalid request format' })
+  const buffer = await readSpreadsheetUpload(req, res)
+  if (!buffer) return
+
+  let workbook
+  try {
+    workbook = await loadWorkbook(buffer)
+  } catch {
+    return res.status(400).json({ message: 'invalid_file_type' })
+  }
+
+  const horarioSheet = findSheetByHeaders(workbook, HORARIO_SHEET_REQUIRED_HEADERS)
+  if (!horarioSheet) {
+    return res.status(400).json({ message: 'El archivo no tiene una hoja de horario con las columnas Semana/Día/Fecha/Componente/Tema.' })
+  }
+  const componentsSheet = findSheetByHeaders(workbook, ['Nombre', 'Descripción'])
+
+  const instructors = await callProcedure('sp_users_list', {
+    p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId, p_tenant_id_filter: null, p_role_code_filter: 'instructor',
+  })
+  const instructorByEmail = new Map(instructors.map((i) => [i.email.toLowerCase(), i.id]))
+
+  // 1) Componentes: reusa por nombre (actualiza descripcion/orden) o crea.
+  //    Cada uno recibe (o conserva) un grupo por defecto "Grupo A".
+  const componentResults = []
+  if (componentsSheet) {
+    const existingComponents = await callProcedure('sp_components_list', {
+      p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId, p_program_id: programId,
+    })
+    const componentByName = new Map(existingComponents.map((c) => [c.name.trim().toLowerCase(), c]))
+    const rows = parseSheetRows(componentsSheet, COMPONENT_IMPORT_COLUMNS)
+    for (const row of rows) {
+      const name = toTrimmedString(row.name)
+      if (!name) continue
+      const instructorEmail = toTrimmedString(row.instructorEmail).toLowerCase()
+      let instructorId = null
+      if (instructorEmail) {
+        instructorId = instructorByEmail.get(instructorEmail)
+        if (!instructorId) {
+          componentResults.push({ row: row.__row, ok: false, message: `Instructor "${row.instructorEmail}" no encontrado` })
+          continue
+        }
+      }
+      try {
+        let component = componentByName.get(name.toLowerCase())
+        if (component) {
+          await callProcedure('sp_components_update', {
+            p_actor_user_id: req.user.id, p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId,
+            p_component_id: component.id, p_name: name, p_description: toTrimmedString(row.description) || null,
+            p_sort_order: toIntOrNull(row.sortOrder),
+          })
+        } else {
+          const [created] = await callProcedure('sp_components_create', {
+            p_actor_user_id: req.user.id, p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId,
+            p_program_id: programId, p_name: name, p_description: toTrimmedString(row.description) || null,
+            p_sort_order: toIntOrNull(row.sortOrder) ?? 0,
+          })
+          component = { id: created.component_id, name }
+          componentByName.set(name.toLowerCase(), component)
+        }
+        const groups = await callProcedure('sp_component_groups_list', {
+          p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId, p_component_id: component.id,
+        })
+        if (groups.length === 0) {
+          await callProcedure('sp_component_groups_create', {
+            p_actor_user_id: req.user.id, p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId,
+            p_component_id: component.id, p_name: 'Grupo A', p_instructor_id: instructorId,
+          })
+        } else if (instructorId && !groups[0].instructor_id) {
+          await callProcedure('sp_component_groups_update', {
+            p_actor_user_id: req.user.id, p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId,
+            p_group_id: groups[0].id, p_name: groups[0].name, p_instructor_id: instructorId,
+          })
+        }
+        componentResults.push({ row: row.__row, ok: true, componentId: component.id, name })
+      } catch (err) {
+        const { message } = mapStoredProcedureError(err)
+        componentResults.push({ row: row.__row, ok: false, message })
+      }
+    }
+  }
+
+  // Mapa fresco componente->grupo (incluye los recien creados arriba y los
+  // que ya existian de antes aunque no vinieran en la hoja Componentes).
+  const allComponents = await callProcedure('sp_components_list', {
+    p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId, p_program_id: programId,
+  })
+  const componentIdByName = new Map(allComponents.map((c) => [c.name.trim().toLowerCase(), c.id]))
+  const groupIdByComponentId = new Map()
+  for (const c of allComponents) {
+    const groups = await callProcedure('sp_component_groups_list', {
+      p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId, p_component_id: c.id,
+    })
+    if (groups.length > 0) groupIdByComponentId.set(c.id, groups[0].id)
+  }
+
+  // 2) Temario: una fila = un tema, con su fecha y duracion reales (no el
+  //    default fijo de 45 min: aqui el archivo ya trae el horario exacto).
+  const rows = parseSheetRows(horarioSheet, HORARIO_SHEET_COLUMNS)
+  const topicResults = []
+  const sortOrderByGroup = new Map()
+  const weekdayRangeByGroup = new Map() // groupId -> Map(weekday -> {startMinutes, endMinutes})
+
+  for (const row of rows) {
+    const title = toTrimmedString(row.title)
+    const componentName = toTrimmedString(row.componentName)
+    if (!title || !componentName) continue // filas vacias o de totales al final de la hoja
+
+    const componentId = componentIdByName.get(componentName.toLowerCase())
+    if (!componentId) {
+      topicResults.push({ row: row.__row, ok: false, message: `Componente "${componentName}" no existe en este programa` })
+      continue
+    }
+    const groupId = groupIdByComponentId.get(componentId)
+    if (!groupId) {
+      topicResults.push({ row: row.__row, ok: false, message: `El componente "${componentName}" no tiene grupo` })
+      continue
+    }
+
+    const scheduledOn = toDateString(row.scheduledOn)
+    const timeRange = parseTimeRange(row.timeRange)
+    const academicHours = toIntOrNull(row.academicHours)
+    const durationMinutes = timeRange?.durationMinutes || (academicHours ? academicHours * TOPIC_DURATION_MINUTES : TOPIC_DURATION_MINUTES)
+    const sortOrder = (sortOrderByGroup.get(groupId) || 0) + 1
+    sortOrderByGroup.set(groupId, sortOrder)
+
+    try {
+      const [result] = await callProcedure('sp_topics_create', {
+        p_actor_user_id: req.user.id, p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId,
+        p_group_id: groupId, p_title: title, p_description: toTrimmedString(row.description) || null,
+        p_sort_order: sortOrder, p_scheduled_on: scheduledOn, p_duration_minutes: durationMinutes,
+      })
+      topicResults.push({ row: row.__row, ok: true, id: result.topic_id, title })
+
+      if (scheduledOn && timeRange) {
+        const weekday = new Date(`${scheduledOn}T00:00:00Z`).getUTCDay()
+        if (!weekdayRangeByGroup.has(groupId)) weekdayRangeByGroup.set(groupId, new Map())
+        const perWeekday = weekdayRangeByGroup.get(groupId)
+        const existing = perWeekday.get(weekday)
+        perWeekday.set(weekday, {
+          startMinutes: existing ? Math.min(existing.startMinutes, timeRange.startMinutes) : timeRange.startMinutes,
+          endMinutes: existing ? Math.max(existing.endMinutes, timeRange.endMinutes) : timeRange.endMinutes,
+        })
+      }
+    } catch (err) {
+      const { message } = mapStoredProcedureError(err)
+      topicResults.push({ row: row.__row, ok: false, message })
+    }
+  }
+
+  // 3) Horario semanal recurrente por grupo: rango fusionado (min inicio,
+  //    max fin) por dia de semana, derivado de las fechas reales de arriba.
+  const scheduleResults = []
+  for (const [groupId, perWeekday] of weekdayRangeByGroup) {
+    for (const [weekday, range] of perWeekday) {
+      try {
+        await callProcedure('sp_group_schedule_days_add', {
+          p_actor_user_id: req.user.id, p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId,
+          p_group_id: groupId, p_weekday: weekday, p_start_time: minutesToTime(range.startMinutes), p_end_time: minutesToTime(range.endMinutes),
+        })
+        scheduleResults.push({ groupId, weekday, ok: true })
+      } catch (err) {
+        const { message } = mapStoredProcedureError(err)
+        scheduleResults.push({ groupId, weekday, ok: false, message })
+      }
+    }
+  }
+
+  res.json({
+    components: summarize(componentResults),
+    topics: summarize(topicResults),
+    scheduleDays: summarize(scheduleResults),
+  })
 })
 
 if (process.env.NODE_ENV === 'production') {
