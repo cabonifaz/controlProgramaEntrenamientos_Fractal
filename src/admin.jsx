@@ -1705,6 +1705,11 @@ export function HolidaysPanel({ session }) {
   )
 }
 
+// Por defecto todos "Presente": el instructor solo toca las filas de
+// ausentes o ausentes parciales (tarde/retirado), en vez de marcar fila
+// por fila. Un solo "Guardar asistencia" al final guarda todo el roster.
+const DEFAULT_ATTENDANCE_STATUS = 'present'
+
 function InstructorAttendancePanel({ session, topic, onBack }) {
   const { token } = session
   const { items, error, loading, reload } = useList(`/api/topics/${topic.id}/attendance`, token)
@@ -1712,27 +1717,56 @@ function InstructorAttendancePanel({ session, topic, onBack }) {
   const reasons = useCatalog('ABSENCE_REASON', token)
   const [draft, setDraft] = useState({})
   const [actionError, setActionError] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [saveResult, setSaveResult] = useState('')
+  const [topicStatus, setTopicStatus] = useState(topic.status_code)
+  const [completionSaving, setCompletionSaving] = useState(false)
+
+  function statusFor(row) {
+    return draft[row.student_id]?.statusCode ?? row.status_code ?? DEFAULT_ATTENDANCE_STATUS
+  }
 
   function patch(studentId, fields) {
     setDraft((d) => ({ ...d, [studentId]: { ...d[studentId], ...fields } }))
   }
 
-  async function save(row) {
-    const statusCode = draft[row.student_id]?.statusCode ?? row.status_code
-    if (!statusCode) { setActionError('Selecciona un estado antes de guardar'); return }
+  async function saveAll() {
     setActionError('')
+    setSaveResult('')
+    setSaving(true)
     try {
-      await apiRequest(`/api/topics/${topic.id}/attendance`, {
-        method: 'POST', token,
-        body: {
-          studentId: row.student_id, statusCode,
-          reasonCode: draft[row.student_id]?.reasonCode ?? row.reason_code ?? null,
-          observations: draft[row.student_id]?.observations ?? row.observations ?? null,
-        },
-      })
+      for (const row of items) {
+        await apiRequest(`/api/topics/${topic.id}/attendance`, {
+          method: 'POST', token,
+          body: {
+            studentId: row.student_id, statusCode: statusFor(row),
+            reasonCode: draft[row.student_id]?.reasonCode ?? row.reason_code ?? null,
+            observations: draft[row.student_id]?.observations ?? row.observations ?? null,
+          },
+        })
+      }
+      setSaveResult(`Asistencia guardada para ${items.length} alumno(s).`)
       reload()
     } catch (err) {
       setActionError(err.message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function markCompletion(statusCode) {
+    setCompletionSaving(true)
+    setActionError('')
+    try {
+      await apiRequest(`/api/topics/${topic.id}/status`, {
+        method: 'POST', token,
+        body: { statusCode, actualDate: statusCode === 'completed' ? new Date().toISOString().slice(0, 10) : null },
+      })
+      setTopicStatus(statusCode)
+    } catch (err) {
+      setActionError(err.message)
+    } finally {
+      setCompletionSaving(false)
     }
   }
 
@@ -1742,32 +1776,42 @@ function InstructorAttendancePanel({ session, topic, onBack }) {
       <section className="panel">
         <h3>Asistencia — {topic.title}</h3>
         <p className="muted">{topic.scheduled_on ? `Programado: ${topic.scheduled_on}` : 'Sin fecha programada'}</p>
+        <div className="completion-check">
+          <span>¿Se completó el tema en la hora asignada?</span>
+          <button type="button" className={topicStatus === 'completed' ? 'tab-button active' : 'tab-button'} disabled={completionSaving} onClick={() => markCompletion('completed')}>Sí, completo</button>
+          <button type="button" className={topicStatus === 'delayed' ? 'tab-button active' : 'tab-button'} disabled={completionSaving} onClick={() => markCompletion('delayed')}>No, quedó atrasado</button>
+        </div>
+      </section>
+      <section className="panel">
+        <p className="muted">Todos los alumnos empiezan como "Presente"; solo marca a los ausentes o ausentes parciales (tarde / retirado).</p>
         <ErrorNote message={error || actionError} />
+        {saveResult && <p className="temp-password-box">{saveResult}</p>}
         {loading ? <p className="muted">Cargando…</p> : items.length === 0 ? <p className="muted">No hay alumnos inscritos en este componente todavía.</p> : (
-          <table className="admin-table">
-            <thead><tr><th>Alumno</th><th>Estado</th><th>Motivo</th><th>Observaciones</th><th></th></tr></thead>
-            <tbody>
-              {items.map((row) => (
-                <tr key={row.student_id}>
-                  <td>{row.student_name}</td>
-                  <td>
-                    <select value={draft[row.student_id]?.statusCode ?? row.status_code ?? ''} onChange={(e) => patch(row.student_id, { statusCode: e.target.value })}>
-                      <option value="">Sin marcar</option>
-                      {statuses.map((s) => <option key={s.code} value={s.code}>{s.label}</option>)}
-                    </select>
-                  </td>
-                  <td>
-                    <select value={draft[row.student_id]?.reasonCode ?? row.reason_code ?? ''} onChange={(e) => patch(row.student_id, { reasonCode: e.target.value })}>
-                      <option value="">—</option>
-                      {reasons.map((r) => <option key={r.code} value={r.code}>{r.label}</option>)}
-                    </select>
-                  </td>
-                  <td><input placeholder="Opcional" value={draft[row.student_id]?.observations ?? row.observations ?? ''} onChange={(e) => patch(row.student_id, { observations: e.target.value })} /></td>
-                  <td><button className="btn-mini" onClick={() => save(row)}>Guardar</button></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <>
+            <table className="admin-table">
+              <thead><tr><th>Alumno</th><th>Estado</th><th>Motivo</th><th>Observaciones</th></tr></thead>
+              <tbody>
+                {items.map((row) => (
+                  <tr key={row.student_id}>
+                    <td>{row.student_name}{row.student_is_active === false && <span className="pill pill-inactive">Inactivo</span>}</td>
+                    <td>
+                      <select value={statusFor(row)} onChange={(e) => patch(row.student_id, { statusCode: e.target.value })}>
+                        {statuses.map((s) => <option key={s.code} value={s.code}>{s.label}</option>)}
+                      </select>
+                    </td>
+                    <td>
+                      <select value={draft[row.student_id]?.reasonCode ?? row.reason_code ?? ''} onChange={(e) => patch(row.student_id, { reasonCode: e.target.value })}>
+                        <option value="">—</option>
+                        {reasons.map((r) => <option key={r.code} value={r.code}>{r.label}</option>)}
+                      </select>
+                    </td>
+                    <td><input placeholder="Opcional" value={draft[row.student_id]?.observations ?? row.observations ?? ''} onChange={(e) => patch(row.student_id, { observations: e.target.value })} /></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <button className="primary" disabled={saving} onClick={saveAll}>{saving ? 'Guardando…' : 'Guardar asistencia'}</button>
+          </>
         )}
       </section>
     </div>
@@ -1809,6 +1853,72 @@ function InstructorTopicsPanel({ session, group, onBack }) {
   )
 }
 
+// Calendario semanal del instructor (todas sus clases, cualquier
+// componente/programa), coloreado por grupo para distinguirlas de un
+// vistazo. "Hoy" vuelve a la semana actual.
+function InstructorWeeklyCalendar({ session }) {
+  const { token, profile } = session
+  const { items: topics, loading, error } = useList('/api/my/topics', token)
+  const { items: holidays } = useList(profile.tenantId ? `/api/holidays?tenantId=${profile.tenantId}` : '/api/holidays', token)
+  const [weekStart, setWeekStart] = useState(null)
+
+  useEffect(() => {
+    if (weekStart === null) setWeekStart(startOfWeek(new Date().toISOString().slice(0, 10)))
+  }, [weekStart])
+
+  const colorByGroupId = useMemo(() => {
+    const ids = [...new Set(topics.map((t) => t.group_id))]
+    const map = new Map()
+    ids.forEach((id, i) => map.set(id, GROUP_COLORS[i % GROUP_COLORS.length]))
+    return map
+  }, [topics])
+
+  if (loading || !weekStart) return <p className="muted">Cargando…</p>
+
+  const days = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i))
+  const holidaySet = new Set(holidays.map((h) => h.holiday_on))
+  const topicsByDate = new Map()
+  topics.forEach((t) => {
+    if (!t.scheduled_on) return
+    if (!topicsByDate.has(t.scheduled_on)) topicsByDate.set(t.scheduled_on, [])
+    topicsByDate.get(t.scheduled_on).push(t)
+  })
+
+  return (
+    <section className="panel">
+      <h3>Mi calendario semanal</h3>
+      <div className="week-nav">
+        <button className="btn-mini" onClick={() => setWeekStart(addDays(weekStart, -7))}>← Semana anterior</button>
+        <strong>{formatDayLabel(days[0])} – {formatDayLabel(days[6])}</strong>
+        <button className="btn-mini" onClick={() => setWeekStart(addDays(weekStart, 7))}>Semana siguiente →</button>
+        <button className="btn-mini" onClick={() => setWeekStart(startOfWeek(new Date().toISOString().slice(0, 10)))}>Hoy</button>
+      </div>
+      <ErrorNote message={error} />
+      <div className="week-grid">
+        {days.map((d) => {
+          const iso = toISODate(d)
+          const dayTopics = (topicsByDate.get(iso) || []).slice().sort((a, b) => a.component_name.localeCompare(b.component_name))
+          const isHoliday = holidaySet.has(iso)
+          return (
+            <div key={iso} className={isHoliday ? 'week-day holiday' : 'week-day'}>
+              <div className="week-day-head">{formatDayLabel(d)}</div>
+              {isHoliday && <div className="week-day-holiday-tag">Feriado</div>}
+              {dayTopics.length === 0 && !isHoliday && <p className="muted week-day-empty">Sin clases</p>}
+              {dayTopics.map((t) => (
+                <div key={t.id} className="week-topic" style={{ borderLeft: `3px solid ${colorByGroupId.get(t.group_id)}` }}>
+                  <strong>{t.component_name}</strong>
+                  <span>{t.title}</span>
+                  <small>{t.group_name} · {t.program_name}</small>
+                </div>
+              ))}
+            </div>
+          )
+        })}
+      </div>
+    </section>
+  )
+}
+
 export function InstructorClassesPanel({ session }) {
   const { token } = session
   const { items, error, loading } = useList('/api/my/groups', token)
@@ -1820,6 +1930,7 @@ export function InstructorClassesPanel({ session }) {
 
   return (
     <div className="admin-wrap">
+      <InstructorWeeklyCalendar session={session} />
       <section className="panel">
         <h3>Mis grupos</h3>
         <ErrorNote message={error} />

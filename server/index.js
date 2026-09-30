@@ -345,6 +345,20 @@ app.get('/api/my/groups', authenticate, async (req, res) => {
   }
 })
 
+// Todo el temario del instructor (pasado y futuro): alimenta su calendario
+// semanal visual, sin el recorte a "solo proximas 10" de /api/me/agenda.
+app.get('/api/my/topics', authenticate, async (req, res) => {
+  try {
+    const data = await callProcedure('sp_topics_list_by_instructor', {
+      p_actor_user_id: req.user.id, p_actor_role: req.user.roleCode,
+    })
+    res.json({ data })
+  } catch (err) {
+    const { status, message } = mapStoredProcedureError(err)
+    res.status(status).json({ message })
+  }
+})
+
 app.get('/api/programs', authenticate, async (req, res) => {
   const tenantIdFilter = req.query.tenantId ? Number(req.query.tenantId) : null
   try {

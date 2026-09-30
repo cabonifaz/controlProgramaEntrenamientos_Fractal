@@ -525,6 +525,7 @@ DROP PROCEDURE IF EXISTS sp_reports_period_comparison;
 DROP PROCEDURE IF EXISTS sp_student_agenda;
 DROP PROCEDURE IF EXISTS sp_student_metrics;
 DROP PROCEDURE IF EXISTS sp_instructor_agenda;
+DROP PROCEDURE IF EXISTS sp_topics_list_by_instructor;
 DROP PROCEDURE IF EXISTS sp_instructor_metrics;
 DROP PROCEDURE IF EXISTS sp_dashboard_get;
 DROP PROCEDURE IF EXISTS sp_attendance_record;
@@ -2245,7 +2246,7 @@ BEGIN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
   END IF;
 
-  SELECT ge.student_id, su.full_name AS student_name, a.id AS attendance_id,
+  SELECT ge.student_id, su.full_name AS student_name, su.is_active AS student_is_active, a.id AS attendance_id,
          ast.code AS status_code, ast.label AS status_label,
          ar.code AS reason_code, ar.label AS reason_label, a.observations
   FROM group_enrollments ge
@@ -2797,6 +2798,28 @@ BEGIN
        WHERE pe.student_id = p_actor_user_id AND pe.is_deleted = FALSE
        GROUP BY p.id
      ) prog) AS program_progress_pct;
+END$$
+
+-- Todo el temario del instructor (pasado y futuro, cualquier estado), sin
+-- limite de 10 ni recorte a "solo futuro" como sp_instructor_agenda:
+-- alimenta su calendario semanal visual (navegable, no solo una lista).
+CREATE PROCEDURE sp_topics_list_by_instructor(IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80))
+BEGIN
+  IF p_actor_role <> 'instructor' THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+
+  SELECT t.id, t.title, t.scheduled_on, t.duration_minutes, ts.code AS status_code, ts.label AS status_label,
+         g.id AS group_id, g.name AS group_name,
+         c.id AS component_id, c.name AS component_name,
+         p.id AS program_id, p.name AS program_name
+  FROM topics t
+  JOIN component_groups g ON g.id = t.group_id
+  JOIN components c ON c.id = g.component_id
+  JOIN training_programs p ON p.id = c.program_id
+  JOIN master_catalog_values ts ON ts.id = t.status_id
+  WHERE g.instructor_id = p_actor_user_id AND t.is_deleted = FALSE AND g.is_deleted = FALSE AND c.is_deleted = FALSE
+  ORDER BY t.scheduled_on;
 END$$
 
 CREATE PROCEDURE sp_instructor_agenda(IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80))
