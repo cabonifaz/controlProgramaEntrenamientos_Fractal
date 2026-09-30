@@ -2812,7 +2812,8 @@ BEGIN
   SELECT t.id, t.title, t.scheduled_on, t.duration_minutes, ts.code AS status_code, ts.label AS status_label,
          g.id AS group_id, g.name AS group_name,
          c.id AS component_id, c.name AS component_name,
-         p.id AS program_id, p.name AS program_name
+         p.id AS program_id, p.name AS program_name,
+         (SELECT COUNT(*) FROM group_enrollments ge WHERE ge.group_id = g.id AND ge.is_deleted = FALSE) AS enrolled_students
   FROM topics t
   JOIN component_groups g ON g.id = t.group_id
   JOIN components c ON c.id = g.component_id

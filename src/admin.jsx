@@ -2260,12 +2260,76 @@ export function ChangePasswordPanel({ session }) {
   )
 }
 
+// Banner de "proxima clase" para el instructor: lo primero que ve al
+// entrar, bien llamativo, con cuenta regresiva y boton directo a la
+// lista de asistencia (sin pasar por grupo -> temario).
+function NextClassBanner({ session, onOpenAttendance }) {
+  const { token } = session
+  const { items: topics } = useList('/api/my/topics', token)
+  const [, forceTick] = useState(0)
+
+  const todayIso = new Date().toISOString().slice(0, 10)
+  const next = useMemo(() => {
+    return topics
+      .filter((t) => t.scheduled_on && t.scheduled_on >= todayIso && t.status_code !== 'completed' && t.status_code !== 'cancelled')
+      .slice()
+      .sort((a, b) => a.scheduled_on.localeCompare(b.scheduled_on))[0] || null
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [topics])
+
+  const { items: scheduleDays } = useList(next ? `/api/groups/${next.group_id}/schedule-days` : '', token)
+
+  // Refresca la cuenta regresiva cada minuto mientras el banner esta montado.
+  useEffect(() => {
+    const id = setInterval(() => forceTick((n) => n + 1), 60000)
+    return () => clearInterval(id)
+  }, [])
+
+  if (!next) return null
+
+  const weekday = new Date(`${next.scheduled_on}T00:00:00Z`).getUTCDay()
+  const timeBlock = scheduleDays.find((d) => d.weekday === weekday)
+  const daysUntil = Math.round((new Date(`${next.scheduled_on}T00:00:00Z`) - new Date(`${todayIso}T00:00:00Z`)) / 86400000)
+  const whenLabel = daysUntil === 0 ? 'Hoy' : daysUntil === 1 ? 'Mañana' : `En ${daysUntil} días`
+
+  let countdownLabel = null
+  if (timeBlock) {
+    const [h, m] = timeBlock.start_time.split(':').map(Number)
+    const classDate = new Date(`${next.scheduled_on}T00:00:00`)
+    classDate.setHours(h, m, 0, 0)
+    const diffMs = classDate - new Date()
+    if (diffMs > 0) {
+      const hours = Math.floor(diffMs / 3600000)
+      const mins = Math.round((diffMs % 3600000) / 60000)
+      countdownLabel = hours > 0 ? `Faltan ${hours}h ${mins}min` : `Faltan ${mins} min`
+    } else {
+      countdownLabel = 'En curso o por comenzar'
+    }
+  }
+
+  return (
+    <section className="panel next-class-banner">
+      <div className="next-class-tag">{whenLabel}</div>
+      <h2>{next.title}</h2>
+      <p className="next-class-sub">{next.component_name} · {next.program_name}</p>
+      <div className="next-class-meta">
+        <span>📅 {next.scheduled_on}</span>
+        {timeBlock && <span>🕒 {timeBlock.start_time.slice(0, 5)}–{timeBlock.end_time.slice(0, 5)}</span>}
+        <span>👥 {next.enrolled_students} alumno(s)</span>
+        {countdownLabel && <span className="next-class-countdown">⏳ {countdownLabel}</span>}
+      </div>
+      <button className="primary" onClick={() => onOpenAttendance(next)}>Ver lista de asistencia</button>
+    </section>
+  )
+}
+
 export function RealDashboard({ session }) {
   const { token, profile } = session
   const isStudent = profile.roleCode === 'student'
   const { items: agenda, error: agendaError, loading: agendaLoading } = useList('/api/me/agenda', token)
   const [metrics, setMetrics] = useState(null)
   const [metricsError, setMetricsError] = useState('')
+  const [selectedTopic, setSelectedTopic] = useState(null)
 
   useEffect(() => {
     let cancelled = false
@@ -2275,8 +2339,13 @@ export function RealDashboard({ session }) {
     return () => { cancelled = true }
   }, [token])
 
+  if (selectedTopic) {
+    return <InstructorAttendancePanel session={session} topic={selectedTopic} onBack={() => setSelectedTopic(null)} />
+  }
+
   return (
     <div className="admin-wrap">
+      {!isStudent && <NextClassBanner session={session} onOpenAttendance={setSelectedTopic} />}
       <section className="panel">
         <h3>Hola, {profile.fullName}</h3>
         <ErrorNote message={metricsError} />
