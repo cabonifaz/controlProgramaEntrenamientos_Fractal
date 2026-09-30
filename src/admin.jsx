@@ -1097,6 +1097,56 @@ function GroupHorarioPanel({ session, group, onBack }) {
   )
 }
 
+// Un alumno debe estar inscrito en el PROGRAMA antes de poder inscribirse
+// en un grupo (regla del SP: student_not_enrolled_in_program). Este modal
+// hace los dos pasos de forma transparente: inscribe al programa si hace
+// falta (ignora "already_enrolled", que solo significa que ya estaba) y
+// luego al grupo, en una sola accion.
+function EnrollStudentModal({ session, group, programId, students, onClose, onEnrolled }) {
+  const { token } = session
+  const [studentId, setStudentId] = useState('')
+  const [error, setError] = useState('')
+  const [success, setSuccess] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  async function handleEnroll(e) {
+    e.preventDefault()
+    if (!studentId) return
+    setError('')
+    setSuccess('')
+    setSaving(true)
+    try {
+      try {
+        await apiRequest(`/api/programs/${programId}/students`, { method: 'POST', token, body: { studentId: Number(studentId) } })
+      } catch (err) {
+        if (err.message !== 'already_enrolled') throw err
+      }
+      await apiRequest(`/api/groups/${group.id}/students`, { method: 'POST', token, body: { studentId: Number(studentId) } })
+      const enrolled = students.find((s) => String(s.id) === String(studentId))
+      setSuccess(`${enrolled ? enrolled.full_name : 'Alumno'} inscrito correctamente.`)
+      setStudentId('')
+      onEnrolled?.()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Modal title={`Inscribir alumno — ${group.name}`} onClose={onClose}>
+      <form className="admin-form" onSubmit={handleEnroll}>
+        <label className="full-field">Alumno
+          <SearchSelect options={students} value={studentId} onChange={setStudentId} placeholder="Buscar alumno…" allowEmpty={false} />
+        </label>
+        <ErrorNote message={error} />
+        {success && <p className="temp-password-box">{success}</p>}
+        <button className="primary" disabled={saving || !studentId}>{saving ? 'Inscribiendo…' : 'Inscribir'}</button>
+      </form>
+    </Modal>
+  )
+}
+
 function GroupsPanel({ session, component, onBack }) {
   const { token } = session
   const { items, error, loading, reload } = useList(`/api/components/${component.id}/groups`, token)
@@ -1104,7 +1154,7 @@ function GroupsPanel({ session, component, onBack }) {
   const { items: students } = useList('/api/users?role=student', token)
   const [form, setForm] = useState({ name: '', instructorId: '' })
   const [formError, setFormError] = useState('')
-  const [enrollStudentId, setEnrollStudentId] = useState({})
+  const [enrollingGroup, setEnrollingGroup] = useState(null)
   const [scheduleMessage, setScheduleMessage] = useState('')
   const [view, setView] = useState(null)
 
@@ -1128,17 +1178,6 @@ function GroupsPanel({ session, component, onBack }) {
         method: 'PATCH', token, body: { name: group.name, instructorId: instructorId ? Number(instructorId) : null },
       })
       reload()
-    } catch (err) {
-      setFormError(err.message)
-    }
-  }
-
-  async function enrollStudent(group) {
-    const studentId = enrollStudentId[group.id]
-    if (!studentId) return
-    try {
-      await apiRequest(`/api/groups/${group.id}/students`, { method: 'POST', token, body: { studentId: Number(studentId) } })
-      setEnrollStudentId({ ...enrollStudentId, [group.id]: '' })
     } catch (err) {
       setFormError(err.message)
     }
@@ -1192,16 +1231,7 @@ function GroupsPanel({ session, component, onBack }) {
                     <SearchSelect options={instructors} value={g.instructor_id || ''} onChange={(id) => updateInstructor(g, id)} placeholder="Buscar instructor…" />
                   </td>
                   <td>{g.enrolled_students}</td>
-                  <td className="row-actions">
-                    <SearchSelect
-                      options={students}
-                      value={enrollStudentId[g.id] || ''}
-                      onChange={(id) => setEnrollStudentId({ ...enrollStudentId, [g.id]: id })}
-                      placeholder="Buscar alumno…"
-                      allowEmpty={false}
-                    />
-                    <button className="btn-mini" onClick={() => enrollStudent(g)}>Inscribir</button>
-                  </td>
+                  <td><button className="btn-mini" onClick={() => setEnrollingGroup(g)}>Inscribir</button></td>
                   <td><button className="btn-mini" onClick={() => setView({ mode: 'schedule', group: g })}>Ver horario</button></td>
                   <td><button className="btn-mini" onClick={() => generateSchedule(g)}>Generar fechas</button></td>
                   <td><button className="btn-mini" onClick={() => setView({ mode: 'topics', group: g })}>Ver temario</button></td>
@@ -1211,6 +1241,16 @@ function GroupsPanel({ session, component, onBack }) {
           </table>
         )}
       </section>
+      {enrollingGroup && (
+        <EnrollStudentModal
+          session={session}
+          group={enrollingGroup}
+          programId={component.program_id}
+          students={students}
+          onClose={() => setEnrollingGroup(null)}
+          onEnrolled={reload}
+        />
+      )}
     </div>
   )
 }
