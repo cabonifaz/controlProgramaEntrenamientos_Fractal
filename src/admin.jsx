@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { AlertTriangle, ArrowRight, Calendar, Users as UsersIcon } from 'lucide-react'
 import { apiRequest, apiUpload } from './api'
-import { buildMaterialPrompt, DEFAULT_PROMPT_OPTIONS, MATERIAL_LEVELS, suggestedBatchSize } from './materialPrompt'
+import { buildMaterialPrompt, DEFAULT_PROMPT_OPTIONS, MATERIAL_LEVELS, SKILL_NAME, suggestedBatchSize } from './materialPrompt'
 
 function useList(path, token) {
   const [items, setItems] = useState([])
@@ -1388,9 +1388,26 @@ function MaterialPromptBuilder({ session, componentId }) {
 
   return (
     <div className="material-prompt">
+      <div className="tab-row material-mode">
+        <button type="button" className={options.mode === 'skill' ? 'tab-button active' : 'tab-button'} onClick={() => { setCopied(false); setOptions({ ...options, mode: 'skill' }) }}>Con skill (recomendado)</button>
+        <button type="button" className={options.mode === 'full' ? 'tab-button active' : 'tab-button'} onClick={() => { setCopied(false); setOptions({ ...options, mode: 'full' }) }}>Sin skill</button>
+      </div>
+      {options.mode === 'skill' ? (
+        <ol className="material-skill-steps">
+          <li>
+            Solo la primera vez: <a href="/api/templates/material-skill">descarga la skill <strong>{SKILL_NAME}</strong></a> e
+            instálala en Claude (Configuración → Capacidades → Skills → Subir skill). Activa también la ejecución de código y la creación de archivos.
+          </li>
+          <li>Completa los datos de abajo, copia el prompt y pégalo en un chat nuevo de Claude.</li>
+          <li>Claude solo escribe el contenido; la skill aporta el diseño y arma un único ZIP. Es mucho más rápido y gasta menos tokens que el prompt completo.</li>
+        </ol>
+      ) : (
+        <p className="muted">
+          Prompt completo para usar Claude u otra IA sin instalar nada. Es más lento: la IA escribe todo el HTML y el CSS de cada tema.
+        </p>
+      )}
       <p className="muted">
-        Se arma con los {data.topics.length} temas del temario en orden, así que cada archivo que genere la IA coincidirá con su clase.
-        Completa lo que sepas, copia el prompt y pégalo en Claude (con la creación de archivos activada).
+        El prompt se arma con los {data.topics.length} temas del temario en orden, así que cada archivo coincidirá con su clase.
       </p>
       <div className="admin-form">
         <label className="full-field">Perfil de los alumnos
@@ -1403,8 +1420,8 @@ function MaterialPromptBuilder({ session, componentId }) {
         </label>
         <label>Temas por lote
           <select value={options.batchSize} onChange={set('batchSize')}>
-            <option value="auto">Automático ({suggestedBatchSize(data.topics)})</option>
-            {[1, 2, 3, 4, 5, 6].map((n) => <option key={n} value={n}>{n}</option>)}
+            <option value="auto">Automático ({suggestedBatchSize(data.topics, options.mode)})</option>
+            {[1, 2, 3, 4, 5, 6, 8, 10].map((n) => <option key={n} value={n}>{n}</option>)}
           </select>
         </label>
         <label>Sector de los ejemplos (opcional)
@@ -1494,7 +1511,7 @@ function ComponentMaterialBox({ session, componentId }) {
             {showPrompt ? 'Ocultar prompt' : 'Generar prompt para IA'}
           </button>
         )}
-        <a className="btn-mini" href="/api/templates/material">Descargar plantilla de ejemplo</a>
+        <a className="btn-mini" href="/api/templates/material">Descargar ZIP de ejemplo</a>
         {info?.canManage && (
           <label className="btn-mini logo-upload-label">
             {uploading ? 'Subiendo…' : material ? 'Reemplazar ZIP' : 'Subir ZIP'}

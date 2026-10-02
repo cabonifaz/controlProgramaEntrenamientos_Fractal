@@ -12,7 +12,13 @@ export const DEFAULT_PROMPT_OPTIONS = {
   brand: '',
   batchSize: 'auto',
   extra: '',
+  // 'skill': prompt corto que usa la skill generador-material-curso
+  // (Claude solo escribe JSON; el script pone HTML, diseno y ZIP).
+  // 'full': prompt completo para usar sin la skill.
+  mode: 'skill',
 }
+
+export const SKILL_NAME = 'generador-material-curso'
 
 function pad2(n) { return String(n).padStart(2, '0') }
 
@@ -31,26 +37,36 @@ function contentScale(minutes) {
   }
 }
 
-export function suggestedBatchSize(topics) {
-  return contentScale(topics?.[0]?.durationMinutes || 45).batchSize
+// Con la skill la IA solo escribe JSON (sin HTML ni CSS): caben el doble
+// de temas por lote.
+export function suggestedBatchSize(topics, mode = 'skill') {
+  const base = contentScale(topics?.[0]?.durationMinutes || 45).batchSize
+  return mode === 'skill' ? base * 2 : base
 }
 
 function slugify(text) {
   return String(text || 'curso')
-    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
     .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'curso'
 }
 
 // Un mismo titulo en varias filas (p.ej. un tema que ocupa dos clases) se
 // marca como partes, para que la IA no repita el mismo contenido.
-function topicLines(topics) {
+function topicParts(topics) {
   const totals = new Map()
   topics.forEach((t) => totals.set(t.title, (totals.get(t.title) || 0) + 1))
   const seen = new Map()
   return topics.map((t) => {
     const part = (seen.get(t.title) || 0) + 1
     seen.set(t.title, part)
-    const total = totals.get(t.title)
+    return { part, total: totals.get(t.title) }
+  })
+}
+
+function topicLines(topics) {
+  const parts = topicParts(topics)
+  return topics.map((t, i) => {
+    const { part, total } = parts[i]
     const partNote = total > 1 ? ` (parte ${part} de ${total}${part > 1 ? ', continúa donde terminó la parte anterior sin repetir' : ''})` : ''
     const description = t.description ? `\n    Alcance: ${t.description.trim()}` : ''
     return `${pad2(t.position)}. ${t.title}${partNote} — ${t.durationMinutes} min${description}`
@@ -85,12 +101,65 @@ function durationSummary(topics) {
 
 export function buildMaterialPrompt(data, options) {
   const o = { ...DEFAULT_PROMPT_OPTIONS, ...options }
+  return o.mode === 'skill' ? buildSkillPrompt(data, o) : buildFullPrompt(data, o)
+}
+
+// Prompt corto para la skill: los datos del curso en el JSON que espera
+// scripts/build_course.py y solo las reglas de entrega. Formato, calidad,
+// diseno y validacion ya viven en la skill y no se repiten aqui.
+function buildSkillPrompt(data, o) {
+  const topics = data.topics || []
+  const n = topics.length
+  const parts = topicParts(topics)
+  const batchSize = Math.max(1, Number(o.batchSize) || suggestedBatchSize(topics, 'skill'))
+  const batches = Math.ceil(n / batchSize)
+  const zipName = `material-${slugify(data.componentName)}.zip`
+  const description = [data.componentDescription, data.programDescription].map((d) => d?.trim()).filter(Boolean).join(' ')
+
+  const curso = {
+    curso: data.componentName,
+    programa: [data.programName, data.cohort && `cohorte ${data.cohort}`, data.modality && `modalidad ${data.modality.toLowerCase()}`].filter(Boolean).join(' · '),
+    descripcion: description || undefined,
+    alumnos: o.audience.trim() || '[describe aquí el perfil de los alumnos]',
+    nivel: o.level,
+    sector: o.sector.trim() || undefined,
+    identidad_visual: o.brand.trim() || undefined,
+    indicaciones: o.extra.trim() || undefined,
+    duracion_clase_min: topics[0]?.durationMinutes || 45,
+    zip: zipName,
+    temas: topics.map((t, i) => ({
+      numero: t.position,
+      titulo: t.title,
+      alcance: t.description?.trim() || undefined,
+      parte: parts[i].total > 1 ? `${parts[i].part} de ${parts[i].total}` : undefined,
+    })),
+  }
+
+  const workLine = n > batchSize
+    ? `- Trabaja en ${batches} lotes de hasta ${batchSize} temas. Tras cada lote, valida con el script y responde solo: "Lote X/${batches} listo (temas A–B), validado. Escribe continuar."`
+    : '- Genera todos los temas, valídalos con el script y empaqueta.'
+  const fence = '```'
+
+  return [
+    `Usa la skill ${SKILL_NAME} para crear el material completo de este curso (${n} temas). Guarda este JSON como curso/curso.json, complétalo como indica la skill y sigue su flujo:`,
+    '',
+    `${fence}json`,
+    JSON.stringify(curso, null, 2),
+    fence,
+    '',
+    workLine,
+    '- No pegues el contenido en el chat: escribe los JSON directamente en archivos.',
+    `- Entrega final: UN SOLO archivo, ${zipName}, generado por el script de la skill y con un único enlace de descarga. Nunca entregues varios ZIPs ni HTML escritos a mano.`,
+  ].join('\n')
+}
+
+function buildFullPrompt(data, o) {
   const topics = data.topics || []
   const n = topics.length
   const last = pad2(n)
   const classMinutes = topics[0]?.durationMinutes || 45
   const scale = contentScale(classMinutes)
-  const batchSize = Math.max(1, Number(o.batchSize) || scale.batchSize)
+  const batchSize = Math.max(1, Number(o.batchSize) || suggestedBatchSize(topics, 'full'))
   const batches = Math.ceil(n / batchSize)
   const zipName = `material-${slugify(data.componentName)}.zip`
   const sector = o.sector.trim()
@@ -112,8 +181,9 @@ export function buildMaterialPrompt(data, options) {
     ? `El temario tiene ${n} temas. Para no recortar contenido, trabaja por lotes:
 1. Primero crea el sistema de diseño compartido (assets/estilos.css y, si hace falta, assets/app.js) e index.html. Resúmeme en 3 líneas la línea visual elegida.
 2. Después genera los temas en ${batches} lotes de hasta ${batchSize} temas; cada lote incluye cada tema-XX.html y su soluciones/tema-XX.html. Guarda los archivos en la carpeta de trabajo del curso, SIN crear ningún ZIP ni enlace de descarga. Al terminar cada lote escribe: "Lote X/${batches} listo (temas A–B). Escribe continuar." y espera.
-3. Todos los lotes deben tener la misma profundidad y calidad que el primero: no resumas ni acortes los últimos temas.
-4. Solo tras el último lote: comprueba que siguen en la carpeta los archivos de TODOS los lotes (si falta alguno, regéneralo), ejecuta la verificación final y crea el único ${zipName}.`
+3. No pegues el contenido de los archivos en el chat (solo el aviso de cada lote): ahorra mucho tiempo.
+4. Todos los lotes deben tener la misma profundidad y calidad que el primero: no resumas ni acortes los últimos temas.
+5. Solo tras el último lote: comprueba que siguen en la carpeta los archivos de TODOS los lotes (si falta alguno, regéneralo), ejecuta la verificación final y crea el único ${zipName}.`
     : `1. Crea el sistema de diseño compartido (assets/estilos.css y, si hace falta, assets/app.js) e index.html.
 2. Genera todos los temas con sus soluciones.
 3. Ejecuta la verificación final y crea el único ${zipName}.`

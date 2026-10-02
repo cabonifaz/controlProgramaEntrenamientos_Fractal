@@ -11,7 +11,7 @@ import { mapStoredProcedureError } from './errors.js'
 import { uploadLogo, uploadSpreadsheet, UPLOADS_DIR } from './uploads.js'
 import {
   uploadMaterialZip, extractMaterialZip, materialDir, removeMaterialDir, describeMaterial,
-  isSolutionsPath, buildMaterialTemplateZip, MATERIAL_RESPONSE_HEADERS,
+  isSolutionsPath, buildMaterialTemplateZip, buildMaterialSkillZip, MATERIAL_RESPONSE_HEADERS,
 } from './materials.js'
 import {
   buildTemplateBuffer, parseUploadBuffer, toDateString, toTrimmedString, toIntOrNull,
@@ -896,6 +896,15 @@ app.get('/material/:token/{*filePath}', (req, res) => {
   res.sendFile(filePath, (err) => {
     if (err && !res.headersSent) res.status(404).type('text/plain; charset=utf-8').send('Archivo no encontrado.')
   })
+})
+
+app.get('/api/templates/material-skill', async (_req, res) => {
+  const buffer = await buildMaterialSkillZip()
+  res.set({
+    'Content-Type': 'application/zip',
+    'Content-Disposition': 'attachment; filename="generador-material-curso.zip"',
+  })
+  res.send(buffer)
 })
 
 app.get('/api/templates/material', async (_req, res) => {

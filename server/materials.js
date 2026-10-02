@@ -183,8 +183,11 @@ export const MATERIAL_RESPONSE_HEADERS = {
 
 const TEMPLATE_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'templates', 'material')
 
+const SKILL_TEMPLATE_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'templates', 'material-skill')
+
 async function addDirToZip(zip, dir, prefix = '') {
   for (const entry of await fs.promises.readdir(dir, { withFileTypes: true })) {
+    if (entry.name === '__pycache__') continue
     const full = path.join(dir, entry.name)
     if (entry.isDirectory()) await addDirToZip(zip, full, `${prefix}${entry.name}/`)
     else zip.file(`${prefix}${entry.name}`, await fs.promises.readFile(full))
@@ -196,5 +199,16 @@ async function addDirToZip(zip, dir, prefix = '') {
 export async function buildMaterialTemplateZip() {
   const zip = new JSZip()
   await addDirToZip(zip, TEMPLATE_DIR)
+  return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' })
+}
+
+// Skill de Claude que genera el material: se instala una vez en Claude
+// (Configuracion > Capacidades > Skills) y trae diseno, plantillas y un
+// script que valida y arma el ZIP. Asi la IA solo escribe contenido en
+// JSON, lo que ahorra muchos tokens frente a escribir cada HTML a mano.
+// El ZIP contiene la carpeta de la skill (formato que espera Claude).
+export async function buildMaterialSkillZip() {
+  const zip = new JSZip()
+  await addDirToZip(zip, SKILL_TEMPLATE_DIR)
   return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' })
 }
