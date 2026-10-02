@@ -57,6 +57,26 @@ function topicLines(topics) {
   }).join('\n')
 }
 
+// Arbol exacto del ZIP, archivo por archivo: si solo se describe con
+// "tema-01 … tema-NN", la IA tiende a inventar su propia organizacion
+// (un ZIP por lote, carpetas por tema, soluciones aparte...).
+function fileTree(topics, zipName) {
+  const width = Math.max(...topics.map((t) => `tema-${pad2(t.position)}.html`.length), 'index.html'.length) + 4
+  const col = (name) => name.padEnd(width)
+  const branch = (i, total) => (i === total - 1 ? '└──' : '├──')
+  return [
+    zipName,
+    `├── ${col('index.html')}portada del curso`,
+    ...topics.map((t) => `├── ${col(`tema-${pad2(t.position)}.html`)}Tema ${t.position}: ${t.title}`),
+    '├── soluciones/',
+    ...topics.map((t, i) => `│   ${branch(i, topics.length)} ${col(`tema-${pad2(t.position)}.html`)}soluciones del tema ${t.position}`),
+    '└── assets/',
+    `    ├── ${col('estilos.css')}sistema de diseño compartido`,
+    `    ├── ${col('app.js')}(opcional) interactividad compartida`,
+    `    └── ${col('img/')}(opcional) imágenes y SVG`,
+  ].join('\n')
+}
+
 function durationSummary(topics) {
   const minutes = topics.reduce((sum, t) => sum + (Number(t.durationMinutes) || 0), 0)
   const hours = minutes / 60
@@ -91,12 +111,12 @@ export function buildMaterialPrompt(data, options) {
   const workPlan = n > batchSize
     ? `El temario tiene ${n} temas. Para no recortar contenido, trabaja por lotes:
 1. Primero crea el sistema de diseño compartido (assets/estilos.css y, si hace falta, assets/app.js) e index.html. Resúmeme en 3 líneas la línea visual elegida.
-2. Después genera los temas en ${batches} lotes de hasta ${batchSize} temas; cada lote incluye cada tema-XX.html y su soluciones/tema-XX.html. Al terminar cada lote escribe: "Lote X/${batches} listo (temas A–B). Escribe continuar." y espera.
+2. Después genera los temas en ${batches} lotes de hasta ${batchSize} temas; cada lote incluye cada tema-XX.html y su soluciones/tema-XX.html. Guarda los archivos en la carpeta de trabajo del curso, SIN crear ningún ZIP ni enlace de descarga. Al terminar cada lote escribe: "Lote X/${batches} listo (temas A–B). Escribe continuar." y espera.
 3. Todos los lotes deben tener la misma profundidad y calidad que el primero: no resumas ni acortes los últimos temas.
-4. Tras el último lote, empaqueta todo en ${zipName}, ejecuta la verificación final y entrégame el ZIP para descargar.`
+4. Solo tras el último lote: comprueba que siguen en la carpeta los archivos de TODOS los lotes (si falta alguno, regéneralo), ejecuta la verificación final y crea el único ${zipName}.`
     : `1. Crea el sistema de diseño compartido (assets/estilos.css y, si hace falta, assets/app.js) e index.html.
 2. Genera todos los temas con sus soluciones.
-3. Empaqueta todo en ${zipName}, ejecuta la verificación final y entrégame el ZIP para descargar.`
+3. Ejecuta la verificación final y crea el único ${zipName}.`
 
   return `# Rol
 Eres un diseñador instruccional senior y desarrollador front-end especializado en material educativo interactivo, muy visual y moderno. Vas a producir el material completo de un curso que se publicará en una plataforma de formación.
@@ -107,13 +127,15 @@ ${courseContext}
 # Temario (${n} temas) — respeta EXACTAMENTE este orden y numeración
 ${topicLines(topics)}
 
-# Entregable: un único archivo ${zipName}
-Crea los archivos reales con tu herramienta de archivos/ejecución de código (no te limites a mostrar código en el chat) y entrégame el ZIP descargable con esta estructura exacta:
+# Formato de entrega (OBLIGATORIO)
+Crea los archivos reales con tu herramienta de archivos/ejecución de código (no te limites a mostrar código en el chat). La plataforma solo acepta UN archivo por curso, así que la entrega es exactamente esta:
 
-index.html                  portada del curso con el mapa del temario
-tema-01.html … tema-${last}.html    un archivo por tema (${n} en total)
-soluciones/tema-01.html … soluciones/tema-${last}.html    uno por tema, solo para el instructor
-assets/                     estilos.css, app.js, imágenes, SVG
+- UN SOLO archivo ZIP llamado ${zipName}, con un único enlace de descarga en tu mensaje final.
+- NO lo dividas: ni un ZIP por lote, ni por tema, ni uno aparte para soluciones/ o assets/, ni ZIPs dentro del ZIP. Si te ves tentado a partirlo por tamaño, reduce las imágenes (usa SVG) en lugar de dividir.
+- Los archivos van directamente en la raíz del ZIP (al abrirlo se ve index.html, no una carpeta que lo contenga).
+- Nada fuera de este árbol (sin README, notas ni archivos de borrador). Contenido exacto del ZIP (${2 * n + 2} archivos HTML/CSS obligatorios):
+
+${fileTree(topics, zipName)}
 
 Reglas técnicas (la plataforma las valida y el material falla si no se cumplen):
 1. Nombres exactos: tema-XX.html con dos dígitos, según la numeración del temario. Ni más ni menos archivos de tema.
@@ -157,10 +179,11 @@ ${o.extra.trim() ? `\n# Indicaciones adicionales\n${o.extra.trim()}\n` : ''}
 ${workPlan}
 
 # Verificación final (compruébala y repórtala antes de entregar el ZIP)
+- Entregas UN SOLO archivo, ${zipName}, y su listado de contenido coincide exactamente con el árbol de "Formato de entrega".
 - Existen tema-01.html … tema-${last}.html y soluciones/tema-01.html … soluciones/tema-${last}.html (${n} de cada uno).
 - Ningún tema-XX.html contiene respuestas ni pistas que las revelen.
 - La numeración de ejercicios y preguntas coincide entre cada tema y su solución.
 - Todos los enlaces (anterior, siguiente, índice, assets) usan rutas relativas y funcionan.
 - No se usa localStorage, sessionStorage ni cookies.
-- Los archivos están en la raíz del ZIP (o dentro de una única carpeta).`
+- index.html, los tema-XX.html y las carpetas soluciones/ y assets/ están en la raíz del ZIP.`
 }
