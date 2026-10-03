@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { AlertTriangle, ArrowRight, Calendar, Users as UsersIcon } from 'lucide-react'
 import { apiDownload, apiRequest, apiUpload } from './api'
 import { buildMaterialPrompt, DEFAULT_PROMPT_OPTIONS, MATERIAL_LEVELS, SKILL_NAME, suggestedBatchSize } from './materialPrompt'
+import { BANNER_STYLES, buildBannerPrompt, DEFAULT_BANNER_OPTIONS } from './bannerPrompt'
 
 function useList(path, token) {
   const [items, setItems] = useState([])
@@ -68,6 +69,11 @@ const ERROR_MESSAGES = {
   material_invalid_path: 'El ZIP contiene rutas no permitidas (por ejemplo "../").',
   material_too_large: 'El ZIP es demasiado grande (máximo 50 MB comprimido y 300 MB descomprimido).',
   material_not_found: 'Este componente no tiene material subido.',
+  invalid_slug: 'El link solo puede tener minúsculas, números y guiones (por ejemplo: full-stack-2026).',
+  slug_required: 'Para publicar la web, define primero su link.',
+  pre_enrollment_not_pending: 'Esa preinscripción ya fue resuelta.',
+  invalid_linkedin_url: 'El LinkedIn debe ser un link https://www.linkedin.com/...',
+  image_too_large: 'La imagen supera los 5 MB.',
   title_required: 'El tema no puede quedar vacío.',
   temario_sheet_not_found: 'El Excel no tiene la hoja del temario exportado (columnas "ID componente", "N°" y "Tema"). Usa el archivo de "Exportar temario".',
 }
@@ -449,6 +455,77 @@ export function TenantsPanel({ session }) {
   )
 }
 
+// Perfil publico de un instructor (foto, cargo, bio, LinkedIn) que se
+// muestra en la web publica de los programas donde dicta. Solo admins.
+function InstructorProfileModal({ session, user, onClose, onSaved }) {
+  const { token } = session
+  const [form, setForm] = useState({ headline: user.public_headline || '', bio: user.public_bio || '', linkedinUrl: user.linkedin_url || '' })
+  const [photoUrl, setPhotoUrl] = useState(user.photo_path ? `/uploads/${user.photo_path}` : null)
+  const [error, setError] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [uploading, setUploading] = useState(false)
+
+  async function handleSave(e) {
+    e.preventDefault()
+    setError('')
+    setSaving(true)
+    try {
+      await apiRequest(`/api/users/${user.id}/public-profile`, { method: 'POST', token, body: form })
+      onSaved?.()
+      onClose()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function handlePhoto(e) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setError('')
+    setUploading(true)
+    try {
+      const formData = new FormData()
+      formData.append('image', file)
+      const res = await apiUpload(`/api/users/${user.id}/photo`, { token, formData })
+      setPhotoUrl(res.photoUrl)
+      onSaved?.()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setUploading(false)
+      e.target.value = ''
+    }
+  }
+
+  return (
+    <Modal title={`Perfil público — ${user.full_name}`} onClose={onClose}>
+      <div className="instructor-photo-row">
+        {photoUrl ? <img src={photoUrl} alt={user.full_name} className="instructor-photo" /> : <div className="instructor-photo instructor-photo-empty">{user.full_name.split(' ').map((x) => x[0]).slice(0, 2).join('')}</div>}
+        <label className="btn-mini logo-upload-label">
+          {uploading ? 'Subiendo…' : photoUrl ? 'Cambiar foto' : 'Subir foto'}
+          <input type="file" accept="image/png,image/jpeg,image/webp" onChange={handlePhoto} disabled={uploading} hidden />
+        </label>
+        <span className="muted small-note">Cuadrada, mín. 400×400 px (PNG, JPG o WEBP).</span>
+      </div>
+      <form className="admin-form" onSubmit={handleSave}>
+        <label className="full-field">Cargo / titular
+          <input value={form.headline} onChange={(e) => setForm({ ...form, headline: e.target.value })} maxLength={160} placeholder="Ej.: Arquitecto cloud · 10 años en banca" />
+        </label>
+        <label className="full-field">Biografía
+          <textarea rows={5} value={form.bio} onChange={(e) => setForm({ ...form, bio: e.target.value })} maxLength={2000} placeholder="Experiencia, especialidad y logros relevantes para los alumnos." />
+        </label>
+        <label className="full-field">LinkedIn (opcional)
+          <input value={form.linkedinUrl} onChange={(e) => setForm({ ...form, linkedinUrl: e.target.value })} placeholder="https://www.linkedin.com/in/..." />
+        </label>
+        <ErrorNote message={error} />
+        <button className="primary" disabled={saving}>{saving ? 'Guardando…' : 'Guardar perfil'}</button>
+      </form>
+    </Modal>
+  )
+}
+
 export function UsersPanel({ session }) {
   const { token, profile } = session
   const isSuperAdmin = profile.roleCode === 'super_admin'
@@ -458,6 +535,7 @@ export function UsersPanel({ session }) {
   const [formError, setFormError] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [lastTempPassword, setLastTempPassword] = useState(null)
+  const [profileUser, setProfileUser] = useState(null)
 
   async function handleCreate(e) {
     e.preventDefault()
@@ -549,6 +627,7 @@ export function UsersPanel({ session }) {
                   <td className="row-actions">
                     <button className="btn-mini" onClick={() => toggleActive(u)}>{u.is_active ? 'Desactivar' : 'Activar'}</button>
                     <button className="btn-mini" onClick={() => resetPassword(u)}>Resetear clave</button>
+                    {u.role_code === 'instructor' && <button className="btn-mini" onClick={() => setProfileUser(u)}>Perfil público</button>}
                   </td>
                 </tr>
               ))}
@@ -556,6 +635,7 @@ export function UsersPanel({ session }) {
           </table>
         )}
       </section>
+      {profileUser && <InstructorProfileModal session={session} user={profileUser} onClose={() => setProfileUser(null)} onSaved={reload} />}
     </div>
   )
 }
@@ -1784,6 +1864,259 @@ function ComponentsPanel({ session, program, onBack }) {
   )
 }
 
+function slugify(text) {
+  return String(text || '').normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 100)
+}
+
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text)
+    return true
+  } catch {
+    window.prompt('Copia este texto:', text)
+    return false
+  }
+}
+
+// Prompt sugerido para disenar el banner del programa en Claude, con los
+// datos y la marca del tenant (ver src/bannerPrompt.js).
+function BannerPromptBuilder({ session, program, tagline, audience }) {
+  const { token } = session
+  const { items: components } = useList(`/api/programs/${program.id}/components`, token)
+  const [options, setOptions] = useState(DEFAULT_BANNER_OPTIONS)
+  const [copied, setCopied] = useState(false)
+  const logoUrl = program.tenant_logo_path ? `/uploads/${program.tenant_logo_path}` : null
+  const prompt = buildBannerPrompt({ program, componentNames: components.map((c) => c.name), tagline, audience, hasLogo: Boolean(logoUrl) }, options)
+
+  return (
+    <div className="material-prompt">
+      <ol className="material-skill-steps">
+        <li>{logoUrl ? <>Descarga el <a href={logoUrl} download>logo de {program.tenant_name}</a> para adjuntarlo en Claude.</> : 'El tenant no tiene logo cargado: el prompt pedirá dejar su espacio libre.'}</li>
+        <li>Copia el prompt, pégalo en Claude junto con el logo y descarga el PNG que te entregue.</li>
+        <li>Súbelo aquí con "Subir banner".</li>
+      </ol>
+      <div className="admin-form">
+        <label>Estilo
+          <select value={options.style} onChange={(e) => { setCopied(false); setOptions({ ...options, style: e.target.value }) }}>
+            {BANNER_STYLES.map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
+        </label>
+        <label className="full-field">Indicaciones adicionales (opcional)
+          <input value={options.extra} onChange={(e) => { setCopied(false); setOptions({ ...options, extra: e.target.value }) }} placeholder="Ej.: incluir un ícono de nube; fondo oscuro" />
+        </label>
+      </div>
+      <div className="material-prompt-head">
+        <strong>Prompt para el banner</strong>
+        <button type="button" className="primary" onClick={async () => setCopied(await copyText(prompt))}>{copied ? '¡Copiado!' : 'Copiar prompt'}</button>
+      </div>
+      <textarea className="material-prompt-output" readOnly rows={12} value={prompt} />
+    </div>
+  )
+}
+
+// Web publica de un programa: link propio, textos, banner y estado de
+// publicacion/inscripciones.
+function ProgramPublicModal({ session, program, onClose, onSaved }) {
+  const { token } = session
+  const [form, setForm] = useState({
+    publicSlug: program.public_slug || slugify(`${program.name} ${program.cohort || ''}`),
+    isPublic: Boolean(program.is_public),
+    enrollmentOpen: program.enrollment_open === undefined ? true : Boolean(program.enrollment_open),
+    tagline: program.public_tagline || '',
+    audience: program.public_audience || '',
+  })
+  const [saved, setSaved] = useState({ slug: program.public_slug, isPublic: Boolean(program.is_public) })
+  const [bannerUrl, setBannerUrl] = useState(program.banner_path ? `/uploads/${program.banner_path}` : null)
+  const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [uploading, setUploading] = useState(false)
+  const [showPrompt, setShowPrompt] = useState(false)
+
+  const publicUrl = saved.slug && program.tenant_slug ? `${window.location.origin}/p/${program.tenant_slug}/${saved.slug}` : null
+
+  async function handleSave(e) {
+    e.preventDefault()
+    setError('')
+    setNotice('')
+    setSaving(true)
+    try {
+      await apiRequest(`/api/programs/${program.id}/public`, { method: 'POST', token, body: form })
+      setSaved({ slug: form.publicSlug, isPublic: form.isPublic })
+      setNotice(form.isPublic ? 'Guardado. La web pública está publicada.' : 'Guardado. La web pública NO está publicada todavía.')
+      onSaved?.()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function handleBanner(e) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setError('')
+    setUploading(true)
+    try {
+      const formData = new FormData()
+      formData.append('image', file)
+      const res = await apiUpload(`/api/programs/${program.id}/banner`, { token, formData })
+      setBannerUrl(res.bannerUrl)
+      onSaved?.()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setUploading(false)
+      e.target.value = ''
+    }
+  }
+
+  return (
+    <Modal title={`Web pública — ${program.name}`} onClose={onClose} wide>
+      {publicUrl && (
+        <div className="public-link-box">
+          <span className={saved.isPublic ? 'pill pill-ok' : 'pill pill-inactive'}>{saved.isPublic ? 'Publicada' : 'No publicada'}</span>
+          <code>{publicUrl}</code>
+          <button type="button" className="btn-mini" onClick={() => copyText(publicUrl)}>Copiar link</button>
+          <a className="btn-mini" href={publicUrl} target="_blank" rel="noreferrer">Abrir</a>
+          <a className="btn-mini" href={`${publicUrl}/inscripcion`} target="_blank" rel="noreferrer">Formulario</a>
+        </div>
+      )}
+      <form className="admin-form" onSubmit={handleSave}>
+        <label className="full-field">Link público (solo minúsculas, números y guiones)
+          <div className="slug-input">
+            <span>/p/{program.tenant_slug}/</span>
+            <input value={form.publicSlug} onChange={(e) => setForm({ ...form, publicSlug: slugify(e.target.value) })} placeholder="full-stack-2026" />
+          </div>
+        </label>
+        <label className="full-field">Frase principal
+          <input value={form.tagline} onChange={(e) => setForm({ ...form, tagline: e.target.value })} maxLength={255} placeholder="Ej.: Conviértete en desarrollador full-stack en 8 meses" />
+        </label>
+        <label className="full-field">Público objetivo
+          <textarea rows={3} value={form.audience} onChange={(e) => setForm({ ...form, audience: e.target.value })} placeholder="Ej.: Egresados de carreras técnicas que quieren trabajar en desarrollo de software. No se requiere experiencia previa." />
+        </label>
+        <label className="checkbox-field"><input type="checkbox" checked={form.isPublic} onChange={(e) => setForm({ ...form, isPublic: e.target.checked })} /> Publicar la web del programa</label>
+        <label className="checkbox-field"><input type="checkbox" checked={form.enrollmentOpen} onChange={(e) => setForm({ ...form, enrollmentOpen: e.target.checked })} /> Inscripciones abiertas</label>
+        <ErrorNote message={error} />
+        {notice && <p className="temp-password-box full-field">{notice}</p>}
+        <button className="primary" disabled={saving}>{saving ? 'Guardando…' : 'Guardar'}</button>
+      </form>
+      <p className="muted small-note">La web muestra además la descripción, fechas y modalidad del programa, su temario y sus instructores (con el perfil público que cargues en Usuarios).</p>
+
+      <hr className="modal-divider" />
+      <h4 className="modal-subhead">Banner</h4>
+      <p className="muted small-note">PNG, JPG o WEBP de 1600×840 px (máx. 5 MB). Es la portada de la web y la imagen al compartir el link en redes.</p>
+      {bannerUrl && <img className="banner-preview" src={bannerUrl} alt="Banner del programa" />}
+      <div className="excel-import-actions">
+        <label className="btn-mini logo-upload-label">
+          {uploading ? 'Subiendo…' : bannerUrl ? 'Cambiar banner' : 'Subir banner'}
+          <input type="file" accept="image/png,image/jpeg,image/webp" onChange={handleBanner} disabled={uploading} hidden />
+        </label>
+        <button type="button" className={showPrompt ? 'btn-mini active' : 'btn-mini'} onClick={() => setShowPrompt((v) => !v)}>
+          {showPrompt ? 'Ocultar prompt' : 'Generar prompt para el banner'}
+        </button>
+      </div>
+      {showPrompt && <BannerPromptBuilder session={session} program={program} tagline={form.tagline} audience={form.audience} />}
+    </Modal>
+  )
+}
+
+// Preinscripciones recibidas por las webs publicas. Confirmar crea la
+// cuenta del alumno (o reutiliza la suya) y lo inscribe en el programa.
+export function PreEnrollmentsPanel({ session }) {
+  const { token } = session
+  const { items: programs } = useList('/api/programs', token)
+  const [programId, setProgramId] = useState('')
+  const [status, setStatus] = useState('pending')
+  const query = new URLSearchParams({ ...(programId ? { programId } : {}), ...(status ? { status } : {}) }).toString()
+  const { items, error, loading, reload } = useList(`/api/pre-enrollments?${query}`, token)
+  const [actionError, setActionError] = useState('')
+  const [result, setResult] = useState(null)
+  const [busyId, setBusyId] = useState(null)
+
+  async function resolve(row, action) {
+    const comments = action === 'reject' ? window.prompt(`Motivo del rechazo de ${row.full_name} (opcional):`, '') : ''
+    if (comments === null) return
+    if (action === 'confirm' && !window.confirm(`¿Confirmar a ${row.full_name}? Se creará su cuenta de alumno (si no la tiene) y quedará inscrito en ${row.program_name}.`)) return
+    setActionError('')
+    setResult(null)
+    setBusyId(row.id)
+    try {
+      const res = await apiRequest(`/api/pre-enrollments/${row.id}/resolve`, { method: 'POST', token, body: { action, comments } })
+      if (action === 'confirm') setResult({ ...res.data, fullName: row.full_name, programName: row.program_name })
+      reload()
+    } catch (err) {
+      setActionError(err.message)
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  return (
+    <div className="admin-wrap">
+      <section className="panel">
+        <h3>Preinscripciones</h3>
+        <p className="muted">Llegan desde la web pública de cada programa. Al confirmar se crea la cuenta del alumno con una contraseña temporal y queda inscrito en el programa; después asígnalo a un grupo desde Programas.</p>
+        <div className="filter-row">
+          <label>Programa
+            <select value={programId} onChange={(e) => setProgramId(e.target.value)}>
+              <option value="">Todos</option>
+              {programs.map((p) => <option key={p.id} value={p.id}>{p.name}{p.cohort ? ` · ${p.cohort}` : ''}</option>)}
+            </select>
+          </label>
+          <label>Estado
+            <select value={status} onChange={(e) => setStatus(e.target.value)}>
+              <option value="pending">Pendientes</option>
+              <option value="confirmed">Confirmadas</option>
+              <option value="rejected">Rechazadas</option>
+              <option value="">Todas</option>
+            </select>
+          </label>
+        </div>
+        <ErrorNote message={error || actionError} />
+        {result && (
+          <div className="temp-password-box">
+            <strong>{result.fullName}</strong> quedó inscrito en {result.programName}.{' '}
+            {result.accountCreated
+              ? <>Contraseña temporal para <strong>{result.email}</strong>: <code>{result.temporaryPassword}</code> — compártela fuera del sistema; se pedirá cambiarla al ingresar.</>
+              : <>Ya tenía cuenta de alumno ({result.email}), así que mantiene su contraseña.</>}
+          </div>
+        )}
+        {loading ? <p className="muted">Cargando…</p> : items.length === 0 ? <p className="muted">No hay preinscripciones con estos filtros.</p> : (
+          <table className="admin-table">
+            <thead><tr><th>Fecha</th><th>Persona</th><th>Contacto</th><th>Documento</th><th>Programa</th><th>Estado</th><th></th></tr></thead>
+            <tbody>
+              {items.map((r) => (
+                <tr key={r.id}>
+                  <td>{String(r.created_at).slice(0, 16)}</td>
+                  <td><strong>{r.full_name}</strong><br /><span className="muted">{r.country}</span></td>
+                  <td>{r.email}<br />{r.phone}{r.corporate_email && <><br /><span className="muted">{r.corporate_email}</span></>}</td>
+                  <td>{r.document_type_label}<br />{r.document_number}</td>
+                  <td>{r.program_name}</td>
+                  <td>
+                    <StatusPill label={r.status_label} />
+                    {r.status_code === 'pending' && Boolean(r.email_has_account) && <div className="muted small-note">Ese email ya tiene cuenta</div>}
+                    {r.admin_comments && <div className="muted small-note">{r.admin_comments}</div>}
+                  </td>
+                  <td className="row-actions">
+                    {r.status_code === 'pending' && (
+                      <>
+                        <button className="btn-mini" disabled={busyId === r.id} onClick={() => resolve(r, 'confirm')}>Confirmar</button>
+                        <button className="btn-mini btn-mini-danger" disabled={busyId === r.id} onClick={() => resolve(r, 'reject')}>Rechazar</button>
+                      </>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </section>
+    </div>
+  )
+}
+
 export function ProgramsPanel({ session }) {
   const { token, profile } = session
   const isSuperAdmin = profile.roleCode === 'super_admin'
@@ -1794,6 +2127,7 @@ export function ProgramsPanel({ session }) {
   const [form, setForm] = useState({ tenantId: '', name: '', description: '', cohort: '', modalityCode: '', startsOn: '', endsOn: '' })
   const [formError, setFormError] = useState('')
   const [selectedProgram, setSelectedProgram] = useState(null)
+  const [publicProgram, setPublicProgram] = useState(null)
 
   async function handleCreate(e) {
     e.preventDefault()
@@ -1862,7 +2196,7 @@ export function ProgramsPanel({ session }) {
         <ErrorNote message={error} />
         {loading ? <p className="muted">Cargando…</p> : (
           <table className="admin-table">
-            <thead><tr><th>Nombre</th><th>Cohorte</th><th>Estado</th><th>Fechas</th><th></th></tr></thead>
+            <thead><tr><th>Nombre</th><th>Cohorte</th><th>Estado</th><th>Fechas</th><th>Web pública</th><th></th></tr></thead>
             <tbody>
               {items.map((p) => (
                 <tr key={p.id}>
@@ -1874,13 +2208,21 @@ export function ProgramsPanel({ session }) {
                     </select>
                   </td>
                   <td>{p.starts_on || '—'} → {p.ends_on || '—'}</td>
-                  <td><button className="btn-mini" onClick={() => setSelectedProgram(p)}>Ver componentes</button></td>
+                  <td>
+                    {p.is_public ? <span className="pill pill-ok">Publicada</span> : <span className="muted">No publicada</span>}
+                    {Number(p.pending_pre_enrollments) > 0 && <span className="pill pill-warn">{p.pending_pre_enrollments} por confirmar</span>}
+                  </td>
+                  <td className="row-actions">
+                    <button className="btn-mini" onClick={() => setSelectedProgram(p)}>Ver componentes</button>
+                    <button className="btn-mini" onClick={() => setPublicProgram(p)}>Web pública</button>
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
         )}
       </section>
+      {publicProgram && <ProgramPublicModal session={session} program={publicProgram} onClose={() => setPublicProgram(null)} onSaved={reload} />}
     </div>
   )
 }

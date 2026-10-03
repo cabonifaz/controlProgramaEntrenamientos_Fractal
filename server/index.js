@@ -10,6 +10,7 @@ import { hashPassword, signSessionToken, verifyPassword, signMaterialToken, veri
 import { authenticate } from './middleware/authenticate.js'
 import { mapStoredProcedureError } from './errors.js'
 import { uploadLogo, uploadSpreadsheet, UPLOADS_DIR } from './uploads.js'
+import { registerPublicProgramRoutes, renderPublicProgramHtml } from './publicPrograms.js'
 import {
   uploadMaterialZip, extractMaterialZip, materialDir, removeMaterialDir, describeMaterial,
   isSolutionsPath, buildMaterialTemplateZip, buildMaterialSkillZip, MATERIAL_RESPONSE_HEADERS,
@@ -27,12 +28,24 @@ const VALID_ROLES = new Set(['super_admin', 'tenant_admin', 'instructor', 'stude
 // no se pide en el formulario ni en la carga por Excel.
 const TOPIC_DURATION_MINUTES = 45
 
+// Railway pone un proxy delante: sin esto req.ip seria la IP del proxy y el
+// freno anti-abuso del formulario publico trataria a todos como uno solo.
+app.set('trust proxy', 1)
 app.use(express.json())
-// Publico a proposito (logos de tenant): sin datos sensibles, se sirve tal
-// cual desde el volumen persistente configurado en UPLOADS_DIR. Solo la
-// subcarpeta tenants/: el material didactico (materials/) tambien vive en
-// el volumen y NO debe quedar publico (lo sirve /material/<token>/...).
-app.use('/uploads/tenants', express.static(path.join(UPLOADS_DIR, 'tenants')))
+// Publico a proposito (logos de tenant; banners de programa y fotos de
+// instructores de la web publica): sin datos sensibles, se sirve tal cual
+// desde el volumen persistente configurado en UPLOADS_DIR. Solo estas
+// subcarpetas: el material didactico (materials/) tambien vive en el
+// volumen y NO debe quedar publico (lo sirve /material/<token>/...).
+// Un SVG abierto directamente podria ejecutar scripts: se sirve en sandbox.
+const publicStaticOptions = {
+  setHeaders(res, filePath) {
+    if (filePath.toLowerCase().endsWith('.svg')) res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox")
+    res.setHeader('X-Content-Type-Options', 'nosniff')
+  },
+}
+app.use('/uploads/tenants', express.static(path.join(UPLOADS_DIR, 'tenants'), publicStaticOptions))
+app.use('/uploads/public', express.static(path.join(UPLOADS_DIR, 'public'), publicStaticOptions))
 
 app.get('/api/health', async (_req, res) => {
   try {
@@ -898,6 +911,8 @@ app.get('/material/:token/{*filePath}', (req, res) => {
     if (err && !res.headersSent) res.status(404).type('text/plain; charset=utf-8').send('Archivo no encontrado.')
   })
 })
+
+registerPublicProgramRoutes(app)
 
 app.get('/api/templates/material-skill', async (_req, res) => {
   const buffer = await buildMaterialSkillZip()
@@ -1941,6 +1956,12 @@ app.post('/api/programs/:id/full-import', authenticate, async (req, res) => {
 
 if (process.env.NODE_ENV === 'production') {
   const dist = path.resolve(__dirname, '../dist')
+  // Web publica de un programa: mismo index.html, con titulo/imagen del
+  // programa para la vista previa al compartir el link.
+  app.get(['/p/:tenantSlug/:programSlug', '/p/:tenantSlug/:programSlug/inscripcion'], async (req, res) => {
+    const indexHtml = await fs.promises.readFile(path.join(dist, 'index.html'), 'utf8')
+    res.type('html').send(await renderPublicProgramHtml(indexHtml, req, req.params.tenantSlug, req.params.programSlug))
+  })
   app.use(express.static(dist))
   // Middleware, not a '*' route pattern: Express 5's path-to-regexp no
   // longer accepts a bare '*' as a route path.

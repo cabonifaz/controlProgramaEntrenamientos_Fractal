@@ -214,6 +214,38 @@ CREATE TABLE IF NOT EXISTS topics (
   CONSTRAINT fk_topic_status FOREIGN KEY (status_id) REFERENCES master_catalog_values(id)
 );
 
+-- Preinscripcion publica a un programa (formulario de su web publica).
+-- No es un usuario todavia: al CONFIRMARLA el admin se crea (o reutiliza)
+-- la cuenta del alumno y se inscribe en el programa (student_id).
+CREATE TABLE IF NOT EXISTS pre_enrollments (
+  id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+  program_id BIGINT UNSIGNED NOT NULL,
+  full_name VARCHAR(160) NOT NULL,
+  email VARCHAR(190) NOT NULL,
+  phone VARCHAR(40) NOT NULL,
+  corporate_email VARCHAR(190) NULL,
+  document_type_id BIGINT UNSIGNED NOT NULL,
+  document_number VARCHAR(40) NOT NULL,
+  country VARCHAR(80) NOT NULL,
+  status_id BIGINT UNSIGNED NOT NULL,
+  student_id BIGINT UNSIGNED NULL,
+  admin_comments VARCHAR(500) NULL,
+  ip_address VARCHAR(64) NULL,
+  resolved_at DATETIME NULL,
+  resolved_by BIGINT UNSIGNED NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  deleted_at DATETIME NULL,
+  deleted_by BIGINT UNSIGNED NULL,
+  is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+  KEY ix_pre_enrollments_program (program_id, status_id),
+  KEY ix_pre_enrollments_email (email),
+  CONSTRAINT fk_pre_enrollment_program FOREIGN KEY (program_id) REFERENCES training_programs(id),
+  CONSTRAINT fk_pre_enrollment_doc_type FOREIGN KEY (document_type_id) REFERENCES master_catalog_values(id),
+  CONSTRAINT fk_pre_enrollment_status FOREIGN KEY (status_id) REFERENCES master_catalog_values(id),
+  CONSTRAINT fk_pre_enrollment_student FOREIGN KEY (student_id) REFERENCES users(id),
+  CONSTRAINT fk_pre_enrollment_resolver FOREIGN KEY (resolved_by) REFERENCES users(id)
+);
+
 -- Material didactico de un componente: un ZIP (HTML + assets) preparado
 -- fuera de la plataforma y descomprimido en
 -- UPLOADS_DIR/materials/components/<component_id>/<folder>. Solo una
@@ -356,7 +388,9 @@ INSERT IGNORE INTO master_catalogs (code, name, description) VALUES
   ('ABSENCE_REASON', 'Motivos de inasistencia', 'Motivo registrado de una inasistencia'),
   ('AUDIT_TYPE', 'Tipos de auditoria', 'Tipo de accion auditada'),
   ('EVENT_TYPE', 'Tipos de evento', 'Tipo de evento de dominio'),
-  ('ALERT_STATUS', 'Estados de alerta', 'Estado de lectura de una alerta');
+  ('ALERT_STATUS', 'Estados de alerta', 'Estado de lectura de una alerta'),
+  ('DOCUMENT_TYPE', 'Tipos de documento', 'Tipo de documento de identidad'),
+  ('PRE_ENROLLMENT_STATUS', 'Estados de preinscripcion', 'Estado de una preinscripcion publica');
 
 INSERT IGNORE INTO master_catalog_values (catalog_id, code, label, sort_order) VALUES
   ((SELECT id FROM master_catalogs WHERE code = 'ROLE'), 'super_admin', 'Super administrador', 1),
@@ -471,13 +505,23 @@ INSERT IGNORE INTO master_catalog_values (catalog_id, code, label, sort_order) V
   ((SELECT id FROM master_catalogs WHERE code = 'EVENT_TYPE'), 'alert_raised', 'Alerta generada', 7),
 
   ((SELECT id FROM master_catalogs WHERE code = 'ALERT_STATUS'), 'open', 'Abierta', 1),
-  ((SELECT id FROM master_catalogs WHERE code = 'ALERT_STATUS'), 'read', 'Leida', 2);
+  ((SELECT id FROM master_catalogs WHERE code = 'ALERT_STATUS'), 'read', 'Leida', 2),
+
+  ((SELECT id FROM master_catalogs WHERE code = 'DOCUMENT_TYPE'), 'dni', 'DNI', 1),
+  ((SELECT id FROM master_catalogs WHERE code = 'DOCUMENT_TYPE'), 'ce', 'Carné de extranjería', 2),
+  ((SELECT id FROM master_catalogs WHERE code = 'DOCUMENT_TYPE'), 'passport', 'Pasaporte', 3),
+  ((SELECT id FROM master_catalogs WHERE code = 'DOCUMENT_TYPE'), 'other', 'Otro', 4),
+
+  ((SELECT id FROM master_catalogs WHERE code = 'PRE_ENROLLMENT_STATUS'), 'pending', 'Pendiente', 1),
+  ((SELECT id FROM master_catalogs WHERE code = 'PRE_ENROLLMENT_STATUS'), 'confirmed', 'Confirmada', 2),
+  ((SELECT id FROM master_catalogs WHERE code = 'PRE_ENROLLMENT_STATUS'), 'rejected', 'Rechazada', 3);
 
 -- ===================================================================
 -- Procedimientos almacenados
 -- ===================================================================
 DROP PROCEDURE IF EXISTS sp_migrate_component_groups_v1;
 DROP PROCEDURE IF EXISTS sp_migrate_tenant_logo_v1;
+DROP PROCEDURE IF EXISTS sp_migrate_program_public_v1;
 DROP PROCEDURE IF EXISTS sp_tenants_set_logo;
 DROP PROCEDURE IF EXISTS sp_tenants_set_brand_color;
 DROP PROCEDURE IF EXISTS sp_tenants_get_public_branding;
@@ -561,6 +605,17 @@ DROP PROCEDURE IF EXISTS sp_topics_list_by_student;
 DROP PROCEDURE IF EXISTS sp_component_material_prompt_data;
 DROP PROCEDURE IF EXISTS sp_program_temario_export;
 DROP PROCEDURE IF EXISTS sp_topics_update_by_position;
+DROP PROCEDURE IF EXISTS sp_public_program_get;
+DROP PROCEDURE IF EXISTS sp_public_program_temario;
+DROP PROCEDURE IF EXISTS sp_public_program_instructors;
+DROP PROCEDURE IF EXISTS sp_public_program_schedule;
+DROP PROCEDURE IF EXISTS sp_programs_update_public;
+DROP PROCEDURE IF EXISTS sp_programs_set_banner;
+DROP PROCEDURE IF EXISTS sp_users_update_public_profile;
+DROP PROCEDURE IF EXISTS sp_users_set_photo;
+DROP PROCEDURE IF EXISTS sp_pre_enrollments_create;
+DROP PROCEDURE IF EXISTS sp_pre_enrollments_list;
+DROP PROCEDURE IF EXISTS sp_pre_enrollments_resolve;
 -- Renombradas/eliminadas por el refactor a grupos (component_groups): estos
 -- guards se quedan para limpiar cualquier entorno que todavia las tenga.
 DROP PROCEDURE IF EXISTS sp_components_assign_instructor;
@@ -677,6 +732,31 @@ BEGIN
     WHERE table_schema = DATABASE() AND table_name = 'tenants' AND column_name = 'brand_color'
   ) THEN
     ALTER TABLE tenants ADD COLUMN brand_color VARCHAR(7) NULL AFTER logo_path;
+  END IF;
+END$$
+
+-- Web publica por programa (link propio, banner, publico objetivo) y
+-- perfil publico de los instructores que se muestra en ella. Idempotente.
+CREATE PROCEDURE sp_migrate_program_public_v1()
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+    WHERE table_schema = DATABASE() AND table_name = 'training_programs' AND column_name = 'public_slug') THEN
+    ALTER TABLE training_programs
+      ADD COLUMN public_slug VARCHAR(100) NULL AFTER ends_on,
+      ADD COLUMN is_public BOOLEAN NOT NULL DEFAULT FALSE AFTER public_slug,
+      ADD COLUMN enrollment_open BOOLEAN NOT NULL DEFAULT TRUE AFTER is_public,
+      ADD COLUMN public_tagline VARCHAR(255) NULL AFTER enrollment_open,
+      ADD COLUMN public_audience TEXT NULL AFTER public_tagline,
+      ADD COLUMN banner_path VARCHAR(255) NULL AFTER public_audience,
+      ADD UNIQUE KEY uq_program_public_slug (tenant_id, public_slug);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+    WHERE table_schema = DATABASE() AND table_name = 'users' AND column_name = 'public_headline') THEN
+    ALTER TABLE users
+      ADD COLUMN public_headline VARCHAR(160) NULL AFTER must_change_password,
+      ADD COLUMN public_bio TEXT NULL AFTER public_headline,
+      ADD COLUMN photo_path VARCHAR(255) NULL AFTER public_bio,
+      ADD COLUMN linkedin_url VARCHAR(255) NULL AFTER photo_path;
   END IF;
 END$$
 
@@ -1029,7 +1109,8 @@ BEGIN
     SET v_scope_tenant_id = p_tenant_id_filter;
   END IF;
 
-  SELECT u.id, u.tenant_id, u.full_name, u.email, v.code AS role_code, u.is_active, u.must_change_password, u.created_at
+  SELECT u.id, u.tenant_id, u.full_name, u.email, v.code AS role_code, u.is_active, u.must_change_password, u.created_at,
+         u.public_headline, u.public_bio, u.photo_path, u.linkedin_url
   FROM users u
   JOIN master_catalog_values v ON v.id = u.role_id
   WHERE u.is_deleted = FALSE
@@ -1052,8 +1133,13 @@ BEGIN
 
   SELECT p.id, p.tenant_id, p.name, p.description, p.cohort, p.starts_on, p.ends_on,
          ps.code AS status_code, ps.label AS status_label,
-         pm.code AS modality_code, pm.label AS modality_label, p.created_at
+         pm.code AS modality_code, pm.label AS modality_label, p.created_at,
+         p.public_slug, p.is_public, p.enrollment_open, p.public_tagline, p.public_audience, p.banner_path,
+         tn.slug AS tenant_slug, tn.name AS tenant_name, tn.logo_path AS tenant_logo_path, tn.brand_color AS tenant_brand_color,
+         (SELECT COUNT(*) FROM pre_enrollments pe JOIN master_catalog_values pes ON pes.id = pe.status_id
+          WHERE pe.program_id = p.id AND pe.is_deleted = FALSE AND pes.code = 'pending') AS pending_pre_enrollments
   FROM training_programs p
+  JOIN tenants tn ON tn.id = p.tenant_id
   JOIN master_catalog_values ps ON ps.id = p.status_id
   LEFT JOIN master_catalog_values pm ON pm.id = p.modality_id
   WHERE p.is_deleted = FALSE
@@ -3239,6 +3325,388 @@ BEGIN
   LEFT JOIN users iu ON iu.id = g.instructor_id
   WHERE ge.student_id = p_actor_user_id AND ge.is_deleted = FALSE
   ORDER BY p.name, c.sort_order, c.name, t.sort_order, t.id;
+END$$
+
+-- ===================================================================
+-- Web publica por programa y preinscripciones. Lo publico (sin sesion)
+-- solo ve programas marcados is_public de tenants activos; la gestion es
+-- de super_admin o tenant_admin de su tenant.
+-- ===================================================================
+CREATE PROCEDURE sp_public_program_get(IN p_tenant_slug VARCHAR(80), IN p_program_slug VARCHAR(100))
+BEGIN
+  DECLARE v_program_id BIGINT UNSIGNED;
+
+  SELECT p.id INTO v_program_id
+  FROM training_programs p
+  JOIN tenants tn ON tn.id = p.tenant_id
+  JOIN master_catalog_values ts ON ts.id = tn.status_id
+  WHERE tn.slug = p_tenant_slug AND p.public_slug = p_program_slug AND p.is_public = TRUE
+    AND p.is_deleted = FALSE AND tn.is_deleted = FALSE AND ts.code = 'active';
+
+  IF v_program_id IS NULL THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'program_not_found';
+  END IF;
+
+  SELECT p.id AS program_id, p.name, p.description, p.cohort, p.starts_on, p.ends_on, pm.label AS modality_label,
+         p.public_tagline, p.public_audience, p.banner_path, p.enrollment_open,
+         tn.name AS tenant_name, tn.slug AS tenant_slug, tn.logo_path, tn.brand_color
+  FROM training_programs p
+  JOIN tenants tn ON tn.id = p.tenant_id
+  LEFT JOIN master_catalog_values pm ON pm.id = p.modality_id
+  WHERE p.id = v_program_id;
+END$$
+
+-- Temario publico: por componente, el de su grupo de referencia.
+CREATE PROCEDURE sp_public_program_temario(IN p_program_id BIGINT UNSIGNED)
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM training_programs WHERE id = p_program_id AND is_public = TRUE AND is_deleted = FALSE) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'program_not_found';
+  END IF;
+
+  SELECT c.id AS component_id, c.name AS component_name, c.description AS component_description,
+         (SELECT COUNT(*) FROM topics t2
+          WHERE t2.group_id = t.group_id AND t2.is_deleted = FALSE
+            AND (t2.sort_order < t.sort_order OR (t2.sort_order = t.sort_order AND t2.id <= t.id))) AS topic_position,
+         t.title, t.duration_minutes
+  FROM components c
+  LEFT JOIN topics t ON t.is_deleted = FALSE AND t.group_id = (
+    SELECT g.id FROM component_groups g
+    LEFT JOIN topics tt ON tt.group_id = g.id AND tt.is_deleted = FALSE
+    WHERE g.component_id = c.id AND g.is_deleted = FALSE
+    GROUP BY g.id
+    ORDER BY COUNT(tt.id) DESC, g.id
+    LIMIT 1
+  )
+  WHERE c.program_id = p_program_id AND c.is_deleted = FALSE
+  ORDER BY c.sort_order, c.name, topic_position;
+END$$
+
+CREATE PROCEDURE sp_public_program_instructors(IN p_program_id BIGINT UNSIGNED)
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM training_programs WHERE id = p_program_id AND is_public = TRUE AND is_deleted = FALSE) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'program_not_found';
+  END IF;
+
+  SELECT u.id, u.full_name, u.public_headline, u.public_bio, u.photo_path, u.linkedin_url,
+         GROUP_CONCAT(DISTINCT c.name ORDER BY c.name SEPARATOR ', ') AS components
+  FROM component_groups g
+  JOIN components c ON c.id = g.component_id AND c.is_deleted = FALSE
+  JOIN users u ON u.id = g.instructor_id AND u.is_deleted = FALSE AND u.is_active = TRUE
+  WHERE c.program_id = p_program_id AND g.is_deleted = FALSE
+  GROUP BY u.id, u.full_name, u.public_headline, u.public_bio, u.photo_path, u.linkedin_url
+  ORDER BY u.full_name;
+END$$
+
+CREATE PROCEDURE sp_public_program_schedule(IN p_program_id BIGINT UNSIGNED)
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM training_programs WHERE id = p_program_id AND is_public = TRUE AND is_deleted = FALSE) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'program_not_found';
+  END IF;
+
+  SELECT sd.weekday, TIME_FORMAT(sd.start_time, '%H:%i') AS start_time, TIME_FORMAT(sd.end_time, '%H:%i') AS end_time
+  FROM component_group_schedule_days sd
+  JOIN component_groups g ON g.id = sd.group_id AND g.is_deleted = FALSE
+  JOIN components c ON c.id = g.component_id AND c.is_deleted = FALSE
+  WHERE c.program_id = p_program_id AND sd.is_deleted = FALSE
+  GROUP BY sd.weekday, sd.start_time, sd.end_time
+  ORDER BY sd.weekday, sd.start_time;
+END$$
+
+CREATE PROCEDURE sp_programs_update_public(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED,
+  IN p_program_id BIGINT UNSIGNED, IN p_public_slug VARCHAR(100), IN p_is_public BOOLEAN, IN p_enrollment_open BOOLEAN,
+  IN p_tagline VARCHAR(255), IN p_audience TEXT
+)
+BEGIN
+  DECLARE v_program_tenant_id BIGINT UNSIGNED;
+  SELECT tenant_id INTO v_program_tenant_id FROM training_programs WHERE id = p_program_id AND is_deleted = FALSE;
+
+  IF v_program_tenant_id IS NULL THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'program_not_found';
+  END IF;
+  IF p_actor_role = 'tenant_admin' AND v_program_tenant_id <> p_actor_tenant_id THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
+  ELSEIF p_actor_role NOT IN ('super_admin', 'tenant_admin') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+
+  IF p_public_slug IS NOT NULL AND p_public_slug NOT REGEXP '^[a-z0-9]+(-[a-z0-9]+)*$' THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'invalid_slug';
+  END IF;
+  IF p_is_public AND p_public_slug IS NULL THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'slug_required';
+  END IF;
+  IF p_public_slug IS NOT NULL AND EXISTS (
+    SELECT 1 FROM training_programs
+    WHERE tenant_id = v_program_tenant_id AND public_slug = p_public_slug AND id <> p_program_id AND is_deleted = FALSE
+  ) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'slug_already_exists';
+  END IF;
+
+  UPDATE training_programs
+  SET public_slug = p_public_slug, is_public = p_is_public, enrollment_open = p_enrollment_open,
+      public_tagline = NULLIF(TRIM(p_tagline), ''), public_audience = NULLIF(TRIM(p_audience), ''),
+      updated_at = NOW(), updated_by = p_actor_user_id
+  WHERE id = p_program_id;
+END$$
+
+-- Devuelve el banner anterior para que la API borre el archivo.
+CREATE PROCEDURE sp_programs_set_banner(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED,
+  IN p_program_id BIGINT UNSIGNED, IN p_banner_path VARCHAR(255)
+)
+BEGIN
+  DECLARE v_program_tenant_id BIGINT UNSIGNED;
+  DECLARE v_previous VARCHAR(255);
+  SELECT tenant_id, banner_path INTO v_program_tenant_id, v_previous FROM training_programs WHERE id = p_program_id AND is_deleted = FALSE;
+
+  IF v_program_tenant_id IS NULL THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'program_not_found';
+  END IF;
+  IF p_actor_role = 'tenant_admin' AND v_program_tenant_id <> p_actor_tenant_id THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
+  ELSEIF p_actor_role NOT IN ('super_admin', 'tenant_admin') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+
+  UPDATE training_programs SET banner_path = p_banner_path, updated_at = NOW(), updated_by = p_actor_user_id WHERE id = p_program_id;
+  SELECT v_previous AS previous_banner_path;
+END$$
+
+-- Perfil publico de un instructor (lo edita solo el admin de su tenant).
+CREATE PROCEDURE sp_users_update_public_profile(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED,
+  IN p_user_id BIGINT UNSIGNED, IN p_headline VARCHAR(160), IN p_bio TEXT, IN p_linkedin_url VARCHAR(255)
+)
+BEGIN
+  DECLARE v_user_tenant_id BIGINT UNSIGNED;
+  DECLARE v_user_role VARCHAR(80);
+  SELECT u.tenant_id, v.code INTO v_user_tenant_id, v_user_role
+  FROM users u JOIN master_catalog_values v ON v.id = u.role_id WHERE u.id = p_user_id AND u.is_deleted = FALSE;
+
+  IF v_user_role IS NULL THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'target_not_found';
+  END IF;
+  IF v_user_role <> 'instructor' THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'instructor_invalid';
+  END IF;
+  IF p_actor_role = 'tenant_admin' AND NOT (v_user_tenant_id <=> p_actor_tenant_id) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
+  ELSEIF p_actor_role NOT IN ('super_admin', 'tenant_admin') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+
+  UPDATE users
+  SET public_headline = NULLIF(TRIM(p_headline), ''), public_bio = NULLIF(TRIM(p_bio), ''),
+      linkedin_url = NULLIF(TRIM(p_linkedin_url), ''), updated_at = NOW(), updated_by = p_actor_user_id
+  WHERE id = p_user_id;
+END$$
+
+CREATE PROCEDURE sp_users_set_photo(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED,
+  IN p_user_id BIGINT UNSIGNED, IN p_photo_path VARCHAR(255)
+)
+BEGIN
+  DECLARE v_user_tenant_id BIGINT UNSIGNED;
+  DECLARE v_user_role VARCHAR(80);
+  DECLARE v_previous VARCHAR(255);
+  SELECT u.tenant_id, v.code, u.photo_path INTO v_user_tenant_id, v_user_role, v_previous
+  FROM users u JOIN master_catalog_values v ON v.id = u.role_id WHERE u.id = p_user_id AND u.is_deleted = FALSE;
+
+  IF v_user_role IS NULL THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'target_not_found';
+  END IF;
+  IF v_user_role <> 'instructor' THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'instructor_invalid';
+  END IF;
+  IF p_actor_role = 'tenant_admin' AND NOT (v_user_tenant_id <=> p_actor_tenant_id) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
+  ELSEIF p_actor_role NOT IN ('super_admin', 'tenant_admin') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+
+  UPDATE users SET photo_path = p_photo_path, updated_at = NOW(), updated_by = p_actor_user_id WHERE id = p_user_id;
+  SELECT v_previous AS previous_photo_path;
+END$$
+
+-- Formulario publico. Duplicado = misma persona (email o documento) con
+-- una preinscripcion pendiente o confirmada en el mismo programa. Freno
+-- basico de abuso: maximo 20 envios por IP por hora.
+CREATE PROCEDURE sp_pre_enrollments_create(
+  IN p_tenant_slug VARCHAR(80), IN p_program_slug VARCHAR(100),
+  IN p_full_name VARCHAR(160), IN p_email VARCHAR(190), IN p_phone VARCHAR(40), IN p_corporate_email VARCHAR(190),
+  IN p_document_type_code VARCHAR(80), IN p_document_number VARCHAR(40), IN p_country VARCHAR(80), IN p_ip_address VARCHAR(64)
+)
+BEGIN
+  DECLARE v_program_id BIGINT UNSIGNED;
+  DECLARE v_enrollment_open BOOLEAN;
+  DECLARE v_document_type_id BIGINT UNSIGNED;
+  DECLARE v_pending_id BIGINT UNSIGNED;
+
+  SELECT p.id, p.enrollment_open INTO v_program_id, v_enrollment_open
+  FROM training_programs p
+  JOIN tenants tn ON tn.id = p.tenant_id
+  JOIN master_catalog_values ts ON ts.id = tn.status_id
+  WHERE tn.slug = p_tenant_slug AND p.public_slug = p_program_slug AND p.is_public = TRUE
+    AND p.is_deleted = FALSE AND tn.is_deleted = FALSE AND ts.code = 'active';
+
+  IF v_program_id IS NULL THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'program_not_found';
+  END IF;
+  IF NOT v_enrollment_open THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'enrollment_closed';
+  END IF;
+
+  SELECT v.id INTO v_document_type_id FROM master_catalog_values v JOIN master_catalogs c ON c.id = v.catalog_id
+  WHERE c.code = 'DOCUMENT_TYPE' AND v.code = p_document_type_code;
+  IF v_document_type_id IS NULL THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'invalid_document_type';
+  END IF;
+
+  IF p_ip_address IS NOT NULL AND (
+    SELECT COUNT(*) FROM pre_enrollments WHERE ip_address = p_ip_address AND created_at > NOW() - INTERVAL 1 HOUR
+  ) >= 20 THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'too_many_requests';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1 FROM pre_enrollments pe JOIN master_catalog_values st ON st.id = pe.status_id
+    WHERE pe.program_id = v_program_id AND pe.is_deleted = FALSE AND st.code IN ('pending', 'confirmed')
+      AND (pe.email = p_email OR (pe.document_type_id = v_document_type_id AND pe.document_number = p_document_number))
+  ) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'already_preenrolled';
+  END IF;
+
+  SELECT v.id INTO v_pending_id FROM master_catalog_values v JOIN master_catalogs c ON c.id = v.catalog_id
+  WHERE c.code = 'PRE_ENROLLMENT_STATUS' AND v.code = 'pending';
+
+  INSERT INTO pre_enrollments (program_id, full_name, email, phone, corporate_email, document_type_id, document_number, country, status_id, ip_address)
+  VALUES (v_program_id, p_full_name, p_email, p_phone, NULLIF(p_corporate_email, ''), v_document_type_id, p_document_number, p_country, v_pending_id, p_ip_address);
+
+  SELECT LAST_INSERT_ID() AS pre_enrollment_id;
+END$$
+
+CREATE PROCEDURE sp_pre_enrollments_list(
+  IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED, IN p_tenant_id_filter BIGINT UNSIGNED,
+  IN p_program_id BIGINT UNSIGNED, IN p_status_code VARCHAR(80)
+)
+BEGIN
+  DECLARE v_scope_tenant_id BIGINT UNSIGNED;
+  IF p_actor_role NOT IN ('super_admin', 'tenant_admin') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+  SET v_scope_tenant_id = IF(p_actor_role = 'super_admin', p_tenant_id_filter, p_actor_tenant_id);
+
+  SELECT pe.id, pe.program_id, p.name AS program_name, p.cohort, pe.full_name, pe.email, pe.phone, pe.corporate_email,
+         dt.code AS document_type_code, dt.label AS document_type_label, pe.document_number, pe.country,
+         st.code AS status_code, st.label AS status_label, pe.student_id, pe.admin_comments,
+         pe.created_at, pe.resolved_at, ru.full_name AS resolved_by_name,
+         EXISTS (SELECT 1 FROM users u WHERE u.email = pe.email AND u.is_deleted = FALSE) AS email_has_account
+  FROM pre_enrollments pe
+  JOIN training_programs p ON p.id = pe.program_id
+  JOIN master_catalog_values dt ON dt.id = pe.document_type_id
+  JOIN master_catalog_values st ON st.id = pe.status_id
+  LEFT JOIN users ru ON ru.id = pe.resolved_by
+  WHERE pe.is_deleted = FALSE AND p.is_deleted = FALSE
+    AND (v_scope_tenant_id IS NULL OR p.tenant_id = v_scope_tenant_id)
+    AND (p_program_id IS NULL OR pe.program_id = p_program_id)
+    AND (p_status_code IS NULL OR st.code = p_status_code)
+  ORDER BY pe.created_at DESC;
+END$$
+
+-- Confirmar = crear la cuenta del alumno (o reutilizar la suya si ya es
+-- alumno de este tenant) e inscribirlo en el programa, todo o nada.
+-- p_password_hash es la contrasena temporal que la API genera y muestra
+-- al admin solo si la cuenta se creo ahora (account_created).
+CREATE PROCEDURE sp_pre_enrollments_resolve(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED,
+  IN p_pre_enrollment_id BIGINT UNSIGNED, IN p_action VARCHAR(20), IN p_password_hash VARCHAR(255), IN p_comments VARCHAR(500)
+)
+BEGIN
+  DECLARE v_program_id BIGINT UNSIGNED;
+  DECLARE v_tenant_id BIGINT UNSIGNED;
+  DECLARE v_status_code VARCHAR(80);
+  DECLARE v_email VARCHAR(190);
+  DECLARE v_full_name VARCHAR(160);
+  DECLARE v_user_id BIGINT UNSIGNED;
+  DECLARE v_user_tenant_id BIGINT UNSIGNED;
+  DECLARE v_user_role VARCHAR(80);
+  DECLARE v_tenant_status_code VARCHAR(80);
+  DECLARE v_account_created BOOLEAN DEFAULT FALSE;
+
+  DECLARE EXIT HANDLER FOR SQLEXCEPTION
+  BEGIN
+    ROLLBACK;
+    RESIGNAL;
+  END;
+
+  SELECT pe.program_id, p.tenant_id, st.code, pe.email, pe.full_name
+    INTO v_program_id, v_tenant_id, v_status_code, v_email, v_full_name
+  FROM pre_enrollments pe
+  JOIN training_programs p ON p.id = pe.program_id
+  JOIN master_catalog_values st ON st.id = pe.status_id
+  WHERE pe.id = p_pre_enrollment_id AND pe.is_deleted = FALSE;
+
+  IF v_program_id IS NULL THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'target_not_found';
+  END IF;
+  IF p_actor_role = 'tenant_admin' AND v_tenant_id <> p_actor_tenant_id THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
+  ELSEIF p_actor_role NOT IN ('super_admin', 'tenant_admin') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+  IF v_status_code <> 'pending' THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'pre_enrollment_not_pending';
+  END IF;
+  IF p_action NOT IN ('confirm', 'reject') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'invalid_status';
+  END IF;
+
+  START TRANSACTION;
+
+  IF p_action = 'confirm' THEN
+    SELECT ts.code INTO v_tenant_status_code
+    FROM tenants t JOIN master_catalog_values ts ON ts.id = t.status_id WHERE t.id = v_tenant_id;
+    IF v_tenant_status_code <> 'active' THEN
+      SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_inactive';
+    END IF;
+
+    SELECT u.id, u.tenant_id, v.code INTO v_user_id, v_user_tenant_id, v_user_role
+    FROM users u JOIN master_catalog_values v ON v.id = u.role_id
+    WHERE u.email = v_email AND u.is_deleted = FALSE;
+
+    IF v_user_id IS NOT NULL THEN
+      -- El email ya es de otra persona/rol o de otro tenant: no se mezcla.
+      IF v_user_role <> 'student' OR NOT (v_user_tenant_id <=> v_tenant_id) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'email_already_exists';
+      END IF;
+    ELSE
+      IF p_password_hash IS NULL THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'invalid_status';
+      END IF;
+      INSERT INTO users (tenant_id, full_name, email, password_hash, role_id, is_active, must_change_password, created_by)
+      VALUES (v_tenant_id, v_full_name, v_email, p_password_hash,
+              (SELECT v.id FROM master_catalog_values v JOIN master_catalogs c ON c.id = v.catalog_id WHERE c.code = 'ROLE' AND v.code = 'student'),
+              TRUE, TRUE, p_actor_user_id);
+      SET v_user_id = LAST_INSERT_ID();
+      SET v_account_created = TRUE;
+    END IF;
+
+    INSERT INTO program_enrollments (program_id, student_id, created_by)
+    VALUES (v_program_id, v_user_id, p_actor_user_id)
+    ON DUPLICATE KEY UPDATE is_deleted = FALSE, deleted_at = NULL, deleted_by = NULL;
+  END IF;
+
+  UPDATE pre_enrollments
+  SET status_id = (SELECT v.id FROM master_catalog_values v JOIN master_catalogs c ON c.id = v.catalog_id
+                   WHERE c.code = 'PRE_ENROLLMENT_STATUS' AND v.code = IF(p_action = 'confirm', 'confirmed', 'rejected')),
+      student_id = v_user_id, admin_comments = NULLIF(TRIM(p_comments), ''),
+      resolved_at = NOW(), resolved_by = p_actor_user_id
+  WHERE id = p_pre_enrollment_id;
+
+  COMMIT;
+
+  SELECT v_user_id AS student_id, v_account_created AS account_created, v_email AS email, v_full_name AS full_name;
 END$$
 
 CREATE PROCEDURE sp_dashboard_get(IN p_user_id BIGINT, IN p_role VARCHAR(80), IN p_tenant_id BIGINT)

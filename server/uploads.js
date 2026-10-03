@@ -65,3 +65,30 @@ export function uploadSpreadsheet(req, res) {
     uploadSpreadsheetMiddleware(req, res, (err) => (err ? reject(err) : resolve()))
   })
 }
+
+// Imagenes publicas de la web de cada programa (banner) y de sus
+// instructores (foto). Solo raster: el banner tambien es la vista previa
+// al compartir el link en redes (og:image), que no acepta SVG.
+export const PUBLIC_IMAGE_EXTENSIONS = {
+  'image/png': '.png',
+  'image/jpeg': '.jpg',
+  'image/webp': '.webp',
+}
+
+const uploadPublicImageMiddleware = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter(_req, file, cb) {
+    if (!PUBLIC_IMAGE_EXTENSIONS[file.mimetype]) return cb(new Error('invalid_file_type'))
+    cb(null, true)
+  },
+}).single('image')
+
+export function uploadPublicImage(req, res) {
+  return new Promise((resolve, reject) => {
+    uploadPublicImageMiddleware(req, res, (err) => {
+      if (!err) return resolve()
+      reject(new Error(err.code === 'LIMIT_FILE_SIZE' ? 'image_too_large' : err.message === 'invalid_file_type' ? 'invalid_file_type' : 'upload_failed'))
+    })
+  })
+}

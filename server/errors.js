@@ -28,6 +28,13 @@ const STATUS_BY_SP_MESSAGE = {
   group_not_found: 404,
   material_not_found: 404,
   title_required: 400,
+  invalid_slug: 400,
+  slug_required: 400,
+  invalid_document_type: 400,
+  enrollment_closed: 409,
+  already_preenrolled: 409,
+  pre_enrollment_not_pending: 409,
+  too_many_requests: 429,
 }
 
 // Los procedimientos almacenados comunican decisiones de negocio con
