@@ -27,6 +27,7 @@ const STATUS_BY_SP_MESSAGE = {
   component_not_found: 404,
   group_not_found: 404,
   material_not_found: 404,
+  title_required: 400,
 }
 
 // Los procedimientos almacenados comunican decisiones de negocio con

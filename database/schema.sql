@@ -559,6 +559,8 @@ DROP PROCEDURE IF EXISTS sp_component_materials_remove;
 DROP PROCEDURE IF EXISTS sp_topic_material_get;
 DROP PROCEDURE IF EXISTS sp_topics_list_by_student;
 DROP PROCEDURE IF EXISTS sp_component_material_prompt_data;
+DROP PROCEDURE IF EXISTS sp_program_temario_export;
+DROP PROCEDURE IF EXISTS sp_topics_update_by_position;
 -- Renombradas/eliminadas por el refactor a grupos (component_groups): estos
 -- guards se quedan para limpiar cualquier entorno que todavia las tenga.
 DROP PROCEDURE IF EXISTS sp_components_assign_instructor;
@@ -3121,6 +3123,99 @@ BEGIN
   LEFT JOIN topics t ON t.group_id = v_reference_group_id AND t.is_deleted = FALSE
   WHERE c.id = p_component_id
   ORDER BY t.sort_order, t.id;
+END$$
+
+-- Temario de un programa para exportar a Excel y corregirlo: por cada
+-- componente, el temario de su grupo de referencia (el de mas temas; todos
+-- comparten malla) con la posicion de cada tema, que es la clave con la
+-- que se vuelve a cargar.
+CREATE PROCEDURE sp_program_temario_export(
+  IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED, IN p_program_id BIGINT UNSIGNED
+)
+BEGIN
+  DECLARE v_program_tenant_id BIGINT UNSIGNED;
+  SELECT tenant_id INTO v_program_tenant_id FROM training_programs WHERE id = p_program_id AND is_deleted = FALSE;
+
+  IF v_program_tenant_id IS NULL THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'program_not_found';
+  END IF;
+  IF p_actor_role = 'tenant_admin' AND v_program_tenant_id <> p_actor_tenant_id THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
+  ELSEIF p_actor_role NOT IN ('super_admin', 'tenant_admin') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+
+  SELECT c.id AS component_id, c.name AS component_name,
+         (SELECT COUNT(*) FROM topics t2
+          WHERE t2.group_id = t.group_id AND t2.is_deleted = FALSE
+            AND (t2.sort_order < t.sort_order OR (t2.sort_order = t.sort_order AND t2.id <= t.id))) AS topic_position,
+         t.title, t.description
+  FROM components c
+  JOIN topics t ON t.is_deleted = FALSE AND t.group_id = (
+    SELECT g.id FROM component_groups g
+    LEFT JOIN topics tt ON tt.group_id = g.id AND tt.is_deleted = FALSE
+    WHERE g.component_id = c.id AND g.is_deleted = FALSE
+    GROUP BY g.id
+    ORDER BY COUNT(tt.id) DESC, g.id
+    LIMIT 1
+  )
+  WHERE c.program_id = p_program_id AND c.is_deleted = FALSE
+  ORDER BY c.sort_order, c.name, topic_position;
+END$$
+
+-- Corrige el titulo/alcance del tema N de un componente en TODOS sus
+-- grupos (comparten malla). No toca fechas ni estado: eso lo maneja el
+-- horario. Devuelve cuantos temas cambiaron (0 si ya estaba igual).
+CREATE PROCEDURE sp_topics_update_by_position(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED,
+  IN p_program_id BIGINT UNSIGNED, IN p_component_id BIGINT UNSIGNED, IN p_position INT UNSIGNED,
+  IN p_title VARCHAR(180), IN p_description TEXT
+)
+BEGIN
+  DECLARE v_program_tenant_id BIGINT UNSIGNED;
+  DECLARE v_targets INT;
+
+  SELECT p.tenant_id INTO v_program_tenant_id
+  FROM components c JOIN training_programs p ON p.id = c.program_id
+  WHERE c.id = p_component_id AND c.program_id = p_program_id AND c.is_deleted = FALSE AND p.is_deleted = FALSE;
+
+  IF v_program_tenant_id IS NULL THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'component_not_found';
+  END IF;
+  IF p_actor_role = 'tenant_admin' AND v_program_tenant_id <> p_actor_tenant_id THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
+  ELSEIF p_actor_role NOT IN ('super_admin', 'tenant_admin') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+  IF p_title IS NULL OR TRIM(p_title) = '' THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'title_required';
+  END IF;
+
+  -- Los ids van primero a una tabla temporal: MySQL no deja leer topics
+  -- en una subconsulta del mismo UPDATE que la modifica.
+  CREATE TEMPORARY TABLE IF NOT EXISTS tmp_topic_targets (id BIGINT UNSIGNED PRIMARY KEY);
+  TRUNCATE TABLE tmp_topic_targets;
+  INSERT INTO tmp_topic_targets (id)
+  SELECT DISTINCT t1.id
+  FROM topics t1
+  JOIN component_groups g ON g.id = t1.group_id AND g.component_id = p_component_id AND g.is_deleted = FALSE
+  WHERE t1.is_deleted = FALSE
+    AND (SELECT COUNT(*) FROM topics t2
+         WHERE t2.group_id = t1.group_id AND t2.is_deleted = FALSE
+           AND (t2.sort_order < t1.sort_order OR (t2.sort_order = t1.sort_order AND t2.id <= t1.id))) = p_position;
+
+  SELECT COUNT(*) INTO v_targets FROM tmp_topic_targets;
+  IF v_targets = 0 THEN
+    DROP TEMPORARY TABLE tmp_topic_targets;
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'target_not_found';
+  END IF;
+
+  UPDATE topics t JOIN tmp_topic_targets x ON x.id = t.id
+  SET t.title = TRIM(p_title), t.description = NULLIF(TRIM(p_description), ''), t.updated_at = NOW(), t.updated_by = p_actor_user_id
+  WHERE NOT (t.title <=> TRIM(p_title)) OR NOT (t.description <=> NULLIF(TRIM(p_description), ''));
+
+  SELECT ROW_COUNT() AS updated_topics, v_targets AS matched_topics;
+  DROP TEMPORARY TABLE tmp_topic_targets;
 END$$
 
 -- Todo el temario del alumno (pasado y futuro), para "Mis temas": desde

@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { AlertTriangle, ArrowRight, Calendar, Users as UsersIcon } from 'lucide-react'
-import { apiRequest, apiUpload } from './api'
+import { apiDownload, apiRequest, apiUpload } from './api'
 import { buildMaterialPrompt, DEFAULT_PROMPT_OPTIONS, MATERIAL_LEVELS, SKILL_NAME, suggestedBatchSize } from './materialPrompt'
 
 function useList(path, token) {
@@ -68,6 +68,8 @@ const ERROR_MESSAGES = {
   material_invalid_path: 'El ZIP contiene rutas no permitidas (por ejemplo "../").',
   material_too_large: 'El ZIP es demasiado grande (máximo 50 MB comprimido y 300 MB descomprimido).',
   material_not_found: 'Este componente no tiene material subido.',
+  title_required: 'El tema no puede quedar vacío.',
+  temario_sheet_not_found: 'El Excel no tiene la hoja del temario exportado (columnas "ID componente", "N°" y "Tema"). Usa el archivo de "Exportar temario".',
 }
 
 function ErrorNote({ message }) {
@@ -176,6 +178,72 @@ function ExcelImportBox({ session, templateUrl, importUrl, onImported }) {
                 {withPassword.map((r) => <li key={r.row}><strong>{r.email}</strong>: <code>{r.temporaryPassword}</code></li>)}
               </ul>
             </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Exportar el temario real del programa y volver a cargarlo corregido
+// (actualiza por componente + N° de tema; ver /api/programs/:id/temario).
+function TemarioExcelBox({ session, program }) {
+  const { token } = session
+  const [busy, setBusy] = useState('')
+  const [result, setResult] = useState(null)
+  const [error, setError] = useState('')
+
+  async function handleExport() {
+    setError('')
+    setBusy('export')
+    try {
+      await apiDownload(`/api/programs/${program.id}/temario/export`, { token, filename: `temario-${program.name}.xlsx` })
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setBusy('')
+    }
+  }
+
+  async function handleFile(e) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setError('')
+    setResult(null)
+    setBusy('import')
+    try {
+      const formData = new FormData()
+      formData.append('file', file)
+      setResult(await apiUpload(`/api/programs/${program.id}/temario/import`, { token, formData }))
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setBusy('')
+      e.target.value = ''
+    }
+  }
+
+  const failedRows = result?.results.filter((r) => !r.ok) || []
+
+  return (
+    <div className="excel-import">
+      <div className="excel-import-actions">
+        <button type="button" className="btn-mini" onClick={handleExport} disabled={busy !== ''}>{busy === 'export' ? 'Exportando…' : 'Exportar temario (Excel)'}</button>
+        <label className="btn-mini logo-upload-label">
+          {busy === 'import' ? 'Cargando…' : 'Cargar temario corregido'}
+          <input type="file" accept=".xlsx" onChange={handleFile} disabled={busy !== ''} hidden />
+        </label>
+      </div>
+      <ErrorNote message={error} />
+      {result && (
+        <div className="excel-import-result">
+          <p className={failedRows.length ? 'form-error' : 'temp-password-box'}>
+            {result.updated} tema(s) corregido(s), {result.unchanged} sin cambios, {result.failed} con error.
+          </p>
+          {failedRows.length > 0 && (
+            <ul className="excel-import-errors">
+              {failedRows.map((r) => <li key={r.row}>Fila {r.row}: {ERROR_MESSAGES[r.message] || r.message}</li>)}
+            </ul>
           )}
         </div>
       )}
@@ -1654,6 +1722,11 @@ function ComponentsPanel({ session, program, onBack }) {
         <h3>Cargar la estructura completa del programa (recomendado)</h3>
         <p className="muted">Un solo Excel con componentes, temario, horario real (fecha y hora de cada clase) y feriados del tenant. Este es el formato estándar para subir un programa completo de una vez; sirve para 6, 8, 10 semanas, etc.</p>
         <FullProgramImportBox session={session} program={program} onImported={reload} />
+      </section>
+      <section className="panel admin-form-panel">
+        <h3>Corregir el temario por Excel</h3>
+        <p className="muted">Exporta el temario actual, corrige los títulos o el alcance de los temas y vuelve a cargarlo. Cada corrección se aplica al tema en todos los grupos del componente; no crea ni borra temas ni cambia fechas.</p>
+        <TemarioExcelBox session={session} program={program} />
       </section>
       <section className="panel admin-form-panel">
         <h3>Nuevo componente — {program.name}</h3>

@@ -3,6 +3,7 @@ import express from 'express'
 import path from 'node:path'
 import fs from 'node:fs'
 import { fileURLToPath } from 'node:url'
+import ExcelJS from 'exceljs'
 import crypto from 'node:crypto'
 import { callProcedure } from './db.js'
 import { hashPassword, signSessionToken, verifyPassword, signMaterialToken, verifyMaterialToken } from './auth.js'
@@ -1530,6 +1531,106 @@ app.post('/api/groups/:id/topics/import', authenticate, async (req, res) => {
     }
   }
   res.json(summarize(results))
+})
+
+// Exportar el temario de un programa para corregirlo y volverlo a cargar.
+// La clave de cada fila es (ID componente, N°): la carga actualiza el
+// tema en esa posicion en TODOS los grupos del componente, sin crear ni
+// borrar temas y sin tocar fechas.
+const TEMARIO_COLUMNS = [
+  { header: 'ID componente', key: 'componentId', width: 8 },
+  { header: 'Componente', key: 'componentName', width: 28 },
+  { header: 'N°', key: 'position', width: 6 },
+  { header: 'Tema', key: 'title', width: 48 },
+  { header: 'Alcance / descripción', key: 'description', width: 70 },
+]
+
+app.get('/api/programs/:id/temario/export', authenticate, async (req, res) => {
+  const programId = Number(req.params.id)
+  if (!Number.isInteger(programId)) return res.status(400).json({ message: 'Invalid request format' })
+
+  try {
+    const rows = await callProcedure('sp_program_temario_export', {
+      p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId, p_program_id: programId,
+    })
+    const workbook = new ExcelJS.Workbook()
+    const sheet = workbook.addWorksheet('Temario')
+    sheet.columns = TEMARIO_COLUMNS.map((c) => ({ header: c.header, key: c.key, width: c.width }))
+    sheet.getRow(1).font = { bold: true }
+    sheet.views = [{ state: 'frozen', ySplit: 1 }]
+    rows.forEach((r) => sheet.addRow({
+      componentId: r.component_id, componentName: r.component_name, position: Number(r.topic_position),
+      title: r.title, description: r.description || '',
+    }))
+    // Columnas clave en gris: no deben editarse.
+    ;[1, 2, 3].forEach((col) => sheet.getColumn(col).eachCell((cell, rowNumber) => {
+      if (rowNumber > 1) cell.font = { color: { argb: 'FF7F8C8D' } }
+    }))
+    sheet.getColumn(5).alignment = { wrapText: true, vertical: 'top' }
+
+    const help = workbook.addWorksheet('Instrucciones')
+    help.getColumn(1).width = 110
+    ;[
+      'Cómo corregir el temario',
+      '1. Edita solo las columnas "Tema" y "Alcance / descripción" de la hoja Temario.',
+      '2. No cambies "ID componente" ni "N°": identifican el tema. "Componente" es solo referencia.',
+      '3. La corrección se aplica a ese tema en TODOS los grupos del componente.',
+      '4. No agregues ni borres filas: esta carga solo corrige temas existentes (no crea, no elimina, no cambia fechas).',
+      '5. Guarda el archivo y súbelo con "Cargar temario corregido".',
+    ].forEach((line, i) => { const row = help.addRow([line]); if (i === 0) row.font = { bold: true, size: 13 } })
+
+    sendXlsx(res, await workbook.xlsx.writeBuffer(), `temario-programa-${programId}.xlsx`)
+  } catch (err) {
+    const { status, message } = mapStoredProcedureError(err)
+    res.status(status).json({ message })
+  }
+})
+
+app.post('/api/programs/:id/temario/import', authenticate, async (req, res) => {
+  const programId = Number(req.params.id)
+  if (!Number.isInteger(programId)) return res.status(400).json({ message: 'Invalid request format' })
+  const buffer = await readSpreadsheetUpload(req, res)
+  if (!buffer) return
+
+  const workbook = await loadWorkbook(buffer)
+  const sheet = findSheetByHeaders(workbook, ['ID componente', 'N°', 'Tema'])
+  if (!sheet) return res.status(400).json({ message: 'temario_sheet_not_found' })
+
+  const results = []
+  for (const row of parseSheetRows(sheet, TEMARIO_COLUMNS)) {
+    const componentId = toIntOrNull(row.componentId)
+    const position = toIntOrNull(row.position)
+    const title = toTrimmedString(row.title)
+    if (!componentId || !position) {
+      results.push({ row: row.__row, ok: false, message: 'Faltan "ID componente" o "N°" (no los borres)' })
+      continue
+    }
+    if (!title) {
+      results.push({ row: row.__row, ok: false, message: 'El tema no puede quedar vacío' })
+      continue
+    }
+    try {
+      const [result] = await callProcedure('sp_topics_update_by_position', {
+        p_actor_user_id: req.user.id, p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId,
+        p_program_id: programId, p_component_id: componentId, p_position: position,
+        p_title: title.slice(0, 180), p_description: toTrimmedString(row.description) || null,
+      })
+      results.push({ row: row.__row, ok: true, changed: Number(result.updated_topics) > 0, title })
+    } catch (err) {
+      const { message } = mapStoredProcedureError(err)
+      results.push({
+        row: row.__row, ok: false,
+        message: message === 'target_not_found' ? `No existe el tema N° ${position} en ese componente` : message,
+      })
+    }
+  }
+  const ok = results.filter((r) => r.ok)
+  res.json({
+    updated: ok.filter((r) => r.changed).length,
+    unchanged: ok.filter((r) => !r.changed).length,
+    failed: results.length - ok.length,
+    results,
+  })
 })
 
 // Password temporal generada por fila (mismo patron que el reseteo por
