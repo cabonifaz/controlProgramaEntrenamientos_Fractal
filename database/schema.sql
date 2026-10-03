@@ -3202,9 +3202,11 @@ BEGIN
   SELECT c.id AS component_id, c.name AS component_name, c.description AS component_description,
          p.name AS program_name, p.description AS program_description, p.cohort,
          pm.label AS modality_label, p.starts_on, p.ends_on,
+         tn.name AS tenant_name, tn.brand_color AS tenant_brand_color, tn.logo_path AS tenant_logo_path,
          t.id AS topic_id, t.title AS topic_title, t.description AS topic_description, t.duration_minutes
   FROM components c
   JOIN training_programs p ON p.id = c.program_id
+  JOIN tenants tn ON tn.id = p.tenant_id
   LEFT JOIN master_catalog_values pm ON pm.id = p.modality_id
   LEFT JOIN topics t ON t.group_id = v_reference_group_id AND t.is_deleted = FALSE
   WHERE c.id = p_component_id

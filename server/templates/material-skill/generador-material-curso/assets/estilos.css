@@ -117,3 +117,18 @@ figcaption { color: var(--muted); font-size: 15px; }
   .hero { color: #000; background: none; padding: 0; }
   .card { box-shadow: none; break-inside: avoid; }
 }
+
+/* Logo del tenant en la portada y temas aun sin contenido en el indice */
+.hero .brand-logo { position: relative; z-index: 1; display: block; height: 46px; width: auto; max-width: 220px; object-fit: contain;
+  background: #fff; border-radius: 12px; padding: 6px 12px; margin-bottom: 18px; }
+.topic-card-pending { opacity: .55; cursor: default; }
+.topic-card-pending:hover { transform: none; box-shadow: none; }
+
+/* Texto en color de marca: variante oscurecida para que se lea sobre blanco
+   aunque la marca sea clara (amarillos, naranjas, celestes). */
+:root { --primario-texto: color-mix(in srgb, var(--primario) 68%, #000); }
+a, .hook, .question legend, .plan td:first-child, .statement summary { color: var(--primario-texto); }
+.topic-nav a { color: var(--primario-texto); }
+
+/* Diagramas: escalan con la pantalla pero sin pasar de un ancho legible. */
+.card svg { display: block; width: 100%; max-width: 760px; height: auto; margin: 12px auto; }

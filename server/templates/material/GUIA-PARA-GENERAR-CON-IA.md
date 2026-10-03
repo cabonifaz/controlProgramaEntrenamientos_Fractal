@@ -36,7 +36,7 @@ assets/                    imágenes, CSS, JS, fuentes compartidos
 
 ## Prompt sugerido para Claude
 
-**Recomendado:** usa el botón **"Generar prompt para IA"** en la sección de
+**Recomendado:** usa el botón **"Generar material con IA"** en la sección de
 material del componente. Arma el prompt con el temario real, numerado
 exactamente como los archivos, con la duración de cada clase y tus
 indicaciones sobre los alumnos.

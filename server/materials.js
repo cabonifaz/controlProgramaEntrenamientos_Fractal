@@ -58,9 +58,42 @@ export function materialDir(componentId, folder) {
   return path.join(MATERIALS_DIR, String(componentId), folder)
 }
 
+// Contenido fuente (JSON con respuestas) del material armado por la
+// plataforma: va JUNTO a la carpeta servida, nunca dentro, para que
+// /material/<token>/ no pueda entregarlo a un alumno.
+export function materialContentPath(componentId, folder) {
+  return path.join(MATERIALS_DIR, String(componentId), `${folder}.content.json`)
+}
+
+export async function readMaterialContent(componentId, folder) {
+  if (!folder) return null
+  try {
+    return JSON.parse(await fs.promises.readFile(materialContentPath(componentId, folder), 'utf8'))
+  } catch {
+    return null
+  }
+}
+
+// Escribe las paginas ya armadas (Map ruta -> contenido) y su contenido
+// fuente. Devuelve el total de bytes escritos.
+export async function writeMaterialFiles(componentId, folder, files, content) {
+  const base = path.resolve(materialDir(componentId, folder))
+  let bytes = 0
+  for (const [relative, data] of files) {
+    const target = path.resolve(base, relative)
+    if (!target.startsWith(base + path.sep)) throw materialError('material_invalid_path')
+    await fs.promises.mkdir(path.dirname(target), { recursive: true })
+    await fs.promises.writeFile(target, data)
+    bytes += Buffer.byteLength(data)
+  }
+  await fs.promises.writeFile(materialContentPath(componentId, folder), JSON.stringify(content))
+  return bytes
+}
+
 export async function removeMaterialDir(componentId, folder) {
   if (!folder) return
   await fs.promises.rm(materialDir(componentId, folder), { recursive: true, force: true }).catch(() => {})
+  await fs.promises.rm(materialContentPath(componentId, folder), { force: true }).catch(() => {})
 }
 
 // Rechaza rutas que intenten salir de la carpeta destino (zip-slip).

@@ -69,6 +69,9 @@ const ERROR_MESSAGES = {
   material_invalid_path: 'El ZIP contiene rutas no permitidas (por ejemplo "../").',
   material_too_large: 'El ZIP es demasiado grande (máximo 50 MB comprimido y 300 MB descomprimido).',
   material_not_found: 'Este componente no tiene material subido.',
+  content_empty: 'No se encontró contenido JSON en lo que pegaste. Pega el bloque ```json que te dio la IA.',
+  content_rejected: 'Ningún tema se pudo importar. Revisa los errores de abajo y pide a la IA que los corrija.',
+  temario_empty: 'Este componente todavía no tiene temario cargado.',
   invalid_slug: 'El link solo puede tener minúsculas, números y guiones (por ejemplo: full-stack-2026).',
   slug_required: 'Para publicar la web, define primero su link.',
   pre_enrollment_not_pending: 'Esa preinscripción ya fue resuelta.',
@@ -1494,7 +1497,7 @@ function MaterialViewer({ session, topic, onClose }) {
 // Prompt sugerido para generar TODO el material del componente con una IA
 // externa, con el temario real y la numeracion que espera la subida.
 // Las respuestas del formulario se recuerdan por componente en este navegador.
-function MaterialPromptBuilder({ session, componentId }) {
+function MaterialPromptBuilder({ session, componentId, onImported }) {
   const { token } = session
   const storageKey = `material-prompt-options:${componentId}`
   const [data, setData] = useState(null)
@@ -1534,28 +1537,40 @@ function MaterialPromptBuilder({ session, componentId }) {
   if (!data) return <p className="muted">Cargando temario…</p>
   if (data.topics.length === 0) return <p className="muted">Este componente todavía no tiene temario cargado. Cárgalo primero: el prompt se arma con los temas en orden.</p>
 
+  const setMode = (mode) => { setCopied(false); setOptions({ ...options, mode }) }
+  const tenant = data.tenant || {}
+
   return (
     <div className="material-prompt">
       <div className="tab-row material-mode">
-        <button type="button" className={options.mode === 'skill' ? 'tab-button active' : 'tab-button'} onClick={() => { setCopied(false); setOptions({ ...options, mode: 'skill' }) }}>Con skill (recomendado)</button>
-        <button type="button" className={options.mode === 'full' ? 'tab-button active' : 'tab-button'} onClick={() => { setCopied(false); setOptions({ ...options, mode: 'full' }) }}>Sin skill</button>
+        <button type="button" className={options.mode === 'paste' ? 'tab-button active' : 'tab-button'} onClick={() => setMode('paste')}>Pegar contenido · cualquier IA (recomendado)</button>
+        <button type="button" className={options.mode === 'skill' ? 'tab-button active' : 'tab-button'} onClick={() => setMode('skill')}>Skill de Claude</button>
+        <button type="button" className={options.mode === 'full' ? 'tab-button active' : 'tab-button'} onClick={() => setMode('full')}>ZIP con HTML completo</button>
       </div>
-      {options.mode === 'skill' ? (
+      {options.mode === 'paste' && (
+        <ol className="material-skill-steps">
+          <li>Copia el prompt y pégalo en la IA que prefieras (ChatGPT, Gemini, Claude…). No hace falta instalar nada.</li>
+          <li>La IA responde solo con el contenido en JSON, por lotes. Pega cada respuesta en el cuadro de abajo y pulsa "Importar".</li>
+          <li>La plataforma arma las páginas con el diseño, el logo y el color de {tenant.name || 'tu organización'}. Es la opción más rápida y la que menos tokens gasta.</li>
+        </ol>
+      )}
+      {options.mode === 'skill' && (
         <ol className="material-skill-steps">
           <li>
-            Solo la primera vez: <a href="/api/templates/material-skill">descarga la skill <strong>{SKILL_NAME}</strong></a> e
-            instálala en Claude (Configuración → Capacidades → Skills → Subir skill). Activa también la ejecución de código y la creación de archivos.
+            Solo si usas Claude y la tienes instalada: <a href="/api/templates/material-skill">descarga la skill <strong>{SKILL_NAME}</strong></a> (Configuración → Capacidades → Skills → Subir skill) y activa la ejecución de código.
           </li>
-          <li>Completa los datos de abajo, copia el prompt y pégalo en un chat nuevo de Claude.</li>
-          <li>Claude solo escribe el contenido; la skill aporta el diseño y arma un único ZIP. Es mucho más rápido y gasta menos tokens que el prompt completo.</li>
+          <li>Pega el prompt en un chat nuevo de Claude: entregará un único ZIP para "Subir ZIP".</li>
         </ol>
-      ) : (
+      )}
+      {options.mode === 'full' && (
         <p className="muted">
-          Prompt completo para usar Claude u otra IA sin instalar nada. Es más lento: la IA escribe todo el HTML y el CSS de cada tema.
+          Para una IA que cree archivos: escribe todo el HTML y el CSS de cada tema y entrega un ZIP para "Subir ZIP". Es la opción más lenta y la que más tokens gasta.
         </p>
       )}
-      <p className="muted">
-        El prompt se arma con los {data.topics.length} temas del temario en orden, así que cada archivo coincidirá con su clase.
+      <p className="brand-note">
+        <span className="brand-swatch" style={{ background: tenant.brandColor || '#1b6fa8' }} />
+        Identidad de <strong>{tenant.name || 'la organización'}</strong> aplicada automáticamente{tenant.brandColor ? ` (color ${tenant.brandColor}${tenant.logoUrl ? ' y logo' : ''})` : ''}.
+        {options.mode === 'full' && tenant.logoUrl && <> <a href={tenant.logoUrl} download>Descarga el logo</a> para adjuntarlo a la IA.</>}
       </p>
       <div className="admin-form">
         <label className="full-field">Perfil de los alumnos
@@ -1575,8 +1590,8 @@ function MaterialPromptBuilder({ session, componentId }) {
         <label>Sector de los ejemplos (opcional)
           <input value={options.sector} onChange={set('sector')} placeholder="Ej.: banca, retail, salud" />
         </label>
-        <label>Colores / identidad (opcional)
-          <input value={options.brand} onChange={set('brand')} placeholder="Ej.: azul #1b6fa8 y naranja #f0a830" />
+        <label>Notas de estilo (opcional)
+          <input value={options.brand} onChange={set('brand')} placeholder="Ej.: tono cercano, ejemplos con humor" />
         </label>
         <label className="full-field">Indicaciones adicionales (opcional)
           <textarea rows={2} value={options.extra} onChange={set('extra')} placeholder="Ej.: usar Python 3.12 en los ejemplos; incluir un caso integrador al final" />
@@ -1586,10 +1601,82 @@ function MaterialPromptBuilder({ session, componentId }) {
         <strong>Prompt sugerido</strong>
         <button type="button" className="primary" onClick={copyPrompt}>{copied ? '¡Copiado!' : 'Copiar prompt'}</button>
       </div>
-      <textarea className="material-prompt-output" readOnly rows={14} value={prompt} />
+      <textarea className="material-prompt-output" readOnly rows={12} value={prompt} />
       <p className="muted material-prompt-tip">
-        Con temarios largos, la IA entrega el material por lotes: escribe "continuar" hasta que entregue el ZIP. Luego súbelo aquí con "Subir ZIP".
+        {options.mode === 'paste'
+          ? `Prompt de ~${Math.round(prompt.length / 4).toLocaleString('es-PE')} tokens. Con temarios largos, escribe "continuar" a la IA para recibir el siguiente lote.`
+          : 'Con temarios largos, la IA entrega por lotes: escribe "continuar" hasta que entregue el ZIP. Luego súbelo aquí con "Subir ZIP".'}
       </p>
+      {options.mode === 'paste' && <MaterialContentImport session={session} componentId={componentId} onImported={onImported} />}
+    </div>
+  )
+}
+
+// Pega la respuesta de la IA (JSON de uno o varios temas). Se acumula por
+// lotes: cada importacion agrega o reemplaza temas sobre lo ya importado.
+function MaterialContentImport({ session, componentId, onImported }) {
+  const { token } = session
+  const [text, setText] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const [report, setReport] = useState(null)
+
+  async function handleImport() {
+    setError('')
+    setReport(null)
+    setBusy(true)
+    try {
+      const response = await fetch(`/api/components/${componentId}/material/content`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ content: text }),
+      })
+      const body = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        if (body.report) setReport(body.report)
+        throw new Error(body.message === 'content_empty' && body.details?.length ? body.details.join(' · ') : body.message || 'upload_failed')
+      }
+      setReport(body.data)
+      setText('')
+      onImported?.()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="content-import">
+      <strong>Pegar la respuesta de la IA</strong>
+      <textarea rows={6} value={text} onChange={(e) => setText(e.target.value)} placeholder={'Pega aquí el bloque ```json que te dio la IA (puedes pegar varios lotes juntos).'} />
+      <div className="excel-import-actions">
+        <button type="button" className="primary" disabled={busy || !text.trim()} onClick={handleImport}>{busy ? 'Importando…' : 'Importar contenido'}</button>
+      </div>
+      <ErrorNote message={error} />
+      {report && (
+        <div className="excel-import-result">
+          {report.imported.length > 0 && (
+            <p className="temp-password-box">
+              Importados: temas {report.imported.join(', ')}. Publicados {report.available.length} de {report.available.length + report.missing.length}
+              {report.missing.length > 0 ? `; faltan ${report.missing.join(', ')} (pide "continuar" a la IA).` : '. ¡Material completo!'}
+            </p>
+          )}
+          {report.rejected.length > 0 && (
+            <div className="form-error">
+              No se importaron (pide a la IA que los corrija):
+              <ul className="excel-import-errors">
+                {report.rejected.map((r) => <li key={r.numero}>Tema {r.numero}: {r.errors.join('; ')}</li>)}
+              </ul>
+            </div>
+          )}
+          {report.warnings.length > 0 && (
+            <ul className="excel-import-errors muted">
+              {report.warnings.map((w) => <li key={w.numero}>Tema {w.numero}: {w.warnings.join('; ')}</li>)}
+            </ul>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -1656,7 +1743,7 @@ function ComponentMaterialBox({ session, componentId }) {
       <div className="excel-import-actions">
         {info?.canManage && (
           <button type="button" className={showPrompt ? 'btn-mini active' : 'btn-mini'} onClick={() => setShowPrompt((v) => !v)}>
-            {showPrompt ? 'Ocultar prompt' : 'Generar prompt para IA'}
+            {showPrompt ? 'Ocultar' : 'Generar material con IA'}
           </button>
         )}
         <a className="btn-mini" href="/api/templates/material">Descargar ZIP de ejemplo</a>
@@ -1668,7 +1755,7 @@ function ComponentMaterialBox({ session, componentId }) {
         )}
         {info?.canManage && material && <button type="button" className="btn-mini btn-mini-danger" onClick={handleRemove}>Eliminar material</button>}
       </div>
-      {showPrompt && <MaterialPromptBuilder session={session} componentId={componentId} />}
+      {showPrompt && <MaterialPromptBuilder session={session} componentId={componentId} onImported={() => setReloadKey((k) => k + 1)} />}
       <ErrorNote message={error} />
       {notice && <p className="temp-password-box">{notice}</p>}
       {info && !material && <p className="muted">Todavía no hay material subido.</p>}
@@ -1865,7 +1952,7 @@ function ComponentsPanel({ session, program, onBack }) {
 }
 
 function slugify(text) {
-  return String(text || '').normalize('NFD').replace(/[̀-ͯ]/g, '')
+  return String(text || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '')
     .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 100)
 }
 

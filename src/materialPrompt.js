@@ -12,10 +12,12 @@ export const DEFAULT_PROMPT_OPTIONS = {
   brand: '',
   batchSize: 'auto',
   extra: '',
+  // 'paste' (por defecto): cualquier IA escribe solo el contenido en JSON y
+  // se pega en la plataforma, que arma las paginas con la marca del tenant.
   // 'skill': prompt corto que usa la skill generador-material-curso
   // (Claude solo escribe JSON; el script pone HTML, diseno y ZIP).
   // 'full': prompt completo para usar sin la skill.
-  mode: 'skill',
+  mode: 'paste',
 }
 
 export const SKILL_NAME = 'generador-material-curso'
@@ -37,11 +39,11 @@ function contentScale(minutes) {
   }
 }
 
-// Con la skill la IA solo escribe JSON (sin HTML ni CSS): caben el doble
-// de temas por lote.
-export function suggestedBatchSize(topics, mode = 'skill') {
+// Si la IA solo escribe contenido en JSON (sin HTML ni CSS), caben el
+// doble de temas por lote.
+export function suggestedBatchSize(topics, mode = 'paste') {
   const base = contentScale(topics?.[0]?.durationMinutes || 45).batchSize
-  return mode === 'skill' ? base * 2 : base
+  return mode === 'full' ? base : base * 2
 }
 
 function slugify(text) {
@@ -99,9 +101,80 @@ function durationSummary(topics) {
   return `${topics.length} clases, ~${Number.isInteger(hours) ? hours : hours.toFixed(1)} h en total`
 }
 
+// Identidad visual del tenant (color de marca y logo), para los modos en
+// que la IA disena: el material siempre debe verse de la organizacion.
+function brandLines(data) {
+  const t = data.tenant || {}
+  return [
+    t.brandColor
+      ? `Identidad visual de ${t.name}: color principal ${t.brandColor} (portadas, títulos, botones, diagramas) con neutros oscuros (#17232d) y blancos; un acento complementario solo para destacar. Mantén contraste AA.`
+      : `Identidad visual de ${t.name || 'la organización'}: paleta sobria y profesional, coherente en todo el curso.`,
+    t.logoUrl
+      ? `Logo: te lo adjunto; guárdalo como assets/logo.png y muéstralo en la portada de cada página (sin deformarlo).`
+      : `No inventes un logo para ${t.name || 'la organización'}.`,
+  ]
+}
+
 export function buildMaterialPrompt(data, options) {
   const o = { ...DEFAULT_PROMPT_OPTIONS, ...options }
-  return o.mode === 'skill' ? buildSkillPrompt(data, o) : buildFullPrompt(data, o)
+  if (o.mode === 'skill') return buildSkillPrompt(data, o)
+  if (o.mode === 'full') return buildFullPrompt(data, o)
+  return buildPastePrompt(data, o)
+}
+
+// Modo por defecto, para CUALQUIER IA y con el minimo de tokens: la IA solo
+// escribe el contenido en JSON (sin HTML de pagina, CSS ni JS) y la
+// plataforma arma las paginas con la marca del tenant al pegarlo
+// (server/materialRender.js valida el mismo formato).
+function buildPastePrompt(data, o) {
+  const topics = data.topics || []
+  const n = topics.length
+  const parts = topicParts(topics)
+  const classMinutes = topics[0]?.durationMinutes || 45
+  const scale = contentScale(classMinutes)
+  const batchSize = Math.max(1, Number(o.batchSize) || suggestedBatchSize(topics, 'paste'))
+  const batches = Math.ceil(n / batchSize)
+  const brand = data.tenant?.brandColor || '#1b6fa8'
+  const sector = o.sector.trim()
+
+  const context = [
+    `Curso: ${data.componentName} (programa ${data.programName}${data.modality ? `, ${data.modality.toLowerCase()}` : ''}).`,
+    data.componentDescription?.trim() ? `Sobre el curso: ${data.componentDescription.trim()}` : null,
+    `Alumnos: ${o.audience.trim() || '[describe aquí el perfil de los alumnos]'}. Nivel: ${o.level}.`,
+    sector ? `Ambienta ejemplos y ejercicios en: ${sector}.` : null,
+    `Cada tema es UNA clase de ${classMinutes} min${scale.blocks > 1 ? ` (organízala en ${scale.blocks} bloques de ~45 min, con "pausa_despues": true entre ellos)` : ''}.`,
+    o.brand.trim() ? `Estilo: ${o.brand.trim()}.` : null,
+    o.extra.trim() ? `Además: ${o.extra.trim()}` : null,
+  ].filter(Boolean).join('\n')
+
+  const temario = topics.map((t, i) => {
+    const part = parts[i].total > 1 ? ` (parte ${parts[i].part}/${parts[i].total}${parts[i].part > 1 ? ', continúa la anterior' : ''})` : ''
+    return `${t.position}. ${t.title}${part}${t.description?.trim() ? ` — ${t.description.trim()}` : ''}`
+  }).join('\n')
+
+  const fence = '```'
+  return `Eres diseñador instruccional. Escribe el CONTENIDO del material de un curso; una plataforma lo convertirá en páginas con la identidad visual de ${data.tenant?.name || 'la organización'}, así que NO escribas HTML de página, CSS ni JavaScript.
+
+${context}
+
+Temario (${n} temas, respeta número y orden):
+${temario}
+
+Formato: responde SOLO con un bloque ${fence}json que contenga un array de temas, sin texto antes ni después. Cada tema:
+{"numero":1,"resumen":"1 frase","objetivos":["…"],"punto_de_partida":{"texto":"…","pregunta":"…"},
+"bloques":[{"titulo":"…","html":"<p>…</p>","callouts":[{"tipo":"importante|tip|error","texto":"…"}],"pausa_despues":false}],
+"ejemplos":[{"titulo":"…","pasos":["…"],"resultado":"…"}],"practica_guiada":{"titulo":"…","html":"…"},
+"ejercicios":[{"nivel":"basico|intermedio|reto","enunciado":"…","entregable":"…","solucion":"…","rubrica":"…"}],
+"preguntas":[{"tipo":"opcion","enunciado":"…","opciones":["…","…","…"],"respuesta":"B","explicacion":"…"},{"tipo":"vf","enunciado":"…","respuesta":true},{"tipo":"corta","enunciado":"…","respuesta":"…"}],
+"ideas_clave":["…"],"glosario":[{"termino":"…","definicion":"…"}],
+"guia_docente":{"plan":[{"minutos":"0–10","actividad":"…"}],"errores_frecuentes":[{"error":"…","como_reconducir":"…"}]}}
+
+Por tema: ${scale.objectives} objetivos, ${scale.examples} ejemplos, ${scale.exercises} ejercicios y ${scale.questions} preguntas.
+Reglas:
+- Los textos admiten HTML simple: <p>, <strong>, <ul>, <table>, <pre><code class="language-x">, y diagramas <svg viewBox="…"> con los colores ${brand} y #17232d.
+- Las respuestas van SOLO en solucion, respuesta, explicacion, rubrica y guia_docente; nunca en enunciados ni pistas.
+- JSON válido y compacto (sin comentarios ni comas finales).
+${n > batchSize ? `- Responde por lotes de ${batchSize} temas (${batches} lotes): ahora los temas 1–${Math.min(batchSize, n)}; cuando escriba "continuar", el siguiente lote.` : '- Responde con todos los temas en un solo bloque.'}`
 }
 
 // Prompt corto para la skill: los datos del curso en el JSON que espera
@@ -123,6 +196,8 @@ function buildSkillPrompt(data, o) {
     alumnos: o.audience.trim() || '[describe aquí el perfil de los alumnos]',
     nivel: o.level,
     sector: o.sector.trim() || undefined,
+    organizacion: data.tenant?.name || undefined,
+    colores: data.tenant?.brandColor ? { primario: data.tenant.brandColor } : undefined,
     identidad_visual: o.brand.trim() || undefined,
     indicaciones: o.extra.trim() || undefined,
     duracion_clase_min: topics[0]?.durationMinutes || 45,
@@ -242,7 +317,7 @@ Portada del curso: nombre, descripción, objetivos generales, a quién va dirigi
 # Diseño visual
 - Moderno y muy visual: portada con degradado, tarjetas, iconografía coherente, diagramas SVG, callouts de "Importante", "Tip" y "Error común", bloques de código con resaltado de sintaxis si el tema lo requiere.
 - Un único sistema de diseño en assets/estilos.css: todos los temas deben verse como el mismo curso (colores, tipografía, componentes).
-${o.brand.trim() ? `- Identidad visual: ${o.brand.trim()}.\n` : ''}- Responsive: se ve bien en móvil, portátil y proyector (tipografía base ≥ 18px, buen contraste WCAG AA, alt en imágenes). Incluye estilos de impresión.
+${brandLines(data).map((l) => `- ${l}\n`).join('')}${o.brand.trim() ? `- Notas de estilo: ${o.brand.trim()}.\n` : ''}- Responsive: se ve bien en móvil, portátil y proyector (tipografía base ≥ 18px, buen contraste WCAG AA, alt en imágenes). Incluye estilos de impresión.
 - Idioma: español neutro, tono cercano y profesional.
 ${o.extra.trim() ? `\n# Indicaciones adicionales\n${o.extra.trim()}\n` : ''}
 # Forma de trabajo
