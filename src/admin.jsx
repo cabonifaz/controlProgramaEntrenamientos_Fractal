@@ -1550,7 +1550,7 @@ function MaterialPromptBuilder({ session, componentId, onImported }) {
       {options.mode === 'paste' && (
         <ol className="material-skill-steps">
           <li>Copia el prompt y pégalo en la IA que prefieras (ChatGPT, Gemini, Claude…). No hace falta instalar nada.</li>
-          <li>La IA responde solo con el contenido en JSON, por lotes. Pega cada respuesta en el cuadro de abajo y pulsa "Importar".</li>
+          <li>La IA entrega el contenido en un archivo .json por lote. Súbelos con "Subir archivos .json" (o, si la IA lo escribió en el chat, pégalo en el cuadro de abajo y pulsa "Importar").</li>
           <li>La plataforma arma las páginas con el diseño, el logo y el color de {tenant.name || 'tu organización'}. Es la opción más rápida y la que menos tokens gasta.</li>
         </ol>
       )}
@@ -1604,7 +1604,7 @@ function MaterialPromptBuilder({ session, componentId, onImported }) {
       <textarea className="material-prompt-output" readOnly rows={12} value={prompt} />
       <p className="muted material-prompt-tip">
         {options.mode === 'paste'
-          ? `Prompt de ~${Math.round(prompt.length / 4).toLocaleString('es-PE')} tokens. Con temarios largos, escribe "continuar" a la IA para recibir el siguiente lote.`
+          ? `Prompt de ~${Math.round(prompt.length / 4).toLocaleString('es-PE')} tokens. Con temarios largos, escribe "continuar" a la IA para recibir el archivo del siguiente lote.`
           : 'Con temarios largos, la IA entrega por lotes: escribe "continuar" hasta que entregue el ZIP. Luego súbelo aquí con "Subir ZIP".'}
       </p>
       {options.mode === 'paste' && <MaterialContentImport session={session} componentId={componentId} onImported={onImported} />}
@@ -1621,22 +1621,26 @@ function MaterialContentImport({ session, componentId, onImported }) {
   const [error, setError] = useState('')
   const [report, setReport] = useState(null)
 
+  async function importContent(content) {
+    const response = await fetch(`/api/components/${componentId}/material/content`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ content }),
+    })
+    const body = await response.json().catch(() => ({}))
+    if (!response.ok) {
+      if (body.report) setReport(body.report)
+      throw new Error(body.message === 'content_empty' && body.details?.length ? body.details.join(' · ') : body.message || 'upload_failed')
+    }
+    return body.data
+  }
+
   async function handleImport() {
     setError('')
     setReport(null)
     setBusy(true)
     try {
-      const response = await fetch(`/api/components/${componentId}/material/content`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ content: text }),
-      })
-      const body = await response.json().catch(() => ({}))
-      if (!response.ok) {
-        if (body.report) setReport(body.report)
-        throw new Error(body.message === 'content_empty' && body.details?.length ? body.details.join(' · ') : body.message || 'upload_failed')
-      }
-      setReport(body.data)
+      setReport(await importContent(text))
       setText('')
       onImported?.()
     } catch (err) {
@@ -1646,12 +1650,47 @@ function MaterialContentImport({ session, componentId, onImported }) {
     }
   }
 
+  // Un archivo .json por lote: se importan de a uno (el servidor acumula)
+  // para no superar el limite de tamano por peticion, y se suman los reportes.
+  async function handleFiles(event) {
+    const files = [...event.target.files]
+    event.target.value = ''
+    if (!files.length) return
+    setError('')
+    setReport(null)
+    setBusy(true)
+    let merged = null
+    try {
+      for (const file of files) {
+        let data
+        try {
+          data = await importContent(await file.text())
+        } catch (err) {
+          throw new Error(`${file.name}: ${err.message}`)
+        }
+        merged = merged
+          ? { ...data, imported: [...merged.imported, ...data.imported], rejected: [...merged.rejected, ...data.rejected], warnings: [...merged.warnings, ...data.warnings] }
+          : data
+        setReport(merged)
+      }
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      if (merged) onImported?.()
+      setBusy(false)
+    }
+  }
+
   return (
     <div className="content-import">
-      <strong>Pegar la respuesta de la IA</strong>
-      <textarea rows={6} value={text} onChange={(e) => setText(e.target.value)} placeholder={'Pega aquí el bloque ```json que te dio la IA (puedes pegar varios lotes juntos).'} />
+      <strong>Importar la respuesta de la IA</strong>
+      <textarea rows={6} value={text} onChange={(e) => setText(e.target.value)} placeholder={'Sube los archivos .json que te dio la IA, o pega aquí el bloque ```json (puedes pegar varios lotes juntos).'} />
       <div className="excel-import-actions">
-        <button type="button" className="primary" disabled={busy || !text.trim()} onClick={handleImport}>{busy ? 'Importando…' : 'Importar contenido'}</button>
+        <label className="btn-mini logo-upload-label">
+          {busy ? 'Importando…' : 'Subir archivos .json'}
+          <input type="file" accept=".json,application/json,.txt" multiple onChange={handleFiles} disabled={busy} hidden />
+        </label>
+        <button type="button" className="primary" disabled={busy || !text.trim()} onClick={handleImport}>{busy ? 'Importando…' : 'Importar texto pegado'}</button>
       </div>
       <ErrorNote message={error} />
       {report && (

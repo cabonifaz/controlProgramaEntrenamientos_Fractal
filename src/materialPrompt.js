@@ -136,6 +136,8 @@ function buildPastePrompt(data, o) {
   const batches = Math.ceil(n / batchSize)
   const brand = data.tenant?.brandColor || '#1b6fa8'
   const sector = o.sector.trim()
+  const slug = slugify(data.componentName)
+  const fileName = (from, to) => `material-${slug}-temas-${pad2(from)}-${pad2(to)}.json`
 
   const context = [
     `Curso: ${data.componentName} (programa ${data.programName}${data.modality ? `, ${data.modality.toLowerCase()}` : ''}).`,
@@ -160,7 +162,8 @@ ${context}
 Temario (${n} temas, respeta número y orden):
 ${temario}
 
-Formato: responde SOLO con un bloque ${fence}json que contenga un array de temas, sin texto antes ni después. Cada tema:
+Entrega: el contenido es demasiado largo para el chat, así que NO lo escribas en el mensaje. Crea un archivo .json descargable con tu herramienta de archivos/ejecución de código (p. ej. ${fileName(1, Math.min(batchSize, n))}) que contenga un array de temas, y responde solo con el enlace de descarga y una línea indicando qué temas incluye. Solo si no puedes crear archivos, responde con un único bloque ${fence}json sin texto antes ni después.
+Cada tema:
 {"numero":1,"resumen":"1 frase","objetivos":["…"],"punto_de_partida":{"texto":"…","pregunta":"…"},
 "bloques":[{"titulo":"…","html":"<p>…</p>","callouts":[{"tipo":"importante|tip|error","texto":"…"}],"pausa_despues":false}],
 "ejemplos":[{"titulo":"…","pasos":["…"],"resultado":"…"}],"practica_guiada":{"titulo":"…","html":"…"},
@@ -174,7 +177,7 @@ Reglas:
 - Los textos admiten HTML simple: <p>, <strong>, <ul>, <table>, <pre><code class="language-x">, y diagramas <svg viewBox="…"> con los colores ${brand} y #17232d.
 - Las respuestas van SOLO en solucion, respuesta, explicacion, rubrica y guia_docente; nunca en enunciados ni pistas.
 - JSON válido y compacto (sin comentarios ni comas finales).
-${n > batchSize ? `- Responde por lotes de ${batchSize} temas (${batches} lotes): ahora los temas 1–${Math.min(batchSize, n)}; cuando escriba "continuar", el siguiente lote.` : '- Responde con todos los temas en un solo bloque.'}`
+${n > batchSize ? `- Trabaja por lotes de ${batchSize} temas (${batches} lotes), un archivo por lote (${fileName(1, Math.min(batchSize, n))}, ${fileName(Math.min(batchSize, n) + 1, Math.min(2 * batchSize, n))}…): ahora los temas 1–${Math.min(batchSize, n)}; cuando escriba "continuar", el siguiente lote. Todos los lotes con la misma profundidad que el primero.` : `- Entrega todos los temas en un solo archivo, ${fileName(1, n)}.`}`
 }
 
 // Prompt corto para la skill: los datos del curso en el JSON que espera
