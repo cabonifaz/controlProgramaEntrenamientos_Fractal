@@ -33,9 +33,13 @@ const TOPIC_DURATION_MINUTES = 45
 // Railway pone un proxy delante: sin esto req.ip seria la IP del proxy y el
 // freno anti-abuso del formulario publico trataria a todos como uno solo.
 app.set('trust proxy', 1)
-// 2 MB: el contenido de material que se pega desde una IA (JSON de varios
-// temas) supera el limite por defecto de 100 KB.
-app.use(express.json({ limit: '2mb' }))
+// 2 MB en general; la importacion de material (JSON de TODOS los temas de
+// un curso generado por una IA de una sola vez) admite hasta 25 MB, solo
+// en esa ruta para no abrir el resto de la API a peticiones enormes.
+const MATERIAL_CONTENT_ROUTE = /^\/api\/components\/[^/]+\/material\/content$/
+const jsonParser = express.json({ limit: '2mb' })
+const materialContentParser = express.json({ limit: '25mb' })
+app.use((req, res, next) => (MATERIAL_CONTENT_ROUTE.test(req.path) ? materialContentParser : jsonParser)(req, res, next))
 // Publico a proposito (logos de tenant; banners de programa y fotos de
 // instructores de la web publica): sin datos sensibles, se sirve tal cual
 // desde el volumen persistente configurado en UPLOADS_DIR. Solo estas
@@ -853,6 +857,7 @@ app.post('/api/components/:id/material', authenticate, async (req, res) => {
 // las paginas con la marca del tenant y lo publica como material. Se
 // acumula por lotes: cada envio agrega/reemplaza temas sobre el contenido
 // ya importado (si el material vigente es un ZIP subido, se empieza de cero).
+// Limite de 25 MB para esta ruta (ver MATERIAL_CONTENT_ROUTE).
 app.post('/api/components/:id/material/content', authenticate, async (req, res) => {
   const componentId = Number(req.params.id)
   const text = req.body?.content
