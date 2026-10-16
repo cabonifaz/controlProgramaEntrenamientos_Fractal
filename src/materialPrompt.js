@@ -39,11 +39,10 @@ function contentScale(minutes) {
   }
 }
 
-// Si la IA solo escribe contenido en JSON (sin HTML ni CSS), caben el
-// doble de temas por lote.
-export function suggestedBatchSize(topics, mode = 'paste') {
-  const base = contentScale(topics?.[0]?.durationMinutes || 45).batchSize
-  return mode === 'full' ? base : base * 2
+// Solo el modo 'full' (HTML completo) trabaja por lotes; los modos JSON
+// entregan todos los temas de una vez.
+export function suggestedBatchSize(topics) {
+  return contentScale(topics?.[0]?.durationMinutes || 45).batchSize
 }
 
 function slugify(text) {
@@ -132,12 +131,9 @@ function buildPastePrompt(data, o) {
   const parts = topicParts(topics)
   const classMinutes = topics[0]?.durationMinutes || 45
   const scale = contentScale(classMinutes)
-  const batchSize = Math.max(1, Number(o.batchSize) || suggestedBatchSize(topics, 'paste'))
-  const batches = Math.ceil(n / batchSize)
   const brand = data.tenant?.brandColor || '#1b6fa8'
   const sector = o.sector.trim()
-  const slug = slugify(data.componentName)
-  const fileName = (from, to) => `material-${slug}-temas-${pad2(from)}-${pad2(to)}.json`
+  const fileName = `material-${slugify(data.componentName)}.json`
 
   const context = [
     `Curso: ${data.componentName} (programa ${data.programName}${data.modality ? `, ${data.modality.toLowerCase()}` : ''}).`,
@@ -162,7 +158,7 @@ ${context}
 Temario (${n} temas, respeta número y orden):
 ${temario}
 
-Entrega: el contenido es demasiado largo para el chat, así que NO lo escribas en el mensaje. Crea un archivo .json descargable con tu herramienta de archivos/ejecución de código (p. ej. ${fileName(1, Math.min(batchSize, n))}) que contenga un array de temas, y responde solo con el enlace de descarga y una línea indicando qué temas incluye. Solo si no puedes crear archivos, responde con un único bloque ${fence}json sin texto antes ni después.
+Entrega: el contenido es demasiado largo para el chat, así que NO lo escribas en el mensaje. Crea un archivo .json descargable con tu herramienta de archivos/ejecución de código llamado ${fileName} que contenga un array con los ${n} temas, y responde solo con el enlace de descarga. Solo si no puedes crear archivos, responde con un único bloque ${fence}json sin texto antes ni después.
 Cada tema:
 {"numero":1,"resumen":"1 frase","objetivos":["…"],"punto_de_partida":{"texto":"…","pregunta":"…"},
 "bloques":[{"titulo":"…","html":"<p>…</p>","callouts":[{"tipo":"importante|tip|error","texto":"…"}],"pausa_despues":false}],
@@ -177,7 +173,7 @@ Reglas:
 - Los textos admiten HTML simple: <p>, <strong>, <ul>, <table>, <pre><code class="language-x">, y diagramas <svg viewBox="…"> con los colores ${brand} y #17232d.
 - Las respuestas van SOLO en solucion, respuesta, explicacion, rubrica y guia_docente; nunca en enunciados ni pistas.
 - JSON válido y compacto (sin comentarios ni comas finales).
-${n > batchSize ? `- Trabaja por lotes de ${batchSize} temas (${batches} lotes), un archivo por lote (${fileName(1, Math.min(batchSize, n))}, ${fileName(Math.min(batchSize, n) + 1, Math.min(2 * batchSize, n))}…): ahora los temas 1–${Math.min(batchSize, n)}; cuando escriba "continuar", el siguiente lote. Todos los lotes con la misma profundidad que el primero.` : `- Entrega todos los temas en un solo archivo, ${fileName(1, n)}.`}`
+- Entrega los ${n} temas de una sola vez, en ese único archivo: no lo partas en lotes ni esperes a que escriba "continuar". Todos los temas con la misma profundidad que el primero.`
 }
 
 // Prompt corto para la skill: los datos del curso en el JSON que espera
@@ -187,8 +183,6 @@ function buildSkillPrompt(data, o) {
   const topics = data.topics || []
   const n = topics.length
   const parts = topicParts(topics)
-  const batchSize = Math.max(1, Number(o.batchSize) || suggestedBatchSize(topics, 'skill'))
-  const batches = Math.ceil(n / batchSize)
   const zipName = `material-${slugify(data.componentName)}.zip`
   const description = [data.componentDescription, data.programDescription].map((d) => d?.trim()).filter(Boolean).join(' ')
 
@@ -213,9 +207,7 @@ function buildSkillPrompt(data, o) {
     })),
   }
 
-  const workLine = n > batchSize
-    ? `- Trabaja en ${batches} lotes de hasta ${batchSize} temas. Tras cada lote, valida con el script y responde solo: "Lote X/${batches} listo (temas A–B), validado. Escribe continuar."`
-    : '- Genera todos los temas, valídalos con el script y empaqueta.'
+  const workLine = `- Genera los ${n} temas de una sola vez (sin lotes ni pausas para "continuar"), valídalos con el script y empaqueta.`
   const fence = '```'
 
   return [
@@ -237,7 +229,7 @@ function buildFullPrompt(data, o) {
   const last = pad2(n)
   const classMinutes = topics[0]?.durationMinutes || 45
   const scale = contentScale(classMinutes)
-  const batchSize = Math.max(1, Number(o.batchSize) || suggestedBatchSize(topics, 'full'))
+  const batchSize = Math.max(1, Number(o.batchSize) || suggestedBatchSize(topics))
   const batches = Math.ceil(n / batchSize)
   const zipName = `material-${slugify(data.componentName)}.zip`
   const sector = o.sector.trim()

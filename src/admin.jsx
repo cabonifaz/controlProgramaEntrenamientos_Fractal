@@ -1550,7 +1550,7 @@ function MaterialPromptBuilder({ session, componentId, onImported }) {
       {options.mode === 'paste' && (
         <ol className="material-skill-steps">
           <li>Copia el prompt y pégalo en la IA que prefieras (ChatGPT, Gemini, Claude…). No hace falta instalar nada.</li>
-          <li>La IA entrega el contenido en un archivo .json por lote. Súbelos con "Subir archivos .json" (o, si la IA lo escribió en el chat, pégalo en el cuadro de abajo y pulsa "Importar").</li>
+          <li>La IA entrega todo el contenido de una vez, en un solo archivo .json. Súbelo con "Subir archivos .json" (o, si la IA lo escribió en el chat, pégalo en el cuadro de abajo y pulsa "Importar").</li>
           <li>La plataforma arma las páginas con el diseño, el logo y el color de {tenant.name || 'tu organización'}. Es la opción más rápida y la que menos tokens gasta.</li>
         </ol>
       )}
@@ -1581,12 +1581,14 @@ function MaterialPromptBuilder({ session, componentId, onImported }) {
             {MATERIAL_LEVELS.map((l) => <option key={l} value={l}>{l}</option>)}
           </select>
         </label>
-        <label>Temas por lote
-          <select value={options.batchSize} onChange={set('batchSize')}>
-            <option value="auto">Automático ({suggestedBatchSize(data.topics, options.mode)})</option>
-            {[1, 2, 3, 4, 5, 6, 8, 10].map((n) => <option key={n} value={n}>{n}</option>)}
-          </select>
-        </label>
+        {options.mode === 'full' && (
+          <label>Temas por lote
+            <select value={options.batchSize} onChange={set('batchSize')}>
+              <option value="auto">Automático ({suggestedBatchSize(data.topics)})</option>
+              {[1, 2, 3, 4, 5, 6, 8, 10].map((n) => <option key={n} value={n}>{n}</option>)}
+            </select>
+          </label>
+        )}
         <label>Sector de los ejemplos (opcional)
           <input value={options.sector} onChange={set('sector')} placeholder="Ej.: banca, retail, salud" />
         </label>
@@ -1604,8 +1606,10 @@ function MaterialPromptBuilder({ session, componentId, onImported }) {
       <textarea className="material-prompt-output" readOnly rows={12} value={prompt} />
       <p className="muted material-prompt-tip">
         {options.mode === 'paste'
-          ? `Prompt de ~${Math.round(prompt.length / 4).toLocaleString('es-PE')} tokens. Con temarios largos, escribe "continuar" a la IA para recibir el archivo del siguiente lote.`
-          : 'Con temarios largos, la IA entrega por lotes: escribe "continuar" hasta que entregue el ZIP. Luego súbelo aquí con "Subir ZIP".'}
+          ? `Prompt de ~${Math.round(prompt.length / 4).toLocaleString('es-PE')} tokens. La IA entrega todos los temas de una vez, en un solo archivo.`
+          : options.mode === 'skill'
+            ? 'La IA genera todos los temas de una vez y entrega un único ZIP. Súbelo aquí con "Subir ZIP".'
+            : 'Con temarios largos, la IA entrega por lotes: escribe "continuar" hasta que entregue el ZIP. Luego súbelo aquí con "Subir ZIP".'}
       </p>
       {options.mode === 'paste' && <MaterialContentImport session={session} componentId={componentId} onImported={onImported} />}
     </div>
@@ -1684,7 +1688,7 @@ function MaterialContentImport({ session, componentId, onImported }) {
   return (
     <div className="content-import">
       <strong>Importar la respuesta de la IA</strong>
-      <textarea rows={6} value={text} onChange={(e) => setText(e.target.value)} placeholder={'Sube los archivos .json que te dio la IA, o pega aquí el bloque ```json (puedes pegar varios lotes juntos).'} />
+      <textarea rows={6} value={text} onChange={(e) => setText(e.target.value)} placeholder={'Sube los archivos .json que te dio la IA, o pega aquí el bloque ```json.'} />
       <div className="excel-import-actions">
         <label className="btn-mini logo-upload-label">
           {busy ? 'Importando…' : 'Subir archivos .json'}
