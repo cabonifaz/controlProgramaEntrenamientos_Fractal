@@ -262,20 +262,31 @@ export function courseTopics(topics) {
 
 // Extrae temas de lo que el usuario pego: tolera texto alrededor, uno o
 // varios bloques ```json y las formas [temas], {temas:[...]} o {tema}.
+// Si todo el texto ya es JSON (un archivo .json subido) se usa tal cual:
+// buscar bloques ``` primero lo romperia cuando el propio contenido trae
+// ``` dentro de un texto (p. ej. un ejercicio de codigo).
 export function parsePastedContent(text) {
   const source = String(text || '')
-  const blocks = [...source.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)].map((m) => m[1])
-  const candidates = blocks.length ? blocks : [source]
   const temas = []
   const failures = []
+  const collect = (value) => {
+    const list = Array.isArray(value) ? value : Array.isArray(value?.temas) ? value.temas : [value]
+    list.forEach((t) => { if (t && typeof t === 'object') temas.push(t) })
+  }
+  try {
+    collect(JSON.parse(source.replace(/^﻿/, '').trim()))
+    return { temas, failures }
+  } catch {
+    // no es JSON puro: se buscan bloques ``` o el JSON dentro del texto
+  }
+  const blocks = [...source.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)].map((m) => m[1])
+  const candidates = blocks.length ? blocks : [source]
   candidates.forEach((raw, i) => {
     const start = raw.search(/[[{]/)
     const end = Math.max(raw.lastIndexOf(']'), raw.lastIndexOf('}'))
     if (start === -1 || end < start) return
     try {
-      const value = JSON.parse(raw.slice(start, end + 1))
-      const list = Array.isArray(value) ? value : Array.isArray(value?.temas) ? value.temas : [value]
-      list.forEach((t) => { if (t && typeof t === 'object') temas.push(t) })
+      collect(JSON.parse(raw.slice(start, end + 1)))
     } catch (err) {
       failures.push(`Bloque ${i + 1}: JSON inválido (${err.message})`)
     }
