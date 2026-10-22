@@ -522,6 +522,8 @@ INSERT IGNORE INTO master_catalog_values (catalog_id, code, label, sort_order) V
 DROP PROCEDURE IF EXISTS sp_migrate_component_groups_v1;
 DROP PROCEDURE IF EXISTS sp_migrate_tenant_logo_v1;
 DROP PROCEDURE IF EXISTS sp_migrate_program_public_v1;
+DROP PROCEDURE IF EXISTS sp_migrate_tenant_contact_v1;
+DROP PROCEDURE IF EXISTS sp_tenants_set_contact;
 DROP PROCEDURE IF EXISTS sp_tenants_set_logo;
 DROP PROCEDURE IF EXISTS sp_tenants_set_brand_color;
 DROP PROCEDURE IF EXISTS sp_tenants_get_public_branding;
@@ -737,6 +739,18 @@ END$$
 
 -- Web publica por programa (link propio, banner, publico objetivo) y
 -- perfil publico de los instructores que se muestra en ella. Idempotente.
+-- El contacto del tenant pasa a ser un usuario (contact_user_id).
+-- Idempotente; los tenants existentes quedan con su contacto de texto.
+CREATE PROCEDURE sp_migrate_tenant_contact_v1()
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+    WHERE table_schema = DATABASE() AND table_name = 'tenants' AND column_name = 'contact_user_id') THEN
+    ALTER TABLE tenants
+      ADD COLUMN contact_user_id BIGINT UNSIGNED NULL AFTER slug,
+      ADD CONSTRAINT fk_tenant_contact_user FOREIGN KEY (contact_user_id) REFERENCES users(id);
+  END IF;
+END$$
+
 CREATE PROCEDURE sp_migrate_program_public_v1()
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM information_schema.columns
@@ -939,10 +953,13 @@ BEGIN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
   END IF;
 
-  SELECT t.id, t.name, t.slug, t.contact_name, t.contact_email, t.timezone, t.logo_path, t.brand_color,
+  SELECT t.id, t.name, t.slug, t.contact_user_id,
+         COALESCE(cu.full_name, t.contact_name) AS contact_name, COALESCE(cu.email, t.contact_email) AS contact_email,
+         t.timezone, t.logo_path, t.brand_color,
          ts.code AS status_code, ts.label AS status_label, t.created_at
   FROM tenants t
   JOIN master_catalog_values ts ON ts.id = t.status_id
+  LEFT JOIN users cu ON cu.id = t.contact_user_id
   WHERE t.is_deleted = FALSE
   ORDER BY t.name;
 END$$
@@ -964,13 +981,19 @@ BEGIN
   WHERE t.id = p_tenant_id AND t.is_deleted = FALSE;
 END$$
 
+-- El contacto de un tenant es un USUARIO de la plataforma (se elige
+-- buscandolo), no texto libre. contact_name/contact_email se guardan como
+-- copia para los tenants antiguos; los listados leen los datos vigentes
+-- del usuario.
 CREATE PROCEDURE sp_tenants_create(
   IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80),
   IN p_name VARCHAR(160), IN p_slug VARCHAR(80),
-  IN p_contact_name VARCHAR(160), IN p_contact_email VARCHAR(190), IN p_timezone VARCHAR(60)
+  IN p_contact_user_id BIGINT UNSIGNED, IN p_timezone VARCHAR(60)
 )
 BEGIN
   DECLARE v_status_id BIGINT UNSIGNED;
+  DECLARE v_contact_name VARCHAR(160);
+  DECLARE v_contact_email VARCHAR(190);
 
   IF p_actor_role <> 'super_admin' THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
@@ -980,14 +1003,48 @@ BEGIN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'slug_already_exists';
   END IF;
 
+  SELECT full_name, email INTO v_contact_name, v_contact_email
+  FROM users WHERE id = p_contact_user_id AND is_deleted = FALSE AND is_active = TRUE;
+  IF v_contact_email IS NULL THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'contact_user_invalid';
+  END IF;
+
   SELECT v.id INTO v_status_id
   FROM master_catalog_values v JOIN master_catalogs c ON c.id = v.catalog_id
   WHERE c.code = 'TENANT_STATUS' AND v.code = 'active';
 
-  INSERT INTO tenants (name, slug, contact_name, contact_email, timezone, status_id, created_by)
-  VALUES (p_name, p_slug, p_contact_name, p_contact_email, COALESCE(NULLIF(p_timezone, ''), 'America/Lima'), v_status_id, p_actor_user_id);
+  INSERT INTO tenants (name, slug, contact_user_id, contact_name, contact_email, timezone, status_id, created_by)
+  VALUES (p_name, p_slug, p_contact_user_id, v_contact_name, v_contact_email,
+          COALESCE(NULLIF(p_timezone, ''), 'America/Lima'), v_status_id, p_actor_user_id);
 
   SELECT LAST_INSERT_ID() AS tenant_id;
+END$$
+
+CREATE PROCEDURE sp_tenants_set_contact(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80),
+  IN p_tenant_id BIGINT UNSIGNED, IN p_contact_user_id BIGINT UNSIGNED
+)
+BEGIN
+  DECLARE v_contact_name VARCHAR(160);
+  DECLARE v_contact_email VARCHAR(190);
+
+  IF p_actor_role <> 'super_admin' THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM tenants WHERE id = p_tenant_id AND is_deleted = FALSE) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_not_found';
+  END IF;
+
+  SELECT full_name, email INTO v_contact_name, v_contact_email
+  FROM users WHERE id = p_contact_user_id AND is_deleted = FALSE AND is_active = TRUE;
+  IF v_contact_email IS NULL THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'contact_user_invalid';
+  END IF;
+
+  UPDATE tenants
+  SET contact_user_id = p_contact_user_id, contact_name = v_contact_name, contact_email = v_contact_email,
+      updated_at = NOW(), updated_by = p_actor_user_id
+  WHERE id = p_tenant_id;
 END$$
 
 CREATE PROCEDURE sp_tenants_update(

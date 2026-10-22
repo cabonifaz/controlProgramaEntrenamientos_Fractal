@@ -28,6 +28,7 @@ const STATUS_BY_SP_MESSAGE = {
   group_not_found: 404,
   material_not_found: 404,
   title_required: 400,
+  contact_user_invalid: 400,
   invalid_slug: 400,
   slug_required: 400,
   invalid_document_type: 400,

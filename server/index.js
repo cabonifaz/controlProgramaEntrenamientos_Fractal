@@ -234,17 +234,39 @@ app.get('/api/tenants', authenticate, async (req, res) => {
 })
 
 app.post('/api/tenants', authenticate, async (req, res) => {
-  const { name, slug, contactName, contactEmail, timezone } = req.body || {}
+  const { name, slug, contactUserId, timezone } = req.body || {}
   if (typeof name !== 'string' || !name.trim() || typeof slug !== 'string' || !/^[a-z0-9-]+$/.test(slug)) {
     return res.status(400).json({ message: 'Invalid request format' })
+  }
+  // El contacto es un usuario existente (se elige buscandolo), obligatorio.
+  if (!Number.isInteger(Number(contactUserId)) || Number(contactUserId) <= 0) {
+    return res.status(400).json({ message: 'contact_user_required' })
   }
 
   try {
     const [result] = await callProcedure('sp_tenants_create', {
       p_actor_user_id: req.user.id, p_actor_role: req.user.roleCode, p_name: name, p_slug: slug,
-      p_contact_name: contactName || null, p_contact_email: contactEmail || null, p_timezone: timezone || null,
+      p_contact_user_id: Number(contactUserId), p_timezone: timezone || null,
     })
     res.status(201).json({ data: result })
+  } catch (err) {
+    const { status, message } = mapStoredProcedureError(err)
+    res.status(status).json({ message })
+  }
+})
+
+app.post('/api/tenants/:id/contact', authenticate, async (req, res) => {
+  const tenantId = Number(req.params.id)
+  const contactUserId = Number(req.body?.contactUserId)
+  if (!Number.isInteger(tenantId) || !Number.isInteger(contactUserId) || contactUserId <= 0) {
+    return res.status(400).json({ message: 'Invalid request format' })
+  }
+
+  try {
+    await callProcedure('sp_tenants_set_contact', {
+      p_actor_user_id: req.user.id, p_actor_role: req.user.roleCode, p_tenant_id: tenantId, p_contact_user_id: contactUserId,
+    })
+    res.json({ ok: true })
   } catch (err) {
     const { status, message } = mapStoredProcedureError(err)
     res.status(status).json({ message })

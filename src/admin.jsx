@@ -78,6 +78,8 @@ const ERROR_MESSAGES = {
   invalid_linkedin_url: 'El LinkedIn debe ser un link https://www.linkedin.com/...',
   image_too_large: 'La imagen supera los 5 MB.',
   title_required: 'El tema no puede quedar vacío.',
+  contact_user_required: 'Elige el contacto del tenant buscándolo entre los usuarios.',
+  contact_user_invalid: 'El contacto debe ser un usuario activo de la plataforma.',
   temario_sheet_not_found: 'El Excel no tiene la hoja del temario exportado (columnas "ID componente", "N°" y "Tema"). Usa el archivo de "Exportar temario".',
 }
 
@@ -385,25 +387,45 @@ function TenantLoginLink({ slug }) {
   )
 }
 
+const EMPTY_TENANT_FORM = { name: '', slug: '', contactUserId: '', timezone: '' }
+
 export function TenantsPanel({ session }) {
   const { token } = session
   const { items, error, loading, reload } = useList('/api/tenants', token)
-  const [form, setForm] = useState({ name: '', slug: '', contactName: '', contactEmail: '', timezone: '' })
+  // El contacto de un tenant es un usuario de la plataforma: se elige buscándolo.
+  const { items: users } = useList('/api/users', token)
+  const contactOptions = useMemo(() => users.filter((u) => u.is_active), [users])
+  const [form, setForm] = useState(EMPTY_TENANT_FORM)
   const [formError, setFormError] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
   async function handleCreate(e) {
     e.preventDefault()
     setFormError('')
+    if (!form.contactUserId) {
+      setFormError('contact_user_required')
+      return
+    }
     setSubmitting(true)
     try {
-      await apiRequest('/api/tenants', { method: 'POST', token, body: form })
-      setForm({ name: '', slug: '', contactName: '', contactEmail: '', timezone: '' })
+      await apiRequest('/api/tenants', { method: 'POST', token, body: { ...form, contactUserId: Number(form.contactUserId) } })
+      setForm(EMPTY_TENANT_FORM)
       reload()
     } catch (err) {
       setFormError(err.message)
     } finally {
       setSubmitting(false)
+    }
+  }
+
+  async function changeContact(tenant, contactUserId) {
+    if (!contactUserId || String(contactUserId) === String(tenant.contact_user_id)) return
+    setFormError('')
+    try {
+      await apiRequest(`/api/tenants/${tenant.id}/contact`, { method: 'POST', token, body: { contactUserId: Number(contactUserId) } })
+      reload()
+    } catch (err) {
+      setFormError(err.message)
     }
   }
 
@@ -424,8 +446,15 @@ export function TenantsPanel({ session }) {
         <form className="admin-form" onSubmit={handleCreate}>
           <label>Nombre<input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required /></label>
           <label>Slug<input value={form.slug} onChange={(e) => setForm({ ...form, slug: e.target.value })} placeholder="fractal-peru" required /></label>
-          <label>Contacto<input value={form.contactName} onChange={(e) => setForm({ ...form, contactName: e.target.value })} /></label>
-          <label>Email de contacto<input type="email" value={form.contactEmail} onChange={(e) => setForm({ ...form, contactEmail: e.target.value })} /></label>
+          <label className="full-field tenant-contact-field">Contacto (usuario de la plataforma)
+            <SearchSelect
+              options={contactOptions}
+              value={form.contactUserId}
+              onChange={(id) => setForm({ ...form, contactUserId: id })}
+              placeholder="Buscar por nombre o email…"
+              allowEmpty={false}
+            />
+          </label>
           <label>Zona horaria<input value={form.timezone} onChange={(e) => setForm({ ...form, timezone: e.target.value })} placeholder="America/Lima" /></label>
           <ErrorNote message={formError} />
           <button className="primary" disabled={submitting}>{submitting ? 'Creando…' : 'Crear tenant'}</button>
@@ -443,7 +472,15 @@ export function TenantsPanel({ session }) {
                   <td>{t.name}</td>
                   <td>{t.slug}</td>
                   <td><StatusPill label={t.status_label} /></td>
-                  <td>{t.contact_email || '—'}</td>
+                  <td className="tenant-contact-cell">
+                    <SearchSelect
+                      options={contactOptions}
+                      value={t.contact_user_id ? String(t.contact_user_id) : ''}
+                      onChange={(id) => changeContact(t, id)}
+                      placeholder={t.contact_user_id ? 'Buscar…' : (t.contact_email ? `${t.contact_email} (sin usuario)` : 'Elegir contacto…')}
+                      allowEmpty={false}
+                    />
+                  </td>
                   <td><LogoUploader session={session} tenantId={t.id} currentLogoUrl={t.logo_path ? `/uploads/${t.logo_path}` : null} onUploaded={reload} /></td>
                   <td><BrandColorPicker session={session} tenantId={t.id} currentColor={t.brand_color} onSaved={reload} /></td>
                   <td><TenantLoginLink slug={t.slug} /></td>
@@ -759,7 +796,10 @@ function SearchSelect({ options, value, onChange, placeholder, allowEmpty = true
     ? options.filter((o) => o.full_name.toLowerCase().includes(normalizedQuery) || (o.email || '').toLowerCase().includes(normalizedQuery))
     : options
 
-  function pick(id) {
+  function pick(id, e) {
+    // Si el buscador esta dentro de un <label>, el clic en una opcion
+    // "activa" el label: re-enfoca el input y el menu se vuelve a abrir.
+    e?.preventDefault()
     onChange(id)
     setOpen(false)
     setQuery('')
@@ -776,9 +816,9 @@ function SearchSelect({ options, value, onChange, placeholder, allowEmpty = true
       />
       {open && (
         <div className="search-select-menu">
-          {allowEmpty && <div className="search-select-option muted" onClick={() => pick('')}>— {emptyLabel} —</div>}
+          {allowEmpty && <div className="search-select-option muted" onClick={(e) => pick('', e)}>— {emptyLabel} —</div>}
           {filtered.map((o) => (
-            <div key={o.id} className="search-select-option" onClick={() => pick(String(o.id))}>
+            <div key={o.id} className="search-select-option" onClick={(e) => pick(String(o.id), e)}>
               {o.full_name}{o.email ? <small> · {o.email}</small> : null}
             </div>
           ))}
