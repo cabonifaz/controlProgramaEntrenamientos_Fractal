@@ -3,6 +3,8 @@ import { createRoot } from 'react-dom/client'
 import { Bell, CalendarDays, ChevronDown, ClipboardCheck, LayoutDashboard, LogOut, Menu, Settings2, ShieldCheck, Users, X } from 'lucide-react'
 import { AlertsPanel, ChangePasswordPanel, HolidaysPanel, InstructorClassesPanel, LeaveRequestsPanel, PreEnrollmentsPanel, ProgramsPanel, RealDashboard, ReportsPanel, StudentAttendancePanel, StudentTopicsPanel, TenantsPanel, UsersPanel } from './admin.jsx'
 import { getPublicProgramRoute, PublicProgramApp } from './public.jsx'
+import { apiRequest } from './api'
+import { clearSession, loadActiveSection, loadSession, saveActiveSection, saveSession, SESSION_EXPIRED_EVENT } from './session'
 import './styles.css'
 
 const roles = {
@@ -36,6 +38,7 @@ function Login({ onLogin, tenantSlug, branding }) {
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  const [remember, setRemember] = useState(true)
 
   async function handleSubmit(e) {
     e.preventDefault()
@@ -58,7 +61,7 @@ function Login({ onLogin, tenantSlug, branding }) {
         setError('Rol de cuenta no reconocido')
         return
       }
-      onLogin({ role, token: body.token, profile: body.user })
+      onLogin({ role, token: body.token, profile: body.user }, remember)
     } catch {
       setError('No se pudo conectar con el servidor')
     } finally {
@@ -73,7 +76,7 @@ function Login({ onLogin, tenantSlug, branding }) {
     ? <img src={branding.logoUrl} alt={brandName || 'Logo'} className="logo-mark logo-mark-image" />
     : <div className="logo-mark">F</div>
 
-  return <main className="login-shell" style={brandStyle}><section className="login-art"><div className="logo-mark">{branding?.logoUrl ? <img src={branding.logoUrl} alt={brandName || 'Logo'} className="logo-mark-image" /> : 'F'}</div><p className="kicker">{brandName ? brandName.toUpperCase() : 'FRACTAL'} · TRAINING OS</p><h1>Aprender. Aplicar.<br /><em>Transformar.</em></h1><p className="art-copy">El espacio operativo donde cada talento convierte conocimiento en resultados visibles.</p><div className="art-foot"><span>01</span><span className="line" /><span>Control de entrenamiento</span></div></section><section className="login-panel"><form className="login-form" onSubmit={handleSubmit}><div className="mobile-logo logo-mark">{logoMark}</div><p className="kicker">Bienvenido de nuevo</p><h2>Ingresa a tu espacio{brandName ? ` · ${brandName}` : ''}</h2><p className="muted">Tu rol se determina automáticamente al autenticarte.</p><label>Correo corporativo<input type="email" placeholder="tu@fractal.com" value={email} onChange={(e) => setEmail(e.target.value)} required /></label><label>Contraseña<div className="password"><input type="password" placeholder="••••••••" value={password} onChange={(e) => setPassword(e.target.value)} required /><span>Mostrar</span></div></label><div className="form-row"><label className="check"><input type="checkbox" defaultChecked /> Recordarme</label><a href="#forgot">¿Olvidaste tu contraseña?</a></div>{error && <p className="form-error">{error}</p>}<button type="submit" className="primary full" disabled={loading}>{loading ? 'Ingresando…' : <>Entrar <span>→</span></>}</button><p className="login-note">Acceso seguro · Tu información está protegida</p></form></section></main>
+  return <main className="login-shell" style={brandStyle}><section className="login-art"><div className="logo-mark">{branding?.logoUrl ? <img src={branding.logoUrl} alt={brandName || 'Logo'} className="logo-mark-image" /> : 'F'}</div><p className="kicker">{brandName ? brandName.toUpperCase() : 'FRACTAL'} · TRAINING OS</p><h1>Aprender. Aplicar.<br /><em>Transformar.</em></h1><p className="art-copy">El espacio operativo donde cada talento convierte conocimiento en resultados visibles.</p><div className="art-foot"><span>01</span><span className="line" /><span>Control de entrenamiento</span></div></section><section className="login-panel"><form className="login-form" onSubmit={handleSubmit}><div className="mobile-logo logo-mark">{logoMark}</div><p className="kicker">Bienvenido de nuevo</p><h2>Ingresa a tu espacio{brandName ? ` · ${brandName}` : ''}</h2><p className="muted">Tu rol se determina automáticamente al autenticarte.</p><label>Correo corporativo<input type="email" placeholder="tu@fractal.com" value={email} onChange={(e) => setEmail(e.target.value)} required /></label><label>Contraseña<div className="password"><input type="password" placeholder="••••••••" value={password} onChange={(e) => setPassword(e.target.value)} required /><span>Mostrar</span></div></label><div className="form-row"><label className="check"><input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} /> Recordarme</label><a href="#forgot">¿Olvidaste tu contraseña?</a></div>{error && <p className="form-error">{error}</p>}<button type="submit" className="primary full" disabled={loading}>{loading ? 'Ingresando…' : <>Entrar <span>→</span></>}</button><p className="login-note">Acceso seguro · Tu información está protegida</p></form></section></main>
 }
 
 function LoginGate({ onLogin }) {
@@ -98,10 +101,42 @@ function LoginGate({ onLogin }) {
 }
 
 function App() {
-  const [session, setSession] = useState(null)
-  const [active, setActive] = useState('Inicio')
+  // La sesion se guarda en el navegador: recargar no la cierra.
+  const [session, setSession] = useState(() => loadSession())
+  const [active, setActiveState] = useState(() => (loadSession() && loadActiveSection()) || 'Inicio')
   const [menuOpen, setMenuOpen] = useState(false)
-  if (!session) return <LoginGate onLogin={setSession} />
+
+  function setActive(section) {
+    saveActiveSection(section)
+    setActiveState(section)
+  }
+
+  function handleLogin(newSession, remember) {
+    saveSession(newSession, remember)
+    setActive('Inicio')
+    setSession(newSession)
+  }
+
+  function logout() {
+    clearSession()
+    setActiveState('Inicio')
+    setSession(null)
+  }
+
+  // El servidor rechazo el token (vencido o invalido): de vuelta al login.
+  useEffect(() => {
+    window.addEventListener(SESSION_EXPIRED_EVENT, logout)
+    return () => window.removeEventListener(SESSION_EXPIRED_EVENT, logout)
+  }, [])
+
+  // Sesion restaurada del navegador: se confirma con el servidor al cargar
+  // (si la rechaza, apiRequest dispara SESSION_EXPIRED_EVENT).
+  const sessionToken = session?.token
+  useEffect(() => {
+    if (sessionToken) apiRequest('/api/auth/me', { token: sessionToken }).catch(() => {})
+  }, [sessionToken])
+
+  if (!session) return <LoginGate onLogin={handleLogin} />
   const role = session.role
   const account = roles[role]
   const dashboard = data[role]
@@ -112,7 +147,7 @@ function App() {
     : <div className="logo-mark">F</div>
   const nav = role === 'student' ? ['Inicio', 'Mi horario', 'Mis temas', 'Asistencia', 'Permisos', 'Alertas', 'Mi cuenta'] : role === 'instructor' ? ['Inicio', 'Mis clases', 'Temarios', 'Asistencia', 'Alertas', 'Reportes', 'Mi cuenta'] : role === 'superAdmin' ? ['Inicio', 'Tenants', 'Usuarios', 'Programas', 'Inscripciones', 'Permisos', 'Alertas', 'Reportes', 'Configuracion'] : ['Inicio', 'Programas', 'Inscripciones', 'Usuarios', 'Calendario', 'Permisos', 'Alertas', 'Reportes', 'Configuracion']
   const AdminPanel = SECTION_PANELS_BY_ROLE[role]?.[active] || null
-  return <div className="app-shell"><aside className={menuOpen ? 'sidebar open' : 'sidebar'}><button className="close-menu" onClick={() => setMenuOpen(false)}><X size={20} /></button><div className="brand-lockup">{brandMark}<div><strong>fractal</strong><small>training OS</small></div></div><div className="tenant-switch"><span>ESPACIO ACTIVO</span><strong>{role === 'superAdmin' ? 'Todos los tenants' : 'Fractal Colombia'}</strong><ChevronDown size={16} /></div><nav>{nav.map((item, i) => <button className={active === item ? 'nav-item active' : 'nav-item'} onClick={() => { setActive(item); setMenuOpen(false) }} key={item}>{i === 0 ? <LayoutDashboard size={18} /> : i === 1 ? <CalendarDays size={18} /> : i === 2 ? <ClipboardCheck size={18} /> : i === 3 ? <Users size={18} /> : i === 4 ? <Bell size={18} /> : <Settings2 size={18} />}{item}{item === 'Reportes' && <span className="nav-badge">3</span>}</button>)}</nav><div className="sidebar-bottom"><div className="help-card"><strong>¿Necesitas ayuda?</strong><span>Habla con soporte</span></div><button className="profile-mini" onClick={() => setSession(null)}><div className="avatar">{displayName.split(' ').map(x => x[0]).join('').slice(0, 2)}</div><div><strong>{displayName}</strong><small>{account.label}</small></div><LogOut size={16} /></button></div></aside><main className="main"><header className="topbar"><button className="menu-button" onClick={() => setMenuOpen(true)}><Menu /></button><div className="crumb">{active} <span>/</span> {account.subtitle}</div><div className="top-actions"><button className="icon-button"><Bell size={19} /><i /></button><div className="avatar">{displayName.split(' ').map(x => x[0]).join('').slice(0, 2)}</div></div></header>{AdminPanel ? <div className="content"><AdminPanel session={session} /></div> : <div className="content"><div className="welcome"><div><p className="kicker">{dashboard.eyebrow}</p><h1>{dashboard.greeting}</h1><p className="muted">Aqui tienes lo importante para mantener tu programa en movimiento.</p></div><button className="secondary"><CalendarDays size={17} /> Ver calendario</button></div><div className="metrics">{dashboard.metrics.map(([title, value, note, type]) => <article className="metric" key={title}><div className="metric-head"><span>{title}</span><span className={`metric-dot ${type}`} /></div><strong>{value}</strong><small>{note}</small>{type === 'progress' && <div className="meter"><span /></div>}</article>)}</div><section className="section-head"><div><p className="kicker">Actividad reciente</p><h2>{role === 'student' ? 'Tu proximo paso' : 'Lo que necesita tu atencion'}</h2></div><button className="text-button">Ver todo <span>→</span></button></section><div className="workspace-grid"><section className="schedule panel"><div className="panel-head"><div><h3>{role === 'student' ? 'Proximas sesiones' : 'Agenda de hoy'}</h3><p className="muted">Semana del 21 al 27 de septiembre</p></div><button className="dots">•••</button></div><div className="topic-list">{dashboard.topics.map(([time, title, detail, status]) => <div className="topic" key={title}><div className="time">{time.split(' · ')[0]}<strong>{time.split(' · ')[1]}</strong></div><div className="topic-bar" /><div className="topic-info"><strong>{title}</strong><span>{detail}</span></div><span className={`status ${status === 'En vivo' || status === 'En progreso' ? 'live' : status === 'Atender' || status === 'Revisar' ? 'alert' : ''}`}>{status}</span></div>)}</div></section><section className="pulse panel"><div className="panel-head"><div><h3>Salud del programa</h3><p className="muted">Actualizado hace 12 minutos</p></div><span className="healthy">Estable</span></div><div className="ring"><div><strong>{role === 'student' ? '92' : role === 'instructor' ? '88' : '91'}<small>%</small></strong><span>asistencia</span></div></div><div className="legend"><span><i className="dot green" />Al dia <b>72%</b></span><span><i className="dot yellow" />En riesgo <b>19%</b></span><span><i className="dot red" />Atrasados <b>9%</b></span></div></section></div><section className="quick-actions"><div><p className="kicker">Acciones rapidas</p><h2>Que quieres hacer?</h2></div><div className="action-row"><button><ClipboardCheck size={20} /><strong>{role === 'student' ? 'Solicitar permiso' : 'Registrar asistencia'}</strong><span>→</span></button><button><CalendarDays size={20} /><strong>{role === 'student' ? 'Ver mis temarios' : 'Programar una clase'}</strong><span>→</span></button><button><Users size={20} /><strong>{role === 'admin' || role === 'superAdmin' ? 'Gestionar usuarios' : 'Ver mi grupo'}</strong><span>→</span></button></div></section></div>}
+  return <div className="app-shell"><aside className={menuOpen ? 'sidebar open' : 'sidebar'}><button className="close-menu" onClick={() => setMenuOpen(false)}><X size={20} /></button><div className="brand-lockup">{brandMark}<div><strong>fractal</strong><small>training OS</small></div></div><div className="tenant-switch"><span>ESPACIO ACTIVO</span><strong>{role === 'superAdmin' ? 'Todos los tenants' : 'Fractal Colombia'}</strong><ChevronDown size={16} /></div><nav>{nav.map((item, i) => <button className={active === item ? 'nav-item active' : 'nav-item'} onClick={() => { setActive(item); setMenuOpen(false) }} key={item}>{i === 0 ? <LayoutDashboard size={18} /> : i === 1 ? <CalendarDays size={18} /> : i === 2 ? <ClipboardCheck size={18} /> : i === 3 ? <Users size={18} /> : i === 4 ? <Bell size={18} /> : <Settings2 size={18} />}{item}{item === 'Reportes' && <span className="nav-badge">3</span>}</button>)}</nav><div className="sidebar-bottom"><div className="help-card"><strong>¿Necesitas ayuda?</strong><span>Habla con soporte</span></div><button className="profile-mini" onClick={logout}><div className="avatar">{displayName.split(' ').map(x => x[0]).join('').slice(0, 2)}</div><div><strong>{displayName}</strong><small>{account.label}</small></div><LogOut size={16} /></button></div></aside><main className="main"><header className="topbar"><button className="menu-button" onClick={() => setMenuOpen(true)}><Menu /></button><div className="crumb">{active} <span>/</span> {account.subtitle}</div><div className="top-actions"><button className="icon-button"><Bell size={19} /><i /></button><div className="avatar">{displayName.split(' ').map(x => x[0]).join('').slice(0, 2)}</div></div></header>{AdminPanel ? <div className="content"><AdminPanel session={session} /></div> : <div className="content"><div className="welcome"><div><p className="kicker">{dashboard.eyebrow}</p><h1>{dashboard.greeting}</h1><p className="muted">Aqui tienes lo importante para mantener tu programa en movimiento.</p></div><button className="secondary"><CalendarDays size={17} /> Ver calendario</button></div><div className="metrics">{dashboard.metrics.map(([title, value, note, type]) => <article className="metric" key={title}><div className="metric-head"><span>{title}</span><span className={`metric-dot ${type}`} /></div><strong>{value}</strong><small>{note}</small>{type === 'progress' && <div className="meter"><span /></div>}</article>)}</div><section className="section-head"><div><p className="kicker">Actividad reciente</p><h2>{role === 'student' ? 'Tu proximo paso' : 'Lo que necesita tu atencion'}</h2></div><button className="text-button">Ver todo <span>→</span></button></section><div className="workspace-grid"><section className="schedule panel"><div className="panel-head"><div><h3>{role === 'student' ? 'Proximas sesiones' : 'Agenda de hoy'}</h3><p className="muted">Semana del 21 al 27 de septiembre</p></div><button className="dots">•••</button></div><div className="topic-list">{dashboard.topics.map(([time, title, detail, status]) => <div className="topic" key={title}><div className="time">{time.split(' · ')[0]}<strong>{time.split(' · ')[1]}</strong></div><div className="topic-bar" /><div className="topic-info"><strong>{title}</strong><span>{detail}</span></div><span className={`status ${status === 'En vivo' || status === 'En progreso' ? 'live' : status === 'Atender' || status === 'Revisar' ? 'alert' : ''}`}>{status}</span></div>)}</div></section><section className="pulse panel"><div className="panel-head"><div><h3>Salud del programa</h3><p className="muted">Actualizado hace 12 minutos</p></div><span className="healthy">Estable</span></div><div className="ring"><div><strong>{role === 'student' ? '92' : role === 'instructor' ? '88' : '91'}<small>%</small></strong><span>asistencia</span></div></div><div className="legend"><span><i className="dot green" />Al dia <b>72%</b></span><span><i className="dot yellow" />En riesgo <b>19%</b></span><span><i className="dot red" />Atrasados <b>9%</b></span></div></section></div><section className="quick-actions"><div><p className="kicker">Acciones rapidas</p><h2>Que quieres hacer?</h2></div><div className="action-row"><button><ClipboardCheck size={20} /><strong>{role === 'student' ? 'Solicitar permiso' : 'Registrar asistencia'}</strong><span>→</span></button><button><CalendarDays size={20} /><strong>{role === 'student' ? 'Ver mis temarios' : 'Programar una clase'}</strong><span>→</span></button><button><Users size={20} /><strong>{role === 'admin' || role === 'superAdmin' ? 'Gestionar usuarios' : 'Ver mi grupo'}</strong><span>→</span></button></div></section></div>}
   </main></div>
 }
 

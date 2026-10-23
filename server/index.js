@@ -2047,14 +2047,24 @@ if (process.env.NODE_ENV === 'production') {
   const dist = path.resolve(__dirname, '../dist')
   // Web publica de un programa: mismo index.html, con titulo/imagen del
   // programa para la vista previa al compartir el link.
+  // index.html siempre se revalida: si el navegador lo guardara, tras un
+  // deploy seguiria cargando la version anterior de la app. Los archivos
+  // de assets/ llevan hash en el nombre (cambian de nombre si cambian), asi
+  // que se pueden guardar un año.
+  const NO_CACHE = 'no-cache'
   app.get(['/p/:tenantSlug/:programSlug', '/p/:tenantSlug/:programSlug/inscripcion'], async (req, res) => {
     const indexHtml = await fs.promises.readFile(path.join(dist, 'index.html'), 'utf8')
+    res.set('Cache-Control', NO_CACHE)
     res.type('html').send(await renderPublicProgramHtml(indexHtml, req, req.params.tenantSlug, req.params.programSlug))
   })
-  app.use(express.static(dist))
+  app.use(express.static(dist, {
+    setHeaders(res, filePath) {
+      res.setHeader('Cache-Control', filePath.includes(`${path.sep}assets${path.sep}`) ? 'public, max-age=31536000, immutable' : NO_CACHE)
+    },
+  }))
   // Middleware, not a '*' route pattern: Express 5's path-to-regexp no
   // longer accepts a bare '*' as a route path.
-  app.use((_req, res) => res.sendFile(path.join(dist, 'index.html')))
+  app.use((_req, res) => res.set('Cache-Control', NO_CACHE).sendFile(path.join(dist, 'index.html')))
 }
 
 app.listen(port, () => console.log(`Training monolith listening on http://localhost:${port}`))

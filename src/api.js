@@ -1,3 +1,11 @@
+import { SESSION_EXPIRED_EVENT } from './session'
+
+// 401 con token = el servidor ya no acepta la sesion (vencida o invalida):
+// se avisa a la app para que vuelva al login.
+function notifyIfSessionRejected(response, token) {
+  if (response.status === 401 && token) window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT))
+}
+
 export async function apiRequest(path, { method = 'GET', token, body } = {}) {
   const response = await fetch(path, {
     method,
@@ -9,6 +17,7 @@ export async function apiRequest(path, { method = 'GET', token, body } = {}) {
   })
   const data = await response.json().catch(() => ({}))
   if (!response.ok) {
+    notifyIfSessionRejected(response, token)
     throw new Error(data.message || `Request failed (${response.status})`)
   }
   return data
@@ -24,6 +33,7 @@ export async function apiUpload(path, { token, formData } = {}) {
   })
   const data = await response.json().catch(() => ({}))
   if (!response.ok) {
+    notifyIfSessionRejected(response, token)
     throw new Error(data.message || `Request failed (${response.status})`)
   }
   return data
@@ -34,6 +44,7 @@ export async function apiUpload(path, { token, formData } = {}) {
 export async function apiDownload(path, { token, filename } = {}) {
   const response = await fetch(path, { headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) } })
   if (!response.ok) {
+    notifyIfSessionRejected(response, token)
     const data = await response.json().catch(() => ({}))
     throw new Error(data.message || `Request failed (${response.status})`)
   }
