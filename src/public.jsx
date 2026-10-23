@@ -346,8 +346,13 @@ function EnrollForm({ data, base, tenantSlug, programSlug }) {
 export function PublicProgramApp({ tenantSlug, programSlug, view }) {
   const { status, data, error } = usePublicProgram(tenantSlug, programSlug)
   const base = `/p/${tenantSlug}/${programSlug}`
-  const brand = data?.tenant.brandColor || '#087fb8'
-  const style = useMemo(() => ({ '--brand': brand, '--on-brand': readableOn(brand) }), [brand])
+  // Colores del programa (o la marca del tenant si no tiene propios).
+  const brand = data?.program.palette?.primary || data?.tenant.brandColor || '#087fb8'
+  const accent = data?.program.palette?.accent || '#f0a830'
+  const style = useMemo(
+    () => ({ '--brand': brand, '--on-brand': readableOn(brand), '--accent': accent, '--on-accent': readableOn(accent) }),
+    [brand, accent]
+  )
 
   useEffect(() => {
     if (data) document.title = `${data.program.name} · ${data.tenant.name}`

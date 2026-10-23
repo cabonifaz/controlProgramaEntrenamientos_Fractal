@@ -1,8 +1,8 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import crypto from 'node:crypto'
 import { callProcedure } from './db.js'
-import { hashPassword } from './auth.js'
+import { createInvitation, NO_PASSWORD } from './invitations.js'
+import { resolvePalette } from '../src/palette.js'
 import { authenticate } from './middleware/authenticate.js'
 import { mapStoredProcedureError } from './errors.js'
 import { uploadPublicImage, PUBLIC_IMAGE_EXTENSIONS, UPLOADS_DIR } from './uploads.js'
@@ -70,6 +70,8 @@ export async function loadPublicProgram(tenantSlug, programSlug) {
       startsOn: program.starts_on, endsOn: program.ends_on, modality: program.modality_label,
       tagline: program.public_tagline, audience: program.public_audience, bannerUrl: publicUrl(program.banner_path),
       enrollmentOpen: Boolean(program.enrollment_open),
+      // Colores de la web: los del programa o, si no tiene, la marca del tenant.
+      palette: resolvePalette({ program: { primary: program.color_primary, accent: program.color_accent }, tenantBrand: program.brand_color }),
       topicsCount: components.reduce((sum, c) => sum + c.topics.length, 0), totalHours: Math.round(totalMinutes / 60),
     },
     components,
@@ -242,26 +244,26 @@ export function registerPublicProgramRoutes(app) {
     }
   })
 
-  // Confirmar crea la cuenta del alumno (si no la tenia) con una
-  // contrasena temporal que se muestra UNA vez al admin para que la
-  // comparta: no hay servicio de correo (mismo patron que la carga masiva).
+  // Confirmar crea la cuenta del alumno (si no la tenia) SIN contrasena y
+  // devuelve su enlace de invitacion para que la cree: no hay servicio de
+  // correo, el admin comparte el enlace.
   app.post('/api/pre-enrollments/:id/resolve', authenticate, async (req, res) => {
     const id = Number(req.params.id)
     const { action, comments } = req.body || {}
     if (!Number.isInteger(id) || !['confirm', 'reject'].includes(action)) return res.status(400).json({ message: 'Invalid request format' })
 
-    const temporaryPassword = action === 'confirm' ? crypto.randomBytes(9).toString('base64url') : null
     try {
       const [result] = await callProcedure('sp_pre_enrollments_resolve', {
         ...actorParams(req), p_pre_enrollment_id: id, p_action: action,
-        p_password_hash: temporaryPassword ? await hashPassword(temporaryPassword) : null,
+        p_password_hash: NO_PASSWORD,
         p_comments: cleanText(comments, 500) || null,
       })
       const accountCreated = Boolean(result?.account_created)
+      const invitation = accountCreated ? await createInvitation(req, result.student_id) : null
       res.json({
         data: {
           studentId: result?.student_id ?? null, email: result?.email, accountCreated,
-          temporaryPassword: accountCreated ? temporaryPassword : null,
+          invitationUrl: invitation?.invitationUrl ?? null, invitationExpiresAt: invitation?.expiresAt ?? null,
         },
       })
     } catch (err) {

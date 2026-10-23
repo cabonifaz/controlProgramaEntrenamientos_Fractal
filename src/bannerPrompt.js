@@ -1,3 +1,5 @@
+import { resolvePalette } from './palette.js'
+
 // Prompt para que Claude (fuera de la plataforma) disene el banner de un
 // programa con la marca del tenant. El banner se sube luego en "Web
 // publica": es la portada de su web y la vista previa al compartir el
@@ -17,7 +19,8 @@ function formatDate(iso) {
 export function buildBannerPrompt({ program, componentNames = [], tagline, audience, hasLogo }, options) {
   const o = { ...DEFAULT_BANNER_OPTIONS, ...options }
   const { width, height } = BANNER_SIZE
-  const brand = program.tenant_brand_color || null
+  // Colores del programa (o la marca del tenant si no tiene propios).
+  const { primary: brand, accent } = resolvePalette({ program: { primary: program.color_primary, accent: program.color_accent }, tenantBrand: program.tenant_brand_color })
   const startsOn = formatDate(program.starts_on)
   const fileName = `banner-${String(program.public_slug || program.name).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')}.png`
 
@@ -37,7 +40,7 @@ export function buildBannerPrompt({ program, componentNames = [], tagline, audie
 ${facts}
 
 Identidad visual (obligatoria):
-- ${brand ? `Color de marca ${brand}: úsalo como color dominante, con tonos derivados, neutros oscuros y un acento complementario; contraste AA.` : 'Paleta sobria y profesional.'}
+- Color principal ${brand} (dominante) y color de acento ${accent} (para destacar el distintivo o detalles), con tonos derivados y neutros oscuros; contraste AA.
 - ${hasLogo ? `Logo de ${program.tenant_name} (adjunto): arriba a la izquierda, sin deformarlo ni recolorearlo, sobre fondo que lo haga legible.` : `Deja un espacio libre de 280×110 px arriba a la izquierda para el logo de ${program.tenant_name}; no inventes un logo.`}
 - Estilo: ${o.style}.
 

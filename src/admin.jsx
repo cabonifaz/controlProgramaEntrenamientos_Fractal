@@ -3,6 +3,7 @@ import { AlertTriangle, ArrowRight, Calendar, Users as UsersIcon } from 'lucide-
 import { apiDownload, apiRequest, apiUpload } from './api'
 import { buildMaterialPrompt, DEFAULT_PROMPT_OPTIONS, MATERIAL_LEVELS, SKILL_NAME, suggestedBatchSize } from './materialPrompt'
 import { BANNER_STYLES, buildBannerPrompt, DEFAULT_BANNER_OPTIONS } from './bannerPrompt'
+import { DEFAULT_ACCENT, PALETTE_PRESETS, readableTextOn, resolvePalette } from './palette'
 
 function useList(path, token) {
   const [items, setItems] = useState([])
@@ -160,7 +161,7 @@ function ExcelImportBox({ session, templateUrl, importUrl, onImported }) {
   }
 
   const failedRows = result?.results.filter((r) => !r.ok) || []
-  const withPassword = result?.results.filter((r) => r.ok && r.temporaryPassword) || []
+  const withInvitation = result?.results.filter((r) => r.ok && r.invitationUrl) || []
 
   return (
     <div className="excel-import">
@@ -182,11 +183,16 @@ function ExcelImportBox({ session, templateUrl, importUrl, onImported }) {
               {failedRows.map((r) => <li key={r.row}>Fila {r.row}: {r.message}</li>)}
             </ul>
           )}
-          {withPassword.length > 0 && (
+          {withInvitation.length > 0 && (
             <div className="temp-password-box">
-              Contraseñas temporales (compártelas fuera del sistema; se pedirá cambiarla al ingresar):
-              <ul className="excel-import-errors">
-                {withPassword.map((r) => <li key={r.row}><strong>{r.email}</strong>: <code>{r.temporaryPassword}</code></li>)}
+              Enlaces de invitación (cada persona crea su contraseña con el suyo; vencen en 7 días):
+              <ul className="excel-import-errors invitation-list">
+                {withInvitation.map((r) => (
+                  <li key={r.row}>
+                    <strong>{r.email}</strong>{' '}
+                    <button type="button" className="btn-mini" onClick={() => copyText(r.invitationUrl)}>Copiar enlace</button>
+                  </li>
+                ))}
               </ul>
             </div>
           )}
@@ -495,6 +501,38 @@ export function TenantsPanel({ session }) {
   )
 }
 
+const ROLE_LABELS = { super_admin: 'Super admin', tenant_admin: 'Admin de tenant', instructor: 'Instructor', student: 'Alumno' }
+
+function formatDateTime(value) {
+  if (!value) return ''
+  const d = new Date(String(value).replace(' ', 'T'))
+  return Number.isNaN(d.getTime()) ? String(value) : d.toLocaleString('es-PE', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
+}
+
+// Enlace personal para que la persona cree su contrasena (no hay correo:
+// el admin lo copia o lo comparte por WhatsApp).
+function InvitationLinkBox({ invitation, onClose }) {
+  const [copied, setCopied] = useState(false)
+  const { invitationUrl, email, fullName, expiresAt, isReset } = invitation
+  const message = isReset
+    ? `Hola${fullName ? ` ${fullName}` : ''}, usa este enlace para crear tu nueva contraseña: ${invitationUrl}`
+    : `Hola${fullName ? ` ${fullName}` : ''}, te invitamos a la plataforma de entrenamiento. Crea tu contraseña aquí: ${invitationUrl}`
+  return (
+    <div className="invitation-box" role="status">
+      <div className="invitation-box-head">
+        <strong>{isReset ? 'Enlace para crear una nueva contraseña' : 'Invitación lista'} · {email}</strong>
+        {onClose && <button type="button" className="modal-close" onClick={onClose} aria-label="Cerrar">×</button>}
+      </div>
+      <p className="muted small-note">Compártelo con la persona: al abrirlo crea su propia contraseña y entra. Es de un solo uso{expiresAt ? ` y vence el ${formatDateTime(expiresAt)}` : ''}.</p>
+      <div className="invitation-box-link">
+        <code>{invitationUrl}</code>
+        <button type="button" className="btn-mini" onClick={async () => setCopied(await copyText(invitationUrl))}>{copied ? '¡Copiado!' : 'Copiar enlace'}</button>
+        <a className="btn-mini" href={`https://wa.me/?text=${encodeURIComponent(message)}`} target="_blank" rel="noreferrer">WhatsApp</a>
+      </div>
+    </div>
+  )
+}
+
 // Perfil publico de un instructor (foto, cargo, bio, LinkedIn) que se
 // muestra en la web publica de los programas donde dicta. Solo admins.
 function InstructorProfileModal({ session, user, onClose, onSaved }) {
@@ -571,10 +609,10 @@ export function UsersPanel({ session }) {
   const isSuperAdmin = profile.roleCode === 'super_admin'
   const { items, error, loading, reload } = useList('/api/users', token)
   const { items: tenants } = useList(isSuperAdmin ? '/api/tenants' : '', token)
-  const [form, setForm] = useState({ fullName: '', email: '', password: '', roleCode: isSuperAdmin ? 'tenant_admin' : 'instructor', tenantId: '' })
+  const [form, setForm] = useState({ fullName: '', email: '', roleCode: isSuperAdmin ? 'tenant_admin' : 'instructor', tenantId: '' })
   const [formError, setFormError] = useState('')
   const [submitting, setSubmitting] = useState(false)
-  const [lastTempPassword, setLastTempPassword] = useState(null)
+  const [invitation, setInvitation] = useState(null)
   const [profileUser, setProfileUser] = useState(null)
 
   async function handleCreate(e) {
@@ -582,11 +620,12 @@ export function UsersPanel({ session }) {
     setFormError('')
     setSubmitting(true)
     try {
-      await apiRequest('/api/users', {
+      const res = await apiRequest('/api/users', {
         method: 'POST', token,
         body: { ...form, tenantId: isSuperAdmin ? (form.tenantId ? Number(form.tenantId) : null) : profile.tenantId },
       })
-      setForm({ fullName: '', email: '', password: '', roleCode: isSuperAdmin ? 'tenant_admin' : 'instructor', tenantId: '' })
+      setInvitation({ ...res.data, fullName: form.fullName.trim() })
+      setForm({ fullName: '', email: '', roleCode: isSuperAdmin ? 'tenant_admin' : 'instructor', tenantId: '' })
       reload()
     } catch (err) {
       setFormError(err.message)
@@ -604,10 +643,15 @@ export function UsersPanel({ session }) {
     }
   }
 
-  async function resetPassword(user) {
+  // Invitacion pendiente/vencida: enlace nuevo. Usuario activo que perdio
+  // el acceso: enlace para crear una contrasena nueva (no hay temporales).
+  async function generateLink(user) {
+    setFormError('')
     try {
-      const res = await apiRequest(`/api/admin/users/${user.id}/reset-password`, { method: 'POST', token })
-      setLastTempPassword({ email: user.email, value: res.temporaryPassword })
+      const res = await apiRequest(`/api/users/${user.id}/invitation`, { method: 'POST', token })
+      setInvitation({ ...res.data, email: user.email, fullName: user.full_name, isReset: !user.invitation_status })
+      reload()
+      window.scrollTo({ top: 0, behavior: 'smooth' })
     } catch (err) {
       setFormError(err.message)
     }
@@ -622,10 +666,9 @@ export function UsersPanel({ session }) {
         <form className="admin-form" onSubmit={handleCreate}>
           <label>Nombre completo<input value={form.fullName} onChange={(e) => setForm({ ...form, fullName: e.target.value })} required /></label>
           <label>Correo<input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} required /></label>
-          <label>Contraseña inicial<input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} minLength={8} required /></label>
           <label>Rol
             <select value={form.roleCode} onChange={(e) => setForm({ ...form, roleCode: e.target.value })}>
-              {roleOptions.map((r) => <option key={r} value={r}>{r}</option>)}
+              {roleOptions.map((r) => <option key={r} value={r}>{ROLE_LABELS[r]}</option>)}
             </select>
           </label>
           {isSuperAdmin && form.roleCode !== 'super_admin' && (
@@ -637,14 +680,10 @@ export function UsersPanel({ session }) {
             </label>
           )}
           <ErrorNote message={formError} />
-          <button className="primary" disabled={submitting}>{submitting ? 'Creando…' : 'Crear usuario'}</button>
+          <button className="primary" disabled={submitting}>{submitting ? 'Creando…' : 'Crear e invitar'}</button>
         </form>
-        {lastTempPassword && (
-          <p className="temp-password-box">
-            Contraseña temporal para <strong>{lastTempPassword.email}</strong>: <code>{lastTempPassword.value}</code>
-            <br />Compártela fuera del sistema; se pedirá cambiarla en el próximo ingreso.
-          </p>
-        )}
+        <p className="muted small-note">No hace falta definir contraseña: se genera un enlace de invitación para que la persona cree la suya.</p>
+        {invitation && <InvitationLinkBox invitation={invitation} onClose={() => setInvitation(null)} />}
       </section>
       <section className="panel admin-form-panel">
         <h3>Carga masiva</h3>
@@ -662,11 +701,20 @@ export function UsersPanel({ session }) {
                 <tr key={u.id}>
                   <td>{u.full_name}</td>
                   <td>{u.email}</td>
-                  <td>{u.role_code}</td>
-                  <td>{u.is_active ? 'Activo' : 'Inactivo'}</td>
+                  <td>{ROLE_LABELS[u.role_code] || u.role_code}</td>
+                  <td>
+                    {!u.is_active ? <span className="pill pill-inactive">Inactivo</span>
+                      : u.invitation_status === 'pending' ? <span className="pill pill-warn" title={`Vence el ${formatDateTime(u.invitation_expires_at)}`}>Invitación pendiente</span>
+                      : u.invitation_status === 'expired' ? <span className="pill pill-inactive">Invitación vencida</span>
+                      : <span className="pill pill-ok">Activo</span>}
+                  </td>
                   <td className="row-actions">
                     <button className="btn-mini" onClick={() => toggleActive(u)}>{u.is_active ? 'Desactivar' : 'Activar'}</button>
-                    <button className="btn-mini" onClick={() => resetPassword(u)}>Resetear clave</button>
+                    {u.is_active && (
+                      <button className="btn-mini" onClick={() => generateLink(u)} title={u.invitation_status ? 'Genera un enlace nuevo (el anterior deja de servir)' : 'Para que cree una contraseña nueva si perdió el acceso'}>
+                        {u.invitation_status ? 'Nuevo enlace' : 'Enlace de contraseña'}
+                      </button>
+                    )}
                     {u.role_code === 'instructor' && <button className="btn-mini" onClick={() => setProfileUser(u)}>Perfil público</button>}
                   </td>
                 </tr>
@@ -1608,8 +1656,8 @@ function MaterialPromptBuilder({ session, componentId, onImported }) {
         </p>
       )}
       <p className="brand-note">
-        <span className="brand-swatch" style={{ background: tenant.brandColor || '#1b6fa8' }} />
-        Identidad de <strong>{tenant.name || 'la organización'}</strong> aplicada automáticamente{tenant.brandColor ? ` (color ${tenant.brandColor}${tenant.logoUrl ? ' y logo' : ''})` : ''}.
+        <span className="palette-swatch" style={{ background: data.palette?.primary }}><span style={{ background: data.palette?.accent }} /></span>
+        Colores {data.palette?.source === 'component' ? 'propios del componente' : data.palette?.source === 'program' ? 'del programa' : `de la marca de ${tenant.name || 'la organización'}`} y {tenant.logoUrl ? 'logo de ' : 'nombre de '}<strong>{tenant.name || 'la organización'}</strong> aplicados automáticamente.
         {options.mode === 'full' && tenant.logoUrl && <> <a href={tenant.logoUrl} download>Descarga el logo</a> para adjuntarlo a la IA.</>}
       </p>
       <div className="admin-form">
@@ -1888,7 +1936,92 @@ function ComponentGroupTopics({ session, group }) {
   )
 }
 
-function ComponentEditModal({ session, component, onClose, onSaved }) {
+// Paleta del programa: principal + acento. value = { primary, accent };
+// ambos null = hereda (el programa usa la marca del tenant; el componente,
+// la del programa). `inherited` es la paleta que se usaria al heredar.
+function PaletteField({ value, onChange, inherited, inheritLabel }) {
+  const isInherit = !value.primary
+  const effective = isInherit ? inherited : { primary: value.primary, accent: value.accent || inherited.accent || DEFAULT_ACCENT }
+  const options = [
+    { key: 'inherit', name: inheritLabel, primary: inherited.primary, accent: inherited.accent, pick: { primary: null, accent: null } },
+    ...PALETTE_PRESETS.map((pr) => ({ key: pr.name, name: pr.name, primary: pr.primary, accent: pr.accent, pick: { primary: pr.primary, accent: pr.accent } })),
+  ]
+  const selectedKey = isInherit ? 'inherit'
+    : PALETTE_PRESETS.find((pr) => pr.primary === value.primary && pr.accent === (value.accent || ''))?.name || 'custom'
+
+  return (
+    <div className="palette-field">
+      <div className="palette-options" role="radiogroup" aria-label="Combinación de colores">
+        {options.map((o) => (
+          <button
+            key={o.key} type="button" role="radio" aria-checked={selectedKey === o.key}
+            className={selectedKey === o.key ? 'palette-option selected' : 'palette-option'}
+            onClick={() => onChange(o.pick)}
+          >
+            <span className="palette-swatch" style={{ background: o.primary }}><span style={{ background: o.accent }} /></span>
+            {o.name}
+          </button>
+        ))}
+        <span className={selectedKey === 'custom' ? 'palette-option palette-custom selected' : 'palette-option palette-custom'}>
+          <label title="Color principal">
+            <input type="color" value={effective.primary} onChange={(e) => onChange({ primary: e.target.value, accent: value.accent || effective.accent })} aria-label="Color principal" />
+          </label>
+          <label title="Color de acento">
+            <input type="color" value={effective.accent} onChange={(e) => onChange({ primary: value.primary || effective.primary, accent: e.target.value })} aria-label="Color de acento" />
+          </label>
+          Propios
+        </span>
+      </div>
+      <div className="palette-preview" style={{ '--p': effective.primary, '--a': effective.accent, '--on-p': readableTextOn(effective.primary), '--on-a': readableTextOn(effective.accent) }} aria-hidden="true">
+        <span className="palette-preview-tag">Tema 1 de 8</span>
+        <strong>Así se verá el material</strong>
+        <span className="palette-preview-btn">Preinscríbete</span>
+      </div>
+    </div>
+  )
+}
+
+// Guarda la paleta de un programa o componente (POST /api/{entity}/:id/colors).
+function PaletteEditor({ session, entity, id, initial, inherited, inheritLabel, onSaved }) {
+  const { token } = session
+  const [value, setValue] = useState({ primary: initial.primary || null, accent: initial.accent || null })
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const [saved, setSaved] = useState(false)
+
+  async function save() {
+    setSaving(true)
+    setError('')
+    setSaved(false)
+    try {
+      await apiRequest(`/api/${entity}/${id}/colors`, { method: 'POST', token, body: { colorPrimary: value.primary, colorAccent: value.primary ? value.accent : null } })
+      setSaved(true)
+      onSaved?.(value)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="palette-editor">
+      <PaletteField value={value} onChange={(v) => { setSaved(false); setValue(v) }} inherited={inherited} inheritLabel={inheritLabel} />
+      <ErrorNote message={error} />
+      <div className="excel-import-actions">
+        <button type="button" className="primary" disabled={saving} onClick={save}>{saving ? 'Guardando…' : 'Guardar colores'}</button>
+        {saved && <span className="saved-note">✓ Colores guardados</span>}
+      </div>
+    </div>
+  )
+}
+
+// Paleta del programa (o la marca del tenant) que heredan sus componentes.
+function programPalette(program) {
+  return resolvePalette({ program: { primary: program.color_primary, accent: program.color_accent }, tenantBrand: program.tenant_brand_color })
+}
+
+function ComponentEditModal({ session, component, program, onClose, onSaved }) {
   const { token } = session
   const [form, setForm] = useState({ name: component.name, description: component.description || '', sortOrder: component.sort_order ?? 0 })
   const [error, setError] = useState('')
@@ -1919,6 +2052,14 @@ function ComponentEditModal({ session, component, onClose, onSaved }) {
         <ErrorNote message={error} />
         <button className="primary" disabled={saving}>{saving ? 'Guardando…' : 'Guardar cambios'}</button>
       </form>
+      <hr className="modal-divider" />
+      <h4 className="modal-subhead">Colores del componente</h4>
+      <p className="muted small-note">Se aplican a su material y a los prompts. Por defecto usa los colores del programa.</p>
+      <PaletteEditor
+        session={session} entity="components" id={component.id}
+        initial={{ primary: component.color_primary, accent: component.color_accent }}
+        inherited={programPalette(program)} inheritLabel="Los del programa" onSaved={onSaved}
+      />
       <hr className="modal-divider" />
       <h4 className="modal-subhead">Material del temario</h4>
       <ComponentMaterialBox session={session} componentId={component.id} />
@@ -2017,7 +2158,12 @@ function ComponentsPanel({ session, program, onBack }) {
             <tbody>
               {items.map((c) => (
                 <tr key={c.id}>
-                  <td>{c.name}</td>
+                  <td>
+                    <span className="name-with-swatch">
+                      <span className="palette-dot" style={{ background: c.color_primary || programPalette(program).primary }} title={c.color_primary ? 'Colores propios' : 'Colores del programa'} />
+                      {c.name}
+                    </span>
+                  </td>
                   <td className="cell-truncate" title={c.description || ''}>{c.description || '—'}</td>
                   <td><StatusPill label={c.status_label} /></td>
                   <td>{c.group_count}</td>
@@ -2037,6 +2183,7 @@ function ComponentsPanel({ session, program, onBack }) {
       {editingComponent && (
         <ComponentEditModal
           session={session}
+          program={program}
           component={editingComponent}
           onClose={() => { setEditingComponent(null); reload() }}
           onSaved={reload}
@@ -2266,8 +2413,11 @@ export function PreEnrollmentsPanel({ session }) {
           <div className="temp-password-box">
             <strong>{result.fullName}</strong> quedó inscrito en {result.programName}.{' '}
             {result.accountCreated
-              ? <>Contraseña temporal para <strong>{result.email}</strong>: <code>{result.temporaryPassword}</code> — compártela fuera del sistema; se pedirá cambiarla al ingresar.</>
+              ? <>Se creó su cuenta. Comparte su enlace de invitación para que cree su contraseña:</>
               : <>Ya tenía cuenta de alumno ({result.email}), así que mantiene su contraseña.</>}
+            {result.accountCreated && result.invitationUrl && (
+              <InvitationLinkBox invitation={{ invitationUrl: result.invitationUrl, email: result.email, fullName: result.fullName, expiresAt: result.invitationExpiresAt }} />
+            )}
           </div>
         )}
         {loading ? <p className="muted">Cargando…</p> : items.length === 0 ? <p className="muted">No hay preinscripciones con estos filtros.</p> : (
@@ -2312,9 +2462,15 @@ export function ProgramsPanel({ session }) {
   const modalities = useCatalog('CLASS_MODALITY', token)
   const programStatuses = useCatalog('PROGRAM_STATUS', token)
   const [form, setForm] = useState({ tenantId: '', name: '', description: '', cohort: '', modalityCode: '', startsOn: '', endsOn: '' })
+  const [palette, setPalette] = useState({ primary: null, accent: null })
   const [formError, setFormError] = useState('')
   const [selectedProgram, setSelectedProgram] = useState(null)
   const [publicProgram, setPublicProgram] = useState(null)
+  const [colorsProgram, setColorsProgram] = useState(null)
+  // Marca del tenant del programa nuevo: es lo que se hereda si no se elige paleta.
+  const newProgramTenantBrand = isSuperAdmin
+    ? tenants.find((t) => String(t.id) === String(form.tenantId))?.brand_color
+    : profile.tenantBrandColor
 
   async function handleCreate(e) {
     e.preventDefault()
@@ -2322,9 +2478,13 @@ export function ProgramsPanel({ session }) {
     try {
       await apiRequest('/api/programs', {
         method: 'POST', token,
-        body: { ...form, tenantId: isSuperAdmin ? (form.tenantId ? Number(form.tenantId) : null) : undefined },
+        body: {
+          ...form, tenantId: isSuperAdmin ? (form.tenantId ? Number(form.tenantId) : null) : undefined,
+          colorPrimary: palette.primary, colorAccent: palette.primary ? palette.accent : null,
+        },
       })
       setForm({ tenantId: '', name: '', description: '', cohort: '', modalityCode: '', startsOn: '', endsOn: '' })
+      setPalette({ primary: null, accent: null })
       reload()
     } catch (err) {
       setFormError(err.message)
@@ -2369,6 +2529,14 @@ export function ProgramsPanel({ session }) {
           </label>
           <label>Inicio<input type="date" value={form.startsOn} onChange={(e) => setForm({ ...form, startsOn: e.target.value })} /></label>
           <label>Fin<input type="date" value={form.endsOn} onChange={(e) => setForm({ ...form, endsOn: e.target.value })} /></label>
+          <div className="full-field palette-form-field">
+            <span className="field-label">Colores del programa</span>
+            <span className="muted small-note">Se aplican a su web pública, al material y a los prompts. Cada componente puede tener los suyos.</span>
+            <PaletteField
+              value={palette} onChange={setPalette}
+              inherited={resolvePalette({ tenantBrand: newProgramTenantBrand })} inheritLabel="Marca del tenant"
+            />
+          </div>
           <ErrorNote message={formError} />
           <button className="primary">Crear programa</button>
         </form>
@@ -2402,6 +2570,9 @@ export function ProgramsPanel({ session }) {
                   <td className="row-actions">
                     <button className="btn-mini" onClick={() => setSelectedProgram(p)}>Ver componentes</button>
                     <button className="btn-mini" onClick={() => setPublicProgram(p)}>Web pública</button>
+                    <button className="btn-mini btn-with-swatch" onClick={() => setColorsProgram(p)}>
+                      <span className="palette-dot" style={{ background: programPalette(p).primary }} />Colores
+                    </button>
                   </td>
                 </tr>
               ))}
@@ -2410,6 +2581,17 @@ export function ProgramsPanel({ session }) {
         )}
       </section>
       {publicProgram && <ProgramPublicModal session={session} program={publicProgram} onClose={() => setPublicProgram(null)} onSaved={reload} />}
+      {colorsProgram && (
+        <Modal title={`Colores — ${colorsProgram.name}`} onClose={() => setColorsProgram(null)}>
+          <p className="muted small-note">Se aplican a la web pública del programa, al material que arma la plataforma y a los prompts de material y banner. Los componentes con colores propios los mantienen.</p>
+          <PaletteEditor
+            session={session} entity="programs" id={colorsProgram.id}
+            initial={{ primary: colorsProgram.color_primary, accent: colorsProgram.color_accent }}
+            inherited={resolvePalette({ tenantBrand: colorsProgram.tenant_brand_color })} inheritLabel="Marca del tenant"
+            onSaved={reload}
+          />
+        </Modal>
+      )}
     </div>
   )
 }

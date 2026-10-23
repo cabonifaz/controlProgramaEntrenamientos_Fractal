@@ -102,12 +102,17 @@ function durationSummary(topics) {
 
 // Identidad visual del tenant (color de marca y logo), para los modos en
 // que la IA disena: el material siempre debe verse de la organizacion.
+// Colores del componente/programa (o la marca del tenant), ya resueltos por
+// el servidor en data.palette.
+function paletteOf(data) {
+  return data.palette || { primary: data.tenant?.brandColor || '#1b6fa8', accent: '#f0a830' }
+}
+
 function brandLines(data) {
   const t = data.tenant || {}
+  const { primary, accent } = paletteOf(data)
   return [
-    t.brandColor
-      ? `Identidad visual de ${t.name}: color principal ${t.brandColor} (portadas, títulos, botones, diagramas) con neutros oscuros (#17232d) y blancos; un acento complementario solo para destacar. Mantén contraste AA.`
-      : `Identidad visual de ${t.name || 'la organización'}: paleta sobria y profesional, coherente en todo el curso.`,
+    `Identidad visual de ${t.name || 'la organización'}: color principal ${primary} (portadas, títulos, botones, diagramas) y color de acento ${accent} (destacados y etiquetas), con neutros oscuros (#17232d) y blancos. Mantén contraste AA.`,
     t.logoUrl
       ? `Logo: te lo adjunto; guárdalo como assets/logo.png y muéstralo en la portada de cada página (sin deformarlo).`
       : `No inventes un logo para ${t.name || 'la organización'}.`,
@@ -131,7 +136,7 @@ function buildPastePrompt(data, o) {
   const parts = topicParts(topics)
   const classMinutes = topics[0]?.durationMinutes || 45
   const scale = contentScale(classMinutes)
-  const brand = data.tenant?.brandColor || '#1b6fa8'
+  const { primary: brand, accent } = paletteOf(data)
   const sector = o.sector.trim()
   const fileName = `material-${slugify(data.componentName)}.json`
 
@@ -170,7 +175,7 @@ Cada tema:
 
 Por tema: ${scale.objectives} objetivos, ${scale.examples} ejemplos, ${scale.exercises} ejercicios y ${scale.questions} preguntas.
 Reglas:
-- Los textos admiten HTML simple: <p>, <strong>, <ul>, <table>, <pre><code class="language-x">, y diagramas <svg viewBox="…"> con los colores ${brand} y #17232d.
+- Los textos admiten HTML simple: <p>, <strong>, <ul>, <table>, <pre><code class="language-x">, y diagramas <svg viewBox="…"> con los colores ${brand} (principal), ${accent} (acento) y #17232d.
 - Las respuestas van SOLO en solucion, respuesta, explicacion, rubrica y guia_docente; nunca en enunciados ni pistas.
 - JSON válido y compacto (sin comentarios ni comas finales).
 - Entrega los ${n} temas de una sola vez, en ese único archivo: no lo partas en lotes ni esperes a que escriba "continuar". Todos los temas con la misma profundidad que el primero.`
@@ -194,7 +199,7 @@ function buildSkillPrompt(data, o) {
     nivel: o.level,
     sector: o.sector.trim() || undefined,
     organizacion: data.tenant?.name || undefined,
-    colores: data.tenant?.brandColor ? { primario: data.tenant.brandColor } : undefined,
+    colores: { primario: paletteOf(data).primary, acento: paletteOf(data).accent },
     identidad_visual: o.brand.trim() || undefined,
     indicaciones: o.extra.trim() || undefined,
     duracion_clase_min: topics[0]?.durationMinutes || 45,

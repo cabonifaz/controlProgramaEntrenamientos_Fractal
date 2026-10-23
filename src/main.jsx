@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client'
 import { Bell, CalendarDays, ChevronDown, ClipboardCheck, LayoutDashboard, LogOut, Menu, Settings2, ShieldCheck, Users, X } from 'lucide-react'
 import { AlertsPanel, ChangePasswordPanel, HolidaysPanel, InstructorClassesPanel, LeaveRequestsPanel, PreEnrollmentsPanel, ProgramsPanel, RealDashboard, ReportsPanel, StudentAttendancePanel, StudentTopicsPanel, TenantsPanel, UsersPanel } from './admin.jsx'
 import { getPublicProgramRoute, PublicProgramApp } from './public.jsx'
+import { getInvitationRoute, InvitationApp } from './invitation.jsx'
 import { apiRequest } from './api'
 import { clearSession, loadActiveSection, loadSession, saveActiveSection, saveSession, SESSION_EXPIRED_EVENT } from './session'
 import './styles.css'
@@ -33,6 +34,13 @@ function getTenantSlugFromPath() {
   return match ? match[1] : null
 }
 
+const LOGIN_ERRORS = {
+  'Invalid credentials': 'Correo o contraseña incorrectos.',
+  invitation_pending: 'Todavía no creaste tu contraseña. Abre el enlace de invitación que te compartieron (si venció, pide uno nuevo a tu administrador).',
+  'User or tenant is inactive': 'Tu cuenta o tu organización está inactiva.',
+  'Account temporarily locked, try again later': 'Demasiados intentos fallidos. Espera 15 minutos e inténtalo de nuevo.',
+}
+
 function Login({ onLogin, tenantSlug, branding }) {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -53,7 +61,7 @@ function Login({ onLogin, tenantSlug, branding }) {
       })
       const body = await response.json().catch(() => ({}))
       if (!response.ok) {
-        setError(body.message || 'No se pudo iniciar sesion')
+        setError(LOGIN_ERRORS[body.message] || body.message || 'No se pudo iniciar sesion')
         return
       }
       const role = roleKeyByCode[body.user?.roleCode]
@@ -152,5 +160,11 @@ function App() {
 }
 
 // La web publica de un programa (/p/<tenant>/<programa>) no pasa por el login.
+// Igual el enlace de invitacion (/invitacion/<token>), donde se crea la contrasena.
 const publicProgramRoute = getPublicProgramRoute()
-createRoot(document.getElementById('root')).render(<React.StrictMode>{publicProgramRoute ? <PublicProgramApp {...publicProgramRoute} /> : <App />}</React.StrictMode>)
+const invitationRoute = getInvitationRoute()
+createRoot(document.getElementById('root')).render(
+  <React.StrictMode>
+    {invitationRoute ? <InvitationApp {...invitationRoute} /> : publicProgramRoute ? <PublicProgramApp {...publicProgramRoute} /> : <App />}
+  </React.StrictMode>
+)

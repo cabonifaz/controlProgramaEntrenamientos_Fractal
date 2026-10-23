@@ -95,7 +95,11 @@ function leakErrors(tema, studentPage) {
 // ------------------------------------------------------------------ render
 
 function head(title, rel, course) {
-  const brand = HEX_COLOR.test(course.brandColor || '') ? `<style>:root{--primario:${course.brandColor}}</style>` : ''
+  const vars = [
+    HEX_COLOR.test(course.brandColor || '') ? `--primario:${course.brandColor}` : null,
+    HEX_COLOR.test(course.accentColor || '') ? `--acento:${course.accentColor}` : null,
+  ].filter(Boolean)
+  const brand = vars.length ? `<style>:root{${vars.join(';')}}</style>` : ''
   return `<!doctype html>
 <html lang="es">
 <head>

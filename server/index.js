@@ -11,6 +11,8 @@ import { authenticate } from './middleware/authenticate.js'
 import { mapStoredProcedureError } from './errors.js'
 import { uploadLogo, uploadSpreadsheet, UPLOADS_DIR } from './uploads.js'
 import { registerPublicProgramRoutes, renderPublicProgramHtml } from './publicPrograms.js'
+import { createInvitation, NO_PASSWORD, registerInvitationRoutes } from './invitations.js'
+import { HEX_COLOR, resolvePalette } from '../src/palette.js'
 import {
   uploadMaterialZip, extractMaterialZip, materialDir, removeMaterialDir, describeMaterial,
   isSolutionsPath, buildMaterialTemplateZip, buildMaterialSkillZip, MATERIAL_RESPONSE_HEADERS,
@@ -144,6 +146,14 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(403).json({ message: 'User or tenant is inactive' })
     }
 
+    if (context.password_hash === NO_PASSWORD) {
+      await callProcedure('sp_auth_log_access', {
+        p_user_id: context.user_id, p_tenant_id: context.tenant_id, p_email: email, p_role_code: context.role_code,
+        p_success: false, p_failure_reason: 'invitation_pending', p_ip: ip, p_user_agent: userAgent,
+      })
+      return res.status(403).json({ message: 'invitation_pending' })
+    }
+
     const passwordMatches = await verifyPassword(password, context.password_hash)
     await callProcedure('sp_auth_register_login_result', { p_user_id: context.user_id, p_success: passwordMatches })
     await callProcedure('sp_auth_log_access', {
@@ -178,7 +188,7 @@ app.get('/api/auth/me', authenticate, (req, res) => {
 
 // No hay servicio de correo disponible, por lo que no existe un "forgot password"
 // por email. El propio usuario cambia su contrasena conociendo la actual; si la
-// perdio, un administrador la resetea (ver /api/admin/users/:id/reset-password).
+// perdio, un administrador le genera un enlace para crear una nueva.
 app.post('/api/auth/change-password', authenticate, async (req, res) => {
   const { currentPassword, newPassword } = req.body || {}
   if (typeof currentPassword !== 'string' || !currentPassword || typeof newPassword !== 'string' || newPassword.length < 8) {
@@ -200,28 +210,10 @@ app.post('/api/auth/change-password', authenticate, async (req, res) => {
   }
 })
 
-// Reseteo forzado por un admin cuando el usuario perdio el acceso. La API solo
-// genera la contrasena temporal (operacion tecnica); el SP decide si el actor
-// tiene permiso sobre el usuario objetivo y responde con SIGNAL si no lo tiene.
-app.post('/api/admin/users/:id/reset-password', authenticate, async (req, res) => {
-  const targetUserId = Number(req.params.id)
-  if (!Number.isInteger(targetUserId)) {
-    return res.status(400).json({ message: 'Invalid request format' })
-  }
-
-  const temporaryPassword = crypto.randomBytes(9).toString('base64url')
-  try {
-    const newHash = await hashPassword(temporaryPassword)
-    await callProcedure('sp_auth_admin_reset_password', {
-      p_actor_user_id: req.user.id, p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId,
-      p_target_user_id: targetUserId, p_new_password_hash: newHash,
-    })
-    res.json({ temporaryPassword })
-  } catch (err) {
-    const { status, message } = mapStoredProcedureError(err)
-    res.status(status).json({ message })
-  }
-})
+// Acceso perdido: el admin genera un enlace para que la persona cree una
+// contrasena nueva (POST /api/users/:id/invitation, ver server/invitations.js).
+// Ya no existen contrasenas temporales.
+registerInvitationRoutes(app)
 
 app.get('/api/tenants', authenticate, async (req, res) => {
   try {
@@ -425,10 +417,12 @@ app.get('/api/programs', authenticate, async (req, res) => {
 })
 
 app.post('/api/programs', authenticate, async (req, res) => {
-  const { tenantId, name, description, cohort, modalityCode, startsOn, endsOn } = req.body || {}
+  const { tenantId, name, description, cohort, modalityCode, startsOn, endsOn, colorPrimary, colorAccent } = req.body || {}
   if (typeof name !== 'string' || !name.trim() || typeof cohort !== 'string' || !cohort.trim()) {
     return res.status(400).json({ message: 'Invalid request format' })
   }
+  const colors = paletteFromBody(colorPrimary, colorAccent)
+  if (!colors) return res.status(400).json({ message: 'invalid_color_format' })
 
   try {
     const [result] = await callProcedure('sp_programs_create', {
@@ -436,12 +430,50 @@ app.post('/api/programs', authenticate, async (req, res) => {
       p_tenant_id: tenantId ?? req.user.tenantId, p_name: name, p_description: description || null,
       p_cohort: cohort, p_modality_code: modalityCode || null, p_starts_on: startsOn || null, p_ends_on: endsOn || null,
     })
+    if (colors.primary || colors.accent) {
+      await callProcedure('sp_programs_set_colors', {
+        p_actor_user_id: req.user.id, p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId,
+        p_program_id: result.program_id, p_color_primary: colors.primary, p_color_accent: colors.accent,
+      })
+    }
     res.status(201).json({ data: result })
   } catch (err) {
     const { status, message } = mapStoredProcedureError(err)
     res.status(status).json({ message })
   }
 })
+
+// Paleta del programa o del componente. Vacio/null = hereda (componente ->
+// programa -> marca del tenant). Devuelve null si algun color es invalido.
+function paletteFromBody(colorPrimary, colorAccent) {
+  const norm = (c) => (typeof c === 'string' && c.trim() ? c.trim().toLowerCase() : null)
+  const primary = norm(colorPrimary)
+  const accent = norm(colorAccent)
+  if ((primary && !HEX_COLOR.test(primary)) || (accent && !HEX_COLOR.test(accent))) return null
+  return { primary, accent }
+}
+
+for (const [entity, procedure, idParam] of [
+  ['programs', 'sp_programs_set_colors', 'p_program_id'],
+  ['components', 'sp_components_set_colors', 'p_component_id'],
+]) {
+  app.post(`/api/${entity}/:id/colors`, authenticate, async (req, res) => {
+    const id = Number(req.params.id)
+    const colors = paletteFromBody(req.body?.colorPrimary, req.body?.colorAccent)
+    if (!Number.isInteger(id)) return res.status(400).json({ message: 'Invalid request format' })
+    if (!colors) return res.status(400).json({ message: 'invalid_color_format' })
+    try {
+      await callProcedure(procedure, {
+        p_actor_user_id: req.user.id, p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId,
+        [idParam]: id, p_color_primary: colors.primary, p_color_accent: colors.accent,
+      })
+      res.json({ ok: true })
+    } catch (err) {
+      const { status, message } = mapStoredProcedureError(err)
+      res.status(status).json({ message })
+    }
+  })
+}
 
 app.patch('/api/programs/:id', authenticate, async (req, res) => {
   const programId = Number(req.params.id)
@@ -809,6 +841,12 @@ async function loadMaterialCourse(req, componentId) {
       name: first.tenant_name, brandColor: first.tenant_brand_color,
       logoUrl: first.tenant_logo_path ? `/uploads/${first.tenant_logo_path}` : null,
     },
+    // Colores del material: componente -> programa -> marca del tenant.
+    palette: resolvePalette({
+      component: { primary: first.component_color_primary, accent: first.component_color_accent },
+      program: { primary: first.program_color_primary, accent: first.program_color_accent },
+      tenantBrand: first.tenant_brand_color,
+    }),
     topics: rows.filter((r) => r.topic_id).map((r, i) => ({
       position: i + 1, title: r.topic_title, description: r.topic_description,
       durationMinutes: r.duration_minutes ?? TOPIC_DURATION_MINUTES,
@@ -899,7 +937,8 @@ app.post('/api/components/:id/material/content', authenticate, async (req, res) 
     const previousContent = await readMaterialContent(componentId, current?.folder)
     const { files, content, report } = buildMaterialFromContent({
       componentName: course.componentName, componentDescription: course.componentDescription,
-      programName: course.programName, tenantName: course.tenant.name, brandColor: course.tenant.brandColor,
+      programName: course.programName, tenantName: course.tenant.name,
+      brandColor: course.palette.primary, accentColor: course.palette.accent,
       logoUrl: course.tenant.logoUrl, classMinutes: course.topics[0].durationMinutes,
       topics: courseTopics(course.topics),
     }, previousContent, temas)
@@ -1230,24 +1269,25 @@ app.post('/api/holidays', authenticate, async (req, res) => {
 })
 
 app.post('/api/users', authenticate, async (req, res) => {
-  const { tenantId, fullName, email, password, roleCode } = req.body || {}
+  // Por invitacion: el admin no define contrasena; la persona la crea con
+  // el enlace que se devuelve aqui.
+  const { tenantId, fullName, email, roleCode } = req.body || {}
   if (
     typeof fullName !== 'string' || !fullName.trim() ||
     typeof email !== 'string' || !email.includes('@') ||
-    typeof password !== 'string' || password.length < 8 ||
     !VALID_ROLES.has(roleCode)
   ) {
     return res.status(400).json({ message: 'Invalid request format' })
   }
 
   try {
-    const passwordHash = await hashPassword(password)
     const [result] = await callProcedure('sp_users_create', {
       p_actor_user_id: req.user.id, p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId,
-      p_target_tenant_id: tenantId ?? req.user.tenantId ?? null, p_full_name: fullName, p_email: email,
-      p_password_hash: passwordHash, p_role_code: roleCode,
+      p_target_tenant_id: tenantId ?? req.user.tenantId ?? null, p_full_name: fullName.trim(), p_email: email.trim(),
+      p_password_hash: NO_PASSWORD, p_role_code: roleCode,
     })
-    res.status(201).json({ data: result })
+    const invitation = await createInvitation(req, result.user_id)
+    res.status(201).json({ data: { userId: result.user_id, email: email.trim(), ...invitation } })
   } catch (err) {
     const { status, message } = mapStoredProcedureError(err)
     res.status(status).json({ message })
@@ -1786,13 +1826,12 @@ app.post('/api/users/import', authenticate, async (req, res) => {
       }
     }
     try {
-      const temporaryPassword = crypto.randomBytes(9).toString('base64url')
-      const passwordHash = await hashPassword(temporaryPassword)
       const [result] = await callProcedure('sp_users_create', {
         p_actor_user_id: req.user.id, p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId,
-        p_target_tenant_id: tenantId, p_full_name: fullName, p_email: email, p_password_hash: passwordHash, p_role_code: roleCode,
+        p_target_tenant_id: tenantId, p_full_name: fullName, p_email: email, p_password_hash: NO_PASSWORD, p_role_code: roleCode,
       })
-      results.push({ row: row.__row, ok: true, id: result.user_id, email, temporaryPassword })
+      const { invitationUrl } = await createInvitation(req, result.user_id)
+      results.push({ row: row.__row, ok: true, id: result.user_id, email, invitationUrl })
     } catch (err) {
       const { message } = mapStoredProcedureError(err)
       results.push({ row: row.__row, ok: false, message })

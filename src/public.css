@@ -158,3 +158,6 @@
    web publica se neutralizan. */
 .pp-shell label { margin: 0; color: var(--ink); font-size: 14px; }
 .pp-shell .pp-consent { color: var(--muted); font-weight: 400; }
+
+/* Acento de la paleta del programa en la etiqueta de la portada. */
+.pp-hero .pp-eyebrow { background: var(--accent); color: var(--on-accent); border-color: transparent; }

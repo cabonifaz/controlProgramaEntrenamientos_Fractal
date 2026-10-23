@@ -214,6 +214,25 @@ CREATE TABLE IF NOT EXISTS topics (
   CONSTRAINT fk_topic_status FOREIGN KEY (status_id) REFERENCES master_catalog_values(id)
 );
 
+-- Invitaciones: los usuarios se crean SIN contrasena y la crean ellos con
+-- un enlace personal de un solo uso. Se guarda solo el hash (sha256) del
+-- token; el token en claro viaja una sola vez en el enlace. Tambien sirve
+-- para que alguien que perdio el acceso cree una contrasena nueva.
+CREATE TABLE IF NOT EXISTS user_invitations (
+  id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+  user_id BIGINT UNSIGNED NOT NULL,
+  token_hash CHAR(64) NOT NULL,
+  expires_at DATETIME NOT NULL,
+  used_at DATETIME NULL,
+  revoked_at DATETIME NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  created_by BIGINT UNSIGNED NULL,
+  UNIQUE KEY uq_user_invitation_token (token_hash),
+  KEY ix_user_invitations_user (user_id),
+  CONSTRAINT fk_user_invitation_user FOREIGN KEY (user_id) REFERENCES users(id),
+  CONSTRAINT fk_user_invitation_creator FOREIGN KEY (created_by) REFERENCES users(id)
+);
+
 -- Preinscripcion publica a un programa (formulario de su web publica).
 -- No es un usuario todavia: al CONFIRMARLA el admin se crea (o reutiliza)
 -- la cuenta del alumno y se inscribe en el programa (student_id).
@@ -524,6 +543,12 @@ DROP PROCEDURE IF EXISTS sp_migrate_tenant_logo_v1;
 DROP PROCEDURE IF EXISTS sp_migrate_program_public_v1;
 DROP PROCEDURE IF EXISTS sp_migrate_tenant_contact_v1;
 DROP PROCEDURE IF EXISTS sp_tenants_set_contact;
+DROP PROCEDURE IF EXISTS sp_migrate_program_colors_v1;
+DROP PROCEDURE IF EXISTS sp_programs_set_colors;
+DROP PROCEDURE IF EXISTS sp_components_set_colors;
+DROP PROCEDURE IF EXISTS sp_user_invitations_create;
+DROP PROCEDURE IF EXISTS sp_user_invitations_get;
+DROP PROCEDURE IF EXISTS sp_user_invitations_accept;
 DROP PROCEDURE IF EXISTS sp_tenants_set_logo;
 DROP PROCEDURE IF EXISTS sp_tenants_set_brand_color;
 DROP PROCEDURE IF EXISTS sp_tenants_get_public_branding;
@@ -739,6 +764,25 @@ END$$
 
 -- Web publica por programa (link propio, banner, publico objetivo) y
 -- perfil publico de los instructores que se muestra en ella. Idempotente.
+-- Paleta de colores (principal + acento) por programa y, opcionalmente,
+-- por componente. NULL = hereda (componente -> programa -> marca del
+-- tenant). Idempotente.
+CREATE PROCEDURE sp_migrate_program_colors_v1()
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+    WHERE table_schema = DATABASE() AND table_name = 'training_programs' AND column_name = 'color_primary') THEN
+    ALTER TABLE training_programs
+      ADD COLUMN color_primary VARCHAR(7) NULL AFTER banner_path,
+      ADD COLUMN color_accent VARCHAR(7) NULL AFTER color_primary;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+    WHERE table_schema = DATABASE() AND table_name = 'components' AND column_name = 'color_primary') THEN
+    ALTER TABLE components
+      ADD COLUMN color_primary VARCHAR(7) NULL AFTER sort_order,
+      ADD COLUMN color_accent VARCHAR(7) NULL AFTER color_primary;
+  END IF;
+END$$
+
 -- El contacto del tenant pasa a ser un usuario (contact_user_id).
 -- Idempotente; los tenants existentes quedan con su contacto de texto.
 CREATE PROCEDURE sp_migrate_tenant_contact_v1()
@@ -1167,7 +1211,14 @@ BEGIN
   END IF;
 
   SELECT u.id, u.tenant_id, u.full_name, u.email, v.code AS role_code, u.is_active, u.must_change_password, u.created_at,
-         u.public_headline, u.public_bio, u.photo_path, u.linkedin_url
+         u.public_headline, u.public_bio, u.photo_path, u.linkedin_url,
+         CASE
+           WHEN u.password_hash <> '' THEN NULL
+           WHEN EXISTS (SELECT 1 FROM user_invitations i WHERE i.user_id = u.id AND i.used_at IS NULL
+                        AND i.revoked_at IS NULL AND i.expires_at > NOW()) THEN 'pending'
+           ELSE 'expired'
+         END AS invitation_status,
+         (SELECT MAX(i.expires_at) FROM user_invitations i WHERE i.user_id = u.id AND i.used_at IS NULL AND i.revoked_at IS NULL) AS invitation_expires_at
   FROM users u
   JOIN master_catalog_values v ON v.id = u.role_id
   WHERE u.is_deleted = FALSE
@@ -1192,6 +1243,7 @@ BEGIN
          ps.code AS status_code, ps.label AS status_label,
          pm.code AS modality_code, pm.label AS modality_label, p.created_at,
          p.public_slug, p.is_public, p.enrollment_open, p.public_tagline, p.public_audience, p.banner_path,
+         p.color_primary, p.color_accent,
          tn.slug AS tenant_slug, tn.name AS tenant_name, tn.logo_path AS tenant_logo_path, tn.brand_color AS tenant_brand_color,
          (SELECT COUNT(*) FROM pre_enrollments pe JOIN master_catalog_values pes ON pes.id = pe.status_id
           WHERE pe.program_id = p.id AND pe.is_deleted = FALSE AND pes.code = 'pending') AS pending_pre_enrollments
@@ -1350,7 +1402,7 @@ BEGIN
   -- topic_count: temas del temario (el del grupo con mas temas; todos los
   -- grupos comparten malla). material_topic_count: cuantos de esos temas
   -- tienen su tema-NN en el material vigente (tope = topic_count).
-  SELECT c.id, c.program_id, c.name, c.description, c.sort_order,
+  SELECT c.id, c.program_id, c.name, c.description, c.sort_order, c.color_primary, c.color_accent,
          cs.code AS status_code, cs.label AS status_label,
          (SELECT COUNT(*) FROM component_groups g WHERE g.component_id = c.id AND g.is_deleted = FALSE) AS group_count,
          COALESCE(tc.topic_count, 0) AS topic_count,
@@ -3278,6 +3330,8 @@ BEGIN
          p.name AS program_name, p.description AS program_description, p.cohort,
          pm.label AS modality_label, p.starts_on, p.ends_on,
          tn.name AS tenant_name, tn.brand_color AS tenant_brand_color, tn.logo_path AS tenant_logo_path,
+         c.color_primary AS component_color_primary, c.color_accent AS component_color_accent,
+         p.color_primary AS program_color_primary, p.color_accent AS program_color_accent,
          t.id AS topic_id, t.title AS topic_title, t.description AS topic_description, t.duration_minutes
   FROM components c
   JOIN training_programs p ON p.id = c.program_id
@@ -3426,6 +3480,7 @@ BEGIN
 
   SELECT p.id AS program_id, p.name, p.description, p.cohort, p.starts_on, p.ends_on, pm.label AS modality_label,
          p.public_tagline, p.public_audience, p.banner_path, p.enrollment_open,
+         p.color_primary, p.color_accent,
          tn.name AS tenant_name, tn.slug AS tenant_slug, tn.logo_path, tn.brand_color
   FROM training_programs p
   JOIN tenants tn ON tn.id = p.tenant_id
@@ -3784,6 +3839,172 @@ BEGIN
   COMMIT;
 
   SELECT v_user_id AS student_id, v_account_created AS account_created, v_email AS email, v_full_name AS full_name;
+END$$
+
+-- ===================================================================
+-- Invitaciones: el usuario crea su propia contrasena con un enlace de un
+-- solo uso. Quien puede invitar = quien podia resetear la contrasena:
+-- super_admin a cualquiera; tenant_admin a instructores/alumnos de su
+-- tenant. Un enlace nuevo anula los anteriores sin usar.
+-- ===================================================================
+CREATE PROCEDURE sp_user_invitations_create(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED,
+  IN p_user_id BIGINT UNSIGNED, IN p_token_hash CHAR(64), IN p_valid_days INT
+)
+BEGIN
+  DECLARE v_target_tenant_id BIGINT UNSIGNED;
+  DECLARE v_target_role VARCHAR(80);
+  DECLARE v_expires_at DATETIME;
+
+  SELECT u.tenant_id, v.code INTO v_target_tenant_id, v_target_role
+  FROM users u JOIN master_catalog_values v ON v.id = u.role_id
+  WHERE u.id = p_user_id AND u.is_deleted = FALSE;
+
+  IF v_target_role IS NULL THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'target_not_found';
+  END IF;
+  IF NOT (
+    p_actor_role = 'super_admin'
+    OR (p_actor_role = 'tenant_admin' AND v_target_role IN ('instructor', 'student')
+        AND v_target_tenant_id IS NOT NULL AND v_target_tenant_id = p_actor_tenant_id)
+  ) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+
+  UPDATE user_invitations SET revoked_at = NOW()
+  WHERE user_id = p_user_id AND used_at IS NULL AND revoked_at IS NULL;
+
+  SET v_expires_at = NOW() + INTERVAL GREATEST(1, COALESCE(p_valid_days, 7)) DAY;
+  INSERT INTO user_invitations (user_id, token_hash, expires_at, created_by)
+  VALUES (p_user_id, p_token_hash, v_expires_at, p_actor_user_id);
+
+  SELECT v_expires_at AS expires_at;
+END$$
+
+-- Datos para la pagina publica de la invitacion (quien es, de que tenant).
+CREATE PROCEDURE sp_user_invitations_get(IN p_token_hash CHAR(64))
+BEGIN
+  DECLARE v_invitation_id BIGINT UNSIGNED;
+  DECLARE v_used_at DATETIME;
+  DECLARE v_revoked_at DATETIME;
+  DECLARE v_expires_at DATETIME;
+  DECLARE v_user_ok BOOLEAN;
+
+  SELECT i.id, i.used_at, i.revoked_at, i.expires_at, (u.is_active AND NOT u.is_deleted)
+    INTO v_invitation_id, v_used_at, v_revoked_at, v_expires_at, v_user_ok
+  FROM user_invitations i JOIN users u ON u.id = i.user_id
+  WHERE i.token_hash = p_token_hash;
+
+  IF v_invitation_id IS NULL OR v_revoked_at IS NOT NULL OR NOT v_user_ok THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'invitation_invalid';
+  ELSEIF v_used_at IS NOT NULL THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'invitation_used';
+  ELSEIF v_expires_at <= NOW() THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'invitation_expired';
+  END IF;
+
+  SELECT u.full_name, u.email, r.code AS role_code, r.label AS role_label, i.expires_at,
+         u.password_hash <> '' AS has_password,
+         t.name AS tenant_name, t.slug AS tenant_slug, t.logo_path AS tenant_logo_path, t.brand_color AS tenant_brand_color
+  FROM user_invitations i
+  JOIN users u ON u.id = i.user_id
+  JOIN master_catalog_values r ON r.id = u.role_id
+  LEFT JOIN tenants t ON t.id = u.tenant_id
+  WHERE i.id = v_invitation_id;
+END$$
+
+-- La persona fija su contrasena: queda activa para entrar y el enlace se
+-- consume (y se anulan otros abiertos).
+CREATE PROCEDURE sp_user_invitations_accept(IN p_token_hash CHAR(64), IN p_password_hash VARCHAR(255))
+BEGIN
+  DECLARE v_invitation_id BIGINT UNSIGNED;
+  DECLARE v_user_id BIGINT UNSIGNED;
+  DECLARE v_used_at DATETIME;
+  DECLARE v_revoked_at DATETIME;
+  DECLARE v_expires_at DATETIME;
+  DECLARE v_user_ok BOOLEAN;
+
+  SELECT i.id, i.user_id, i.used_at, i.revoked_at, i.expires_at, (u.is_active AND NOT u.is_deleted)
+    INTO v_invitation_id, v_user_id, v_used_at, v_revoked_at, v_expires_at, v_user_ok
+  FROM user_invitations i JOIN users u ON u.id = i.user_id
+  WHERE i.token_hash = p_token_hash;
+
+  IF v_invitation_id IS NULL OR v_revoked_at IS NOT NULL OR NOT v_user_ok THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'invitation_invalid';
+  ELSEIF v_used_at IS NOT NULL THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'invitation_used';
+  ELSEIF v_expires_at <= NOW() THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'invitation_expired';
+  END IF;
+
+  UPDATE users
+  SET password_hash = p_password_hash, must_change_password = FALSE,
+      failed_login_attempts = 0, locked_until = NULL, updated_at = NOW()
+  WHERE id = v_user_id;
+
+  UPDATE user_invitations SET used_at = NOW() WHERE id = v_invitation_id;
+  UPDATE user_invitations SET revoked_at = NOW()
+  WHERE user_id = v_user_id AND id <> v_invitation_id AND used_at IS NULL AND revoked_at IS NULL;
+
+  SELECT u.email FROM users u WHERE u.id = v_user_id;
+END$$
+
+-- ===================================================================
+-- Paleta de colores (principal + acento). NULL en ambos = hereda:
+-- componente -> programa -> marca del tenant.
+-- ===================================================================
+CREATE PROCEDURE sp_programs_set_colors(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED,
+  IN p_program_id BIGINT UNSIGNED, IN p_color_primary VARCHAR(7), IN p_color_accent VARCHAR(7)
+)
+BEGIN
+  DECLARE v_program_tenant_id BIGINT UNSIGNED;
+  SELECT tenant_id INTO v_program_tenant_id FROM training_programs WHERE id = p_program_id AND is_deleted = FALSE;
+
+  IF v_program_tenant_id IS NULL THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'program_not_found';
+  END IF;
+  IF p_actor_role = 'tenant_admin' AND v_program_tenant_id <> p_actor_tenant_id THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
+  ELSEIF p_actor_role NOT IN ('super_admin', 'tenant_admin') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+  IF (p_color_primary IS NOT NULL AND p_color_primary NOT REGEXP '^#[0-9a-fA-F]{6}$')
+     OR (p_color_accent IS NOT NULL AND p_color_accent NOT REGEXP '^#[0-9a-fA-F]{6}$') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'invalid_color_format';
+  END IF;
+
+  UPDATE training_programs
+  SET color_primary = p_color_primary, color_accent = p_color_accent, updated_at = NOW(), updated_by = p_actor_user_id
+  WHERE id = p_program_id;
+END$$
+
+CREATE PROCEDURE sp_components_set_colors(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED,
+  IN p_component_id BIGINT UNSIGNED, IN p_color_primary VARCHAR(7), IN p_color_accent VARCHAR(7)
+)
+BEGIN
+  DECLARE v_program_tenant_id BIGINT UNSIGNED;
+  SELECT p.tenant_id INTO v_program_tenant_id
+  FROM components c JOIN training_programs p ON p.id = c.program_id
+  WHERE c.id = p_component_id AND c.is_deleted = FALSE;
+
+  IF v_program_tenant_id IS NULL THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'component_not_found';
+  END IF;
+  IF p_actor_role = 'tenant_admin' AND v_program_tenant_id <> p_actor_tenant_id THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
+  ELSEIF p_actor_role NOT IN ('super_admin', 'tenant_admin') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+  IF (p_color_primary IS NOT NULL AND p_color_primary NOT REGEXP '^#[0-9a-fA-F]{6}$')
+     OR (p_color_accent IS NOT NULL AND p_color_accent NOT REGEXP '^#[0-9a-fA-F]{6}$') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'invalid_color_format';
+  END IF;
+
+  UPDATE components
+  SET color_primary = p_color_primary, color_accent = p_color_accent, updated_at = NOW(), updated_by = p_actor_user_id
+  WHERE id = p_component_id;
 END$$
 
 CREATE PROCEDURE sp_dashboard_get(IN p_user_id BIGINT, IN p_role VARCHAR(80), IN p_tenant_id BIGINT)
