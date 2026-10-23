@@ -1933,6 +1933,21 @@ function ComponentEditModal({ session, component, onClose, onSaved }) {
 
 const EMPTY_COMPONENT_FORM = { name: '', description: '', sortOrder: 0 }
 
+// Cuantos temas del componente ya tienen material ("8 de 13") con una barra
+// de avance: verde completo, ambar parcial, gris sin material.
+function MaterialCoverage({ done, total, hasMaterial }) {
+  if (!total) return <span className="muted">—</span>
+  if (!hasMaterial) return <span className="coverage coverage-none">Sin material</span>
+  const pct = Math.round((done / total) * 100)
+  const level = done >= total ? 'complete' : 'partial'
+  return (
+    <span className={`coverage coverage-${level}`} title={`${done} de ${total} temas tienen material (${pct}%)`}>
+      <span className="coverage-text">{done} de {total}</span>
+      <span className="coverage-bar" aria-hidden="true"><span style={{ width: `${pct}%` }} /></span>
+    </span>
+  )
+}
+
 function ComponentsPanel({ session, program, onBack }) {
   const { token } = session
   const { items, error, loading, reload } = useList(`/api/programs/${program.id}/components`, token)
@@ -1998,7 +2013,7 @@ function ComponentsPanel({ session, program, onBack }) {
         <ErrorNote message={error} />
         {loading ? <p className="muted">Cargando…</p> : (
           <table className="admin-table">
-            <thead><tr><th>Nombre</th><th>Descripción</th><th>Estado</th><th>Grupos</th><th></th></tr></thead>
+            <thead><tr><th>Nombre</th><th>Descripción</th><th>Estado</th><th>Grupos</th><th>Temas</th><th>Material</th><th></th></tr></thead>
             <tbody>
               {items.map((c) => (
                 <tr key={c.id}>
@@ -2006,6 +2021,8 @@ function ComponentsPanel({ session, program, onBack }) {
                   <td className="cell-truncate" title={c.description || ''}>{c.description || '—'}</td>
                   <td><StatusPill label={c.status_label} /></td>
                   <td>{c.group_count}</td>
+                  <td>{Number(c.topic_count) || '—'}</td>
+                  <td><MaterialCoverage done={Number(c.material_topic_count)} total={Number(c.topic_count)} hasMaterial={Boolean(c.has_material)} /></td>
                   <td className="row-actions">
                     <button className="btn-mini" onClick={() => setEditingComponent(c)}>Editar</button>
                     <button className="btn-mini" onClick={() => setMaterialComponent(c)}>Material</button>
@@ -2021,12 +2038,12 @@ function ComponentsPanel({ session, program, onBack }) {
         <ComponentEditModal
           session={session}
           component={editingComponent}
-          onClose={() => setEditingComponent(null)}
+          onClose={() => { setEditingComponent(null); reload() }}
           onSaved={reload}
         />
       )}
       {materialComponent && (
-        <Modal title={`Material — ${materialComponent.name}`} onClose={() => setMaterialComponent(null)} wide>
+        <Modal title={`Material — ${materialComponent.name}`} onClose={() => { setMaterialComponent(null); reload() }} wide>
           <ComponentMaterialBox session={session} componentId={materialComponent.id} />
         </Modal>
       )}

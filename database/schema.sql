@@ -1347,11 +1347,29 @@ BEGIN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
   END IF;
 
+  -- topic_count: temas del temario (el del grupo con mas temas; todos los
+  -- grupos comparten malla). material_topic_count: cuantos de esos temas
+  -- tienen su tema-NN en el material vigente (tope = topic_count).
   SELECT c.id, c.program_id, c.name, c.description, c.sort_order,
          cs.code AS status_code, cs.label AS status_label,
-         (SELECT COUNT(*) FROM component_groups g WHERE g.component_id = c.id AND g.is_deleted = FALSE) AS group_count
+         (SELECT COUNT(*) FROM component_groups g WHERE g.component_id = c.id AND g.is_deleted = FALSE) AS group_count,
+         COALESCE(tc.topic_count, 0) AS topic_count,
+         LEAST(COALESCE(m.topic_file_count, 0), COALESCE(tc.topic_count, 0)) AS material_topic_count,
+         m.id IS NOT NULL AS has_material
   FROM components c
   JOIN master_catalog_values cs ON cs.id = c.status_id
+  LEFT JOIN (
+    SELECT per_group.component_id, MAX(per_group.n) AS topic_count
+    FROM (
+      SELECT g.component_id, COUNT(t.id) AS n
+      FROM component_groups g
+      LEFT JOIN topics t ON t.group_id = g.id AND t.is_deleted = FALSE
+      WHERE g.is_deleted = FALSE
+      GROUP BY g.id, g.component_id
+    ) AS per_group
+    GROUP BY per_group.component_id
+  ) AS tc ON tc.component_id = c.id
+  LEFT JOIN component_materials m ON m.component_id = c.id AND m.is_deleted = FALSE
   WHERE c.program_id = p_program_id AND c.is_deleted = FALSE
   ORDER BY c.sort_order, c.name;
 END$$
