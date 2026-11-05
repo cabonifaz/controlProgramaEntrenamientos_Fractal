@@ -177,6 +177,7 @@ Por tema: ${scale.objectives} objetivos, ${scale.examples} ejemplos, ${scale.exe
 Reglas:
 - Los textos admiten HTML simple: <p>, <strong>, <ul>, <table>, <pre><code class="language-x">, y diagramas <svg viewBox="…"> con los colores ${brand} (principal), ${accent} (acento) y #17232d.
 - Las respuestas van SOLO en solucion, respuesta, explicacion, rubrica y guia_docente; nunca en enunciados ni pistas.
+- Sin JavaScript (<script>, onclick=…): la plataforma pone la interactividad. En ejemplos de código escapa < como &lt;.
 - JSON válido y compacto (sin comentarios ni comas finales).
 - Entrega los ${n} temas de una sola vez, en ese único archivo: no lo partas en lotes ni esperes a que escriba "continuar". Todos los temas con la misma profundidad que el primero.`
 }

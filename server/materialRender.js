@@ -11,7 +11,10 @@ import { fileURLToPath } from 'node:url'
 
 const SKILL_ASSETS_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'templates', 'material-skill', 'generador-material-curso', 'assets')
 const HEX_COLOR = /^#[0-9a-fA-F]{6}$/
-const FORBIDDEN = /localStorage|sessionStorage|document\.cookie|serviceWorker/
+// El contenido no trae JavaScript (lo pone la plataforma). Mencionar
+// localStorage o cookies como texto o en un ejemplo de codigo SI esta
+// permitido: es tema de clase en Frontend y Desarrollo seguro.
+const EXECUTABLE = /<script\b|<[a-z][^>]*\son[a-z]+\s*=|href\s*=\s*["']\s*javascript:/i
 const ABSOLUTE_PATH = /(?:src|href)\s*=\s*["'](?:\/(?!\/)|[a-zA-Z]:\\|file:)/
 const LEVEL_LABEL = { basico: 'Básico', 'básico': 'Básico', intermedio: 'Intermedio', reto: 'Reto' }
 const CALLOUT_LABEL = { importante: 'Importante', tip: 'Tip', error: 'Error común', nota: 'Nota' }
@@ -67,7 +70,7 @@ export function validateTopic(tema, numero, classMinutes) {
     if (!q?.enunciado) errors.push(`Pregunta ${i + 1}: falta "enunciado"`)
   })
   for (const [p, text] of walkStrings(tema)) {
-    if (FORBIDDEN.test(text)) errors.push(`${p}: no se permite localStorage/sessionStorage/cookies`)
+    if (EXECUTABLE.test(text)) errors.push(`${p}: no se permite JavaScript (<script>, onclick=, javascript:) en el contenido`)
     if (ABSOLUTE_PATH.test(text)) errors.push(`${p}: usa rutas relativas`)
   }
   const expected = expectedCounts(classMinutes)

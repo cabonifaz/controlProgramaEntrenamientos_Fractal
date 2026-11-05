@@ -1,6 +1,6 @@
 # Formato de `temas/tema-NN.json`
 
-Los campos de texto aceptan **HTML inline** (`<strong>`, `<code>`, `<ul>`, `<table>`, `<svg>`, `<pre><code class="language-sql">`…). Escapa `<` como `&lt;` dentro del código. Usa solo rutas relativas y nada de `localStorage`, `sessionStorage` ni cookies.
+Los campos de texto aceptan **HTML inline** (`<strong>`, `<code>`, `<ul>`, `<table>`, `<svg>`, `<pre><code class="language-sql">`…). Escapa `<` como `&lt;` dentro del código. Usa solo rutas relativas y nada de JavaScript (`<script>`, atributos `onclick=`…): la plataforma pone la interactividad. Mencionar `localStorage` o cookies como contenido de la clase sí está permitido.
 
 | Campo | Obligatorio | Qué es |
 |---|---|---|

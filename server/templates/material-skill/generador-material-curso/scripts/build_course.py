@@ -21,7 +21,8 @@ from pathlib import Path
 SKILL_DIR = Path(__file__).resolve().parent.parent
 ASSETS_DIR = SKILL_DIR / "assets"
 HEX_COLOR = re.compile(r"^#[0-9a-fA-F]{6}$")
-FORBIDDEN = re.compile(r"localStorage|sessionStorage|document\.cookie|serviceWorker")
+# Sin JavaScript en el contenido; mencionar localStorage o cookies como texto si se permite.
+EXECUTABLE = re.compile(r"""<script\b|<[a-z][^>]*\son[a-z]+\s*=|href\s*=\s*["']\s*javascript:""", re.IGNORECASE)
 ABSOLUTE_PATH = re.compile(r"""(?:src|href)\s*=\s*["'](?:/(?!/)|[a-zA-Z]:\\|file:)""")
 LEVEL_LABEL = {"basico": "Básico", "básico": "Básico", "intermedio": "Intermedio", "reto": "Reto"}
 CALLOUT_LABEL = {"importante": "Importante", "tip": "Tip", "error": "Error común", "nota": "Nota"}
@@ -136,8 +137,8 @@ def validate_topic(tema, numero, curso, report):
             report.error(where, f"Pregunta {i}: falta 'enunciado'")
 
     for path, text in walk_strings(tema):
-        if FORBIDDEN.search(text):
-            report.error(where, f"{path}: no se permite localStorage/sessionStorage/cookies/serviceWorker")
+        if EXECUTABLE.search(text):
+            report.error(where, f"{path}: no se permite JavaScript (<script>, onclick=, javascript:) en el contenido")
         if ABSOLUTE_PATH.search(text):
             report.error(where, f"{path}: usa rutas relativas (nada de '/...', 'C:\\...' o 'file:')")
 
