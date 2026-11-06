@@ -395,7 +395,7 @@ function TenantLoginLink({ slug }) {
 
 const EMPTY_TENANT_FORM = { name: '', slug: '', contactUserId: '', timezone: '' }
 
-export function TenantsPanel({ session }) {
+export function TenantsPanel({ session, navigate }) {
   const { token } = session
   const { items, error, loading, reload } = useList('/api/tenants', token)
   // El contacto de un tenant es un usuario de la plataforma: se elige buscándolo.
@@ -490,7 +490,10 @@ export function TenantsPanel({ session }) {
                   <td><LogoUploader session={session} tenantId={t.id} currentLogoUrl={t.logo_path ? `/uploads/${t.logo_path}` : null} onUploaded={reload} /></td>
                   <td><BrandColorPicker session={session} tenantId={t.id} currentColor={t.brand_color} onSaved={reload} /></td>
                   <td><TenantLoginLink slug={t.slug} /></td>
-                  <td><button className="btn-mini" onClick={() => toggleStatus(t)}>{t.status_code === 'active' ? 'Desactivar' : 'Activar'}</button></td>
+                  <td className="row-actions">
+                    <button className="btn-mini" onClick={() => navigate?.('Usuarios', { tenantId: t.id })} title={`Ver los usuarios de ${t.name}`}>Usuarios ({t.user_count ?? 0})</button>
+                    <button className="btn-mini" onClick={() => toggleStatus(t)}>{t.status_code === 'active' ? 'Desactivar' : 'Activar'}</button>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -604,12 +607,20 @@ function InstructorProfileModal({ session, user, onClose, onSaved }) {
   )
 }
 
-export function UsersPanel({ session }) {
+// Valor del filtro de tenant para los super admins (no pertenecen a ninguno).
+const NO_TENANT = 'none'
+
+export function UsersPanel({ session, navParams }) {
   const { token, profile } = session
   const isSuperAdmin = profile.roleCode === 'super_admin'
   const { items, error, loading, reload } = useList('/api/users', token)
   const { items: tenants } = useList(isSuperAdmin ? '/api/tenants' : '', token)
-  const [form, setForm] = useState({ fullName: '', email: '', roleCode: isSuperAdmin ? 'tenant_admin' : 'instructor', tenantId: '' })
+  // Desde Tenants se llega con el tenant ya elegido.
+  const [tenantFilter, setTenantFilter] = useState(() => (navParams?.tenantId ? String(navParams.tenantId) : ''))
+  const [roleFilter, setRoleFilter] = useState('')
+  const [search, setSearch] = useState('')
+  useEffect(() => { if (navParams?.tenantId) setTenantFilter(String(navParams.tenantId)) }, [navParams])
+  const [form, setForm] = useState(() => ({ fullName: '', email: '', roleCode: isSuperAdmin ? 'tenant_admin' : 'instructor', tenantId: navParams?.tenantId ? String(navParams.tenantId) : '' }))
   const [formError, setFormError] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [invitation, setInvitation] = useState(null)
@@ -625,7 +636,7 @@ export function UsersPanel({ session }) {
         body: { ...form, tenantId: isSuperAdmin ? (form.tenantId ? Number(form.tenantId) : null) : profile.tenantId },
       })
       setInvitation({ ...res.data, fullName: form.fullName.trim() })
-      setForm({ fullName: '', email: '', roleCode: isSuperAdmin ? 'tenant_admin' : 'instructor', tenantId: '' })
+      setForm({ fullName: '', email: '', roleCode: isSuperAdmin ? 'tenant_admin' : 'instructor', tenantId: tenantFilter && tenantFilter !== NO_TENANT ? tenantFilter : '' })
       reload()
     } catch (err) {
       setFormError(err.message)
@@ -659,6 +670,16 @@ export function UsersPanel({ session }) {
 
   const roleOptions = isSuperAdmin ? ['tenant_admin', 'instructor', 'student', 'super_admin'] : ['instructor', 'student']
 
+  const visibleUsers = useMemo(() => {
+    const term = search.trim().toLowerCase()
+    return items.filter((u) => {
+      if (tenantFilter === NO_TENANT ? u.tenant_id : tenantFilter && String(u.tenant_id) !== tenantFilter) return false
+      if (roleFilter && u.role_code !== roleFilter) return false
+      return !term || u.full_name.toLowerCase().includes(term) || u.email.toLowerCase().includes(term)
+    })
+  }, [items, tenantFilter, roleFilter, search])
+  const filteredTenant = tenants.find((t) => String(t.id) === tenantFilter)
+
   return (
     <div className="admin-wrap">
       <section className="panel admin-form-panel">
@@ -691,16 +712,39 @@ export function UsersPanel({ session }) {
         <ExcelImportBox session={session} templateUrl="/api/templates/users" importUrl="/api/users/import" onImported={reload} />
       </section>
       <section className="panel">
-        <h3>Usuarios</h3>
+        <h3>{filteredTenant ? `Usuarios de ${filteredTenant.name}` : tenantFilter === NO_TENANT ? 'Super admins (sin tenant)' : 'Usuarios'}</h3>
+        <div className="users-filters">
+          {isSuperAdmin && (
+            <label>Tenant
+              <select value={tenantFilter} onChange={(e) => setTenantFilter(e.target.value)}>
+                <option value="">Todos los tenants</option>
+                {tenants.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                <option value={NO_TENANT}>Sin tenant (super admins)</option>
+              </select>
+            </label>
+          )}
+          <label>Rol
+            <select value={roleFilter} onChange={(e) => setRoleFilter(e.target.value)}>
+              <option value="">Todos los roles</option>
+              {roleOptions.map((r) => <option key={r} value={r}>{ROLE_LABELS[r]}</option>)}
+            </select>
+          </label>
+          <label>Buscar
+            <input type="search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Nombre o correo" />
+          </label>
+          <span className="muted users-count" aria-live="polite">{visibleUsers.length} de {items.length} usuarios</span>
+        </div>
         <ErrorNote message={error} />
-        {loading ? <p className="muted">Cargando…</p> : (
+        {loading ? <p className="muted">Cargando…</p> : visibleUsers.length === 0 ? <p className="muted">No hay usuarios con estos filtros.</p> : (
+          <div className="table-scroll">
           <table className="admin-table">
-            <thead><tr><th>Nombre</th><th>Correo</th><th>Rol</th><th>Estado</th><th></th></tr></thead>
+            <thead><tr><th>Nombre</th><th>Correo</th>{isSuperAdmin && <th>Tenant</th>}<th>Rol</th><th>Estado</th><th></th></tr></thead>
             <tbody>
-              {items.map((u) => (
+              {visibleUsers.map((u) => (
                 <tr key={u.id}>
                   <td>{u.full_name}</td>
                   <td>{u.email}</td>
+                  {isSuperAdmin && <td>{u.tenant_name || <span className="muted">—</span>}</td>}
                   <td>{ROLE_LABELS[u.role_code] || u.role_code}</td>
                   <td>
                     {!u.is_active ? <span className="pill pill-inactive">Inactivo</span>
@@ -721,6 +765,7 @@ export function UsersPanel({ session }) {
               ))}
             </tbody>
           </table>
+          </div>
         )}
       </section>
       {profileUser && <InstructorProfileModal session={session} user={profileUser} onClose={() => setProfileUser(null)} onSaved={reload} />}

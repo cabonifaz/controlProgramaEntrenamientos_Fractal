@@ -1001,7 +1001,8 @@ BEGIN
   SELECT t.id, t.name, t.slug, t.contact_user_id,
          COALESCE(cu.full_name, t.contact_name) AS contact_name, COALESCE(cu.email, t.contact_email) AS contact_email,
          t.timezone, t.logo_path, t.brand_color,
-         ts.code AS status_code, ts.label AS status_label, t.created_at
+         ts.code AS status_code, ts.label AS status_label, t.created_at,
+         (SELECT COUNT(*) FROM users u WHERE u.tenant_id = t.id AND u.is_deleted = FALSE) AS user_count
   FROM tenants t
   JOIN master_catalog_values ts ON ts.id = t.status_id
   LEFT JOIN users cu ON cu.id = t.contact_user_id
@@ -1211,7 +1212,7 @@ BEGIN
     SET v_scope_tenant_id = p_tenant_id_filter;
   END IF;
 
-  SELECT u.id, u.tenant_id, u.full_name, u.email, v.code AS role_code, u.is_active, u.must_change_password, u.created_at,
+  SELECT u.id, u.tenant_id, tn.name AS tenant_name, u.full_name, u.email, v.code AS role_code, u.is_active, u.must_change_password, u.created_at,
          u.public_headline, u.public_bio, u.photo_path, u.linkedin_url,
          CASE
            WHEN u.password_hash <> '' THEN NULL
@@ -1222,6 +1223,7 @@ BEGIN
          (SELECT MAX(i.expires_at) FROM user_invitations i WHERE i.user_id = u.id AND i.used_at IS NULL AND i.revoked_at IS NULL) AS invitation_expires_at
   FROM users u
   JOIN master_catalog_values v ON v.id = u.role_id
+  LEFT JOIN tenants tn ON tn.id = u.tenant_id
   WHERE u.is_deleted = FALSE
     AND (v_scope_tenant_id IS NULL OR u.tenant_id = v_scope_tenant_id)
     AND (p_role_code_filter IS NULL OR v.code = p_role_code_filter)

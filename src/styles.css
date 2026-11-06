@@ -92,3 +92,12 @@
 @media(max-width:1100px){.pg-summary{grid-template-columns:1fr 1fr}.pg-board-5{grid-template-columns:repeat(5,minmax(240px,1fr));overflow-x:auto;scroll-snap-type:x mandatory;padding-bottom:6px}.pg-board-5>.pg-column{scroll-snap-align:start}}
 @media(max-width:900px){.pg-board-4{grid-template-columns:repeat(4,minmax(240px,1fr));overflow-x:auto;scroll-snap-type:x mandatory;padding-bottom:6px}.pg-board-4>.pg-column{scroll-snap-align:start}}
 @media(max-width:680px){.pg-summary{grid-template-columns:1fr 1fr;gap:10px}.pg-stat-main,.pg-upcoming{grid-column:1/-1}.pg-stat{padding:13px 14px}.pg-stat strong{font-size:26px}.pg-title h1{font-size:24px}.pg-program-select{min-width:0;width:100%}.pg-board-4,.pg-board-5{grid-template-columns:none;grid-auto-flow:column;grid-auto-columns:82%}.pg-detail dl{grid-template-columns:1fr}.pg-head-progress{min-width:0;width:100%}}
+
+/* Usuarios: filtros por tenant, rol y busqueda */
+.users-filters{display:flex;flex-wrap:wrap;align-items:flex-end;gap:12px;margin:14px 0 16px}
+.users-filters label{display:grid;gap:6px;font-size:12px;font-weight:700;color:var(--muted);margin:0;min-width:180px;flex:0 1 220px}
+.users-filters select,.users-filters input{height:40px;box-sizing:border-box;font:inherit;font-size:14px;font-weight:500;color:var(--ink);padding:9px 11px;border:1px solid var(--line);border-radius:8px;background:#fff;width:100%}
+.users-count{margin-left:auto;font-size:13px;padding-bottom:9px}
+@media(max-width:680px){.users-filters label{flex:1 1 100%}.users-count{margin-left:0}}
+.table-scroll{overflow-x:auto;max-width:100%;-webkit-overflow-scrolling:touch}.table-scroll .admin-table td,.table-scroll .admin-table th{white-space:nowrap}
+.admin-wrap>*{min-width:0}
