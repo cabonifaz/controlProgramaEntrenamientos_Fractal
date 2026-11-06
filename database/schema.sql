@@ -629,6 +629,7 @@ DROP PROCEDURE IF EXISTS sp_component_materials_set;
 DROP PROCEDURE IF EXISTS sp_component_materials_remove;
 DROP PROCEDURE IF EXISTS sp_topic_material_get;
 DROP PROCEDURE IF EXISTS sp_topics_list_by_student;
+DROP PROCEDURE IF EXISTS sp_progress_board;
 DROP PROCEDURE IF EXISTS sp_component_material_prompt_data;
 DROP PROCEDURE IF EXISTS sp_program_temario_export;
 DROP PROCEDURE IF EXISTS sp_topics_update_by_position;
@@ -4005,6 +4006,65 @@ BEGIN
   UPDATE components
   SET color_primary = p_color_primary, color_accent = p_color_accent, updated_at = NOW(), updated_by = p_actor_user_id
   WHERE id = p_component_id;
+END$$
+
+-- Tablero de avance: una fila por tema con su componente, grupo,
+-- instructor, material y hora de clase ya resueltos. El alcance lo decide
+-- el rol: admins ven un programa entero (de su tenant, salvo super_admin);
+-- el instructor solo sus grupos y el alumno solo los grupos donde esta
+-- inscrito (p_program_id opcional para ambos). La API arma las columnas.
+CREATE PROCEDURE sp_progress_board(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED,
+  IN p_program_id BIGINT UNSIGNED
+)
+BEGIN
+  DECLARE v_program_tenant_id BIGINT UNSIGNED;
+
+  IF p_actor_role NOT IN ('super_admin', 'tenant_admin', 'instructor', 'student') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+  IF p_actor_role IN ('super_admin', 'tenant_admin') THEN
+    SELECT tenant_id INTO v_program_tenant_id FROM training_programs WHERE id = p_program_id AND is_deleted = FALSE;
+    IF v_program_tenant_id IS NULL THEN
+      SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'program_not_found';
+    END IF;
+    IF p_actor_role = 'tenant_admin' AND v_program_tenant_id <> p_actor_tenant_id THEN
+      SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
+    END IF;
+  END IF;
+
+  SELECT p.id AS program_id, p.name AS program_name, p.cohort, p.color_primary AS program_color_primary,
+         p.color_accent AS program_color_accent, tn.brand_color AS tenant_brand_color, tn.timezone,
+         c.id AS component_id, c.name AS component_name, c.sort_order AS component_sort_order,
+         c.color_primary, c.color_accent, cs.code AS component_status_code,
+         g.id AS group_id, g.name AS group_name, iu.full_name AS instructor_name,
+         (SELECT COUNT(*) FROM group_enrollments ge WHERE ge.group_id = g.id AND ge.is_deleted = FALSE) AS enrolled_students,
+         m.topic_file_count AS material_topic_file_count,
+         t.id AS topic_id, t.title, t.description, t.sort_order, t.scheduled_on, t.actual_date, t.duration_minutes,
+         ts.code AS status_code, ts.label AS status_label,
+         sd.start_time, sd.end_time
+  FROM topics t
+  JOIN component_groups g ON g.id = t.group_id AND g.is_deleted = FALSE
+  JOIN components c ON c.id = g.component_id AND c.is_deleted = FALSE
+  JOIN training_programs p ON p.id = c.program_id AND p.is_deleted = FALSE
+  JOIN tenants tn ON tn.id = p.tenant_id
+  JOIN master_catalog_values cs ON cs.id = c.status_id
+  JOIN master_catalog_values ts ON ts.id = t.status_id
+  LEFT JOIN users iu ON iu.id = g.instructor_id
+  LEFT JOIN component_materials m ON m.component_id = c.id AND m.is_deleted = FALSE
+  LEFT JOIN component_group_schedule_days sd
+    ON sd.group_id = g.id AND sd.is_deleted = FALSE AND sd.weekday = DAYOFWEEK(t.scheduled_on) - 1
+  WHERE t.is_deleted = FALSE
+    AND (p_program_id IS NULL OR p.id = p_program_id)
+    AND (
+      p_actor_role IN ('super_admin', 'tenant_admin')
+      OR (p_actor_role = 'instructor' AND g.instructor_id = p_actor_user_id)
+      OR (p_actor_role = 'student' AND EXISTS (
+        SELECT 1 FROM group_enrollments ge
+        WHERE ge.group_id = g.id AND ge.student_id = p_actor_user_id AND ge.is_deleted = FALSE
+      ))
+    )
+  ORDER BY p.name, c.sort_order, c.name, g.name, t.sort_order, t.id;
 END$$
 
 CREATE PROCEDURE sp_dashboard_get(IN p_user_id BIGINT, IN p_role VARCHAR(80), IN p_tenant_id BIGINT)

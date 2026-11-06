@@ -12,6 +12,7 @@ import { mapStoredProcedureError } from './errors.js'
 import { uploadLogo, uploadSpreadsheet, UPLOADS_DIR } from './uploads.js'
 import { registerPublicProgramRoutes, renderPublicProgramHtml } from './publicPrograms.js'
 import { createInvitation, NO_PASSWORD, registerInvitationRoutes } from './invitations.js'
+import { registerProgressRoutes } from './progress.js'
 import { HEX_COLOR, resolvePalette } from '../src/palette.js'
 import {
   uploadMaterialZip, extractMaterialZip, materialDir, removeMaterialDir, describeMaterial,
@@ -214,6 +215,7 @@ app.post('/api/auth/change-password', authenticate, async (req, res) => {
 // contrasena nueva (POST /api/users/:id/invitation, ver server/invitations.js).
 // Ya no existen contrasenas temporales.
 registerInvitationRoutes(app)
+registerProgressRoutes(app)
 
 app.get('/api/tenants', authenticate, async (req, res) => {
   try {

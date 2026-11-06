@@ -84,7 +84,7 @@ const ERROR_MESSAGES = {
   temario_sheet_not_found: 'El Excel no tiene la hoja del temario exportado (columnas "ID componente", "N°" y "Tema"). Usa el archivo de "Exportar temario".',
 }
 
-function ErrorNote({ message }) {
+export function ErrorNote({ message }) {
   if (!message) return null
   return <p className="form-error">{ERROR_MESSAGES[message] || message}</p>
 }
@@ -1501,7 +1501,7 @@ function GroupsPanel({ session, component, onBack }) {
   )
 }
 
-function Modal({ title, onClose, children, wide, full }) {
+export function Modal({ title, onClose, children, wide, full }) {
   useEffect(() => {
     function handleKey(e) { if (e.key === 'Escape') onClose() }
     document.addEventListener('keydown', handleKey)
@@ -1534,7 +1534,7 @@ function formatBytes(bytes) {
 
 // Material de UNA clase: su tema-NN.html y, para instructor/admin, un
 // boton para alternar a las respuestas (soluciones/tema-NN.html).
-function MaterialViewer({ session, topic, onClose }) {
+export function MaterialViewer({ session, topic, onClose }) {
   const { token } = session
   const [data, setData] = useState(null)
   const [error, setError] = useState('')
