@@ -66,6 +66,21 @@ function dateRange(topics) {
   return { firstDate: dates[0] || null, lastDate: dates.at(-1) || null }
 }
 
+// Asistencia agregada de varias sesiones: % de presentes (incluye tarde)
+// sobre los registros tomados. null si no hay ninguna sesion registrada.
+function attendanceRate(topics) {
+  let recorded = 0
+  let present = 0
+  let sessions = 0
+  for (const t of topics) {
+    if (!t.attendance?.recorded) continue
+    sessions += 1
+    recorded += t.attendance.recorded
+    present += t.attendance.present
+  }
+  return sessions ? { sessions, recorded, present, pct: percent(present, recorded) } : null
+}
+
 function countColumns(topics) {
   const counts = Object.fromEntries(TOPIC_COLUMNS.map((c) => [c.key, 0]))
   topics.forEach((t) => { if (t.column) counts[t.column] += 1 })
@@ -108,6 +123,10 @@ export function buildProgressBoard(rows, today = todayIn(rows[0]?.timezone)) {
       statusCode: r.status_code, statusLabel: r.status_label,
       column: topicColumn(r, today),
       hasMaterial: position <= component.materialTopicFileCount,
+      // null = sin datos para este rol (el alumno solo ve su propio registro)
+      attendance: r.attendance_recorded === null || r.attendance_recorded === undefined ? null
+        : { recorded: Number(r.attendance_recorded), present: Number(r.attendance_present) },
+      myAttendance: r.my_attendance_code ? { code: r.my_attendance_code, label: r.my_attendance_label } : null,
     })
   }
 
@@ -115,7 +134,7 @@ export function buildProgressBoard(rows, today = todayIn(rows[0]?.timezone)) {
     const groups = [...component.groups.values()].map((g) => {
       const counts = countColumns(g.topics)
       const total = g.topics.filter((t) => t.column).length
-      return { ...g, counts, total, progressPct: percent(counts.completed, total), nextClass: nextClassOf(g.topics), ...dateRange(g.topics) }
+      return { ...g, counts, total, progressPct: percent(counts.completed, total), nextClass: nextClassOf(g.topics), ...dateRange(g.topics), attendance: attendanceRate(g.topics) }
     })
     const allTopics = groups.flatMap((g) => g.topics)
     const counts = countColumns(allTopics)
@@ -134,6 +153,7 @@ export function buildProgressBoard(rows, today = todayIn(rows[0]?.timezone)) {
       topicCount, materialTopicCount: withMaterial,
       nextClass: nextClassOf(allTopics),
       ...dateRange(allTopics),
+      attendance: attendanceRate(allTopics),
     }
   })
 
@@ -162,7 +182,39 @@ export function buildProgressBoard(rows, today = todayIn(rows[0]?.timezone)) {
   }
 }
 
+// Grilla de asistencia de un grupo: una fila por alumno con su estado en
+// cada sesion registrada y su % (presente o tarde cuentan como asistencia).
+export function buildGroupAttendance(rows) {
+  const students = new Map()
+  for (const r of rows) {
+    if (!students.has(r.student_id)) {
+      students.set(r.student_id, { id: r.student_id, name: r.student_name, isActive: Boolean(r.student_is_active), byTopic: {} })
+    }
+    if (r.topic_id) students.get(r.student_id).byTopic[r.topic_id] = { code: r.status_code, label: r.status_label }
+  }
+  return [...students.values()].map((st) => {
+    const marks = Object.values(st.byTopic)
+    const present = marks.filter((m) => m.code === 'present' || m.code === 'late').length
+    return { ...st, recorded: marks.length, present, pct: marks.length ? percent(present, marks.length) : null }
+  })
+}
+
 export function registerProgressRoutes(app) {
+  app.get('/api/progress/groups/:id/attendance', authenticate, async (req, res) => {
+    const groupId = Number(req.params.id)
+    if (!Number.isInteger(groupId)) return res.status(400).json({ message: 'Invalid request format' })
+    try {
+      const rows = await callProcedure('sp_progress_group_attendance', {
+        p_actor_user_id: req.user.id, p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId,
+        p_group_id: groupId,
+      })
+      res.json({ data: buildGroupAttendance(rows) })
+    } catch (err) {
+      const { status, message } = mapStoredProcedureError(err)
+      res.status(status).json({ message })
+    }
+  })
+
   app.get('/api/progress', authenticate, async (req, res) => {
     const programId = req.query.programId ? Number(req.query.programId) : null
     if (programId !== null && !Number.isInteger(programId)) return res.status(400).json({ message: 'Invalid request format' })

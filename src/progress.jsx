@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
-import { ArrowLeft, BookOpen, CalendarClock, CheckCircle2, ChevronRight, Clock, FileText, Users as UsersIcon } from 'lucide-react'
+import { ArrowLeft, BookOpen, CalendarClock, CheckCircle2, ChevronRight, Clock, FileText, ListOrdered, SquareKanban, UserCheck, Users as UsersIcon } from 'lucide-react'
 import { apiRequest } from './api'
-import { ErrorNote, MaterialViewer, Modal } from './admin.jsx'
+import { ErrorNote, InstructorAttendancePanel, MaterialViewer, Modal } from './admin.jsx'
 
 // Vista "Avance": kanban de componentes del programa y, al entrar a uno,
 // kanban de sus temas. Los datos y las columnas vienen armados por la API
@@ -92,6 +92,27 @@ function SummaryStrip({ board }) {
   )
 }
 
+// Abreviatura y tono de cada estado de asistencia para la grilla.
+const ATTENDANCE_MARKS = {
+  present: { short: 'P', tone: 'ok', label: 'Presente' },
+  late: { short: 'T', tone: 'warn', label: 'Tarde' },
+  left_early: { short: 'R', tone: 'warn', label: 'Retirado' },
+  absent: { short: 'A', tone: 'danger', label: 'Ausente' },
+  justified_absent: { short: 'J', tone: 'info', label: 'Justificado' },
+  approved_leave: { short: 'Pm', tone: 'info', label: 'Permiso' },
+}
+
+function attendanceText(attendance) {
+  if (!attendance?.recorded) return null
+  return `${attendance.present}/${attendance.recorded} asistieron`
+}
+
+function AttendanceMark({ mark }) {
+  if (!mark) return <span className="pg-mark empty" title="Sin registro">·<span className="sr-only">Sin registro</span></span>
+  const meta = ATTENDANCE_MARKS[mark.code] || { short: '?', tone: 'info' }
+  return <span className={`pg-mark ${meta.tone}`} title={mark.label}>{meta.short}<span className="sr-only">{mark.label}</span></span>
+}
+
 function ComponentCard({ component, today, onOpen }) {
   const { palette } = component
   return (
@@ -110,6 +131,11 @@ function ComponentCard({ component, today, onOpen }) {
         <span className={component.materialTopicCount < component.topicCount ? 'pg-chip warn' : 'pg-chip'}>
           <FileText size={13} aria-hidden="true" />Material {component.materialTopicCount}/{component.topicCount}
         </span>
+        {component.attendance && (
+          <span className={component.attendance.pct < 80 ? 'pg-chip warn' : 'pg-chip ok'} title={`${component.attendance.sessions} sesiones con asistencia registrada`}>
+            <UserCheck size={13} aria-hidden="true" />Asistencia {component.attendance.pct}%
+          </span>
+        )}
         {component.counts.delayed > 0 && <span className="pg-chip danger">{component.counts.delayed} atrasado{component.counts.delayed > 1 ? 's' : ''}</span>}
       </span>
       <span className="pg-meta">
@@ -131,6 +157,8 @@ function TopicCard({ topic, today, color, onOpen }) {
       </span>
       <strong>{topic.title}</strong>
       <span className="pg-meta"><Clock size={14} aria-hidden="true" />{classWhen(topic, today)}</span>
+      {attendanceText(topic.attendance) && <span className="pg-meta"><UserCheck size={14} aria-hidden="true" />{attendanceText(topic.attendance)}</span>}
+      {topic.myAttendance && <span className="pg-meta"><UserCheck size={14} aria-hidden="true" />Tu asistencia: {topic.myAttendance.label}</span>}
       {topic.column === 'delayed' && topic.statusCode !== 'delayed' && topic.statusCode !== 'rescheduled' && (
         <span className="pg-chip danger">Fecha pasada · sin marcar</span>
       )}
@@ -165,7 +193,73 @@ function ComponentBoard({ board, onOpen }) {
   )
 }
 
-function TopicDetail({ topic, component, group, today, onClose, onOpenMaterial }) {
+// Asistencia de una sesion dentro del detalle del tema. El alumno ve solo
+// la suya; instructor y admins ven la lista y pueden registrarla.
+function SessionAttendance({ session, topic, isStudent, onRegister }) {
+  const { token } = session
+  const [rows, setRows] = useState(null)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    if (isStudent) return
+    let cancelled = false
+    apiRequest(`/api/topics/${topic.id}/attendance`, { token })
+      .then((res) => { if (!cancelled) setRows(res.data || []) })
+      .catch((err) => { if (!cancelled) setError(err.message) })
+    return () => { cancelled = true }
+  }, [isStudent, topic.id, token])
+
+  if (isStudent) {
+    return (
+      <section className="pg-session-att">
+        <h4>Tu asistencia</h4>
+        {topic.myAttendance
+          ? <p className="pg-my-att"><AttendanceMark mark={topic.myAttendance} /> {topic.myAttendance.label}</p>
+          : <p className="muted">Todavía no se registró la asistencia de esta sesión.</p>}
+      </section>
+    )
+  }
+
+  const recorded = rows ? rows.filter((r) => r.status_code) : []
+  const attended = recorded.filter((r) => r.status_code === 'present' || r.status_code === 'late').length
+  const others = Object.entries(recorded.reduce((acc, r) => {
+    if (r.status_code !== 'present') acc[r.status_label] = (acc[r.status_label] || 0) + 1
+    return acc
+  }, {}))
+  return (
+    <section className="pg-session-att">
+      <div className="pg-session-att-head">
+        <h4>Asistencia de la sesión</h4>
+        {onRegister && (
+          <button type="button" className="btn-mini" onClick={onRegister}>
+            <UserCheck size={14} aria-hidden="true" /> {recorded.length ? 'Editar asistencia' : 'Registrar asistencia'}
+          </button>
+        )}
+      </div>
+      <ErrorNote message={error} />
+      {!rows && !error ? <p className="muted">Cargando…</p> : rows && rows.length === 0 ? <p className="muted">No hay alumnos inscritos en este grupo.</p> : rows && (
+        <>
+          <p className="muted">
+            {recorded.length === 0
+              ? 'Todavía no se registró la asistencia.'
+              : `${attended} de ${recorded.length} asistieron${others.map(([label, n]) => ` · ${n} ${label.toLowerCase()}`).join('')}`}
+          </p>
+          <ul className="pg-att-list">
+            {rows.map((r) => (
+              <li key={r.student_id}>
+                <AttendanceMark mark={r.status_code ? { code: r.status_code, label: r.status_label } : null} />
+                <span>{r.student_name}</span>
+                {r.reason_label && <small className="muted">{r.reason_label}</small>}
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+    </section>
+  )
+}
+
+function TopicDetail({ session, topic, component, group, today, isStudent, onClose, onOpenMaterial, onRegister }) {
   const rows = [
     ['Componente', component.name],
     ['Grupo', group.name],
@@ -177,12 +271,13 @@ function TopicDetail({ topic, component, group, today, onClose, onOpenMaterial }
     ...(topic.actualDate ? [['Dictado el', formatDay(topic.actualDate)]] : []),
   ]
   return (
-    <Modal title={`Tema ${String(topic.position).padStart(2, '0')} · ${topic.title}`} onClose={onClose}>
+    <Modal title={`Tema ${String(topic.position).padStart(2, '0')} · ${topic.title}`} onClose={onClose} wide>
       <div className="pg-detail" style={{ '--pg-color': component.palette.primary }}>
         <dl>
           {rows.map(([k, v]) => <div key={k}><dt>{k}</dt><dd>{v}</dd></div>)}
         </dl>
         {topic.description && <p className="muted">{topic.description}</p>}
+        <SessionAttendance session={session} topic={topic} isStudent={isStudent} onRegister={isStudent ? null : onRegister} />
         <div className="pg-detail-actions">
           {topic.hasMaterial
             ? <button type="button" className="primary" onClick={onOpenMaterial}><BookOpen size={16} aria-hidden="true" /> Abrir contenido del tema</button>
@@ -193,12 +288,142 @@ function TopicDetail({ topic, component, group, today, onClose, onOpenMaterial }
   )
 }
 
-function ComponentDetail({ board, component, session, onBack }) {
+// Temario del grupo en lista: una fila por sesion con fecha, estado,
+// asistencia y material; cada fila abre el detalle.
+function SyllabusTable({ board, group, isStudent, onOpen }) {
+  const columnLabel = Object.fromEntries(board.topicColumns.map((c) => [c.key, c.label]))
+  return (
+    <div className="table-scroll">
+      <table className="admin-table pg-syllabus">
+        <thead>
+          <tr><th>N°</th><th>Tema</th><th>Fecha</th><th>Estado</th><th>{isStudent ? 'Tu asistencia' : 'Asistencia'}</th><th>Material</th><th><span className="sr-only">Acciones</span></th></tr>
+        </thead>
+        <tbody>
+          {group.topics.map((t) => (
+            <tr key={t.id}>
+              <td>{String(t.position).padStart(2, '0')}</td>
+              <td className="pg-syllabus-title">{t.title}</td>
+              <td>{classWhen(t, board.today)}</td>
+              <td><span className={`pg-status pg-col-${t.column || 'cancelled'}`}>{t.column ? columnLabel[t.column] : t.statusLabel}</span></td>
+              <td>
+                {isStudent
+                  ? (t.myAttendance ? <span className="pg-my-att"><AttendanceMark mark={t.myAttendance} /> {t.myAttendance.label}</span> : <span className="muted">—</span>)
+                  : (attendanceText(t.attendance) || <span className="muted">Sin registro</span>)}
+              </td>
+              <td>{t.hasMaterial ? <span className="pg-material"><BookOpen size={14} aria-hidden="true" />&nbsp;Sí</span> : <span className="muted">No</span>}</td>
+              <td><button type="button" className="btn-mini" onClick={() => onOpen(t)}>Ver detalle</button></td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+// Grilla alumnos x sesiones con el % de cada alumno. Solo columnas de
+// sesiones con al menos un registro (las futuras no aportan).
+function AttendanceGrid({ session, group, reloadKey, onOpen }) {
+  const { token } = session
+  const [students, setStudents] = useState(null)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    let cancelled = false
+    setError('')
+    apiRequest(`/api/progress/groups/${group.id}/attendance`, { token })
+      .then((res) => { if (!cancelled) setStudents(res.data || []) })
+      .catch((err) => { if (!cancelled) setError(err.message) })
+    return () => { cancelled = true }
+  }, [group.id, token, reloadKey])
+
+  const sessions = students ? group.topics.filter((t) => students.some((s) => s.byTopic[t.id])) : []
+  const withRate = students ? students.filter((s) => s.pct !== null) : []
+  const average = withRate.length ? Math.round(withRate.reduce((sum, s) => sum + s.pct, 0) / withRate.length) : null
+  const atRisk = withRate.filter((s) => s.pct < 80).length
+
+  return (
+    <div className="pg-att-view">
+      <ErrorNote message={error} />
+      {!students && !error ? <p className="muted">Cargando…</p> : students && (
+        <>
+          <div className="pg-summary pg-att-summary">
+            <article className="pg-stat">
+              <span className="pg-stat-label">Asistencia promedio</span>
+              <strong>{average === null ? '—' : <>{average}<small>%</small></>}</strong>
+            </article>
+            <article className="pg-stat">
+              <span className="pg-stat-label">Sesiones registradas</span>
+              <strong>{sessions.length}<small>/{group.topics.length}</small></strong>
+            </article>
+            <article className={atRisk ? 'pg-stat pg-stat-alert' : 'pg-stat'}>
+              <span className="pg-stat-label">Bajo 80 %</span>
+              <strong>{atRisk}</strong>
+              <small className="muted">{atRisk ? 'para hacer seguimiento' : 'Nadie en riesgo'}</small>
+            </article>
+          </div>
+          {students.length === 0 ? <p className="muted">No hay alumnos inscritos en este grupo.</p> : sessions.length === 0 ? <p className="muted">Todavía no hay sesiones con asistencia registrada.</p> : (
+            <div className="table-scroll">
+              <table className="admin-table pg-att-grid">
+                <thead>
+                  <tr>
+                    <th>Alumno</th>
+                    {sessions.map((t) => (
+                      <th key={t.id}>
+                        <button type="button" className="pg-att-col" onClick={() => onOpen(t)} title={`${t.title} · ${formatDay(t.scheduledOn) || 'sin fecha'}`}>
+                          T{String(t.position).padStart(2, '0')}
+                        </button>
+                      </th>
+                    ))}
+                    <th>%</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {students.map((s) => (
+                    <tr key={s.id}>
+                      <td className="pg-att-name">{s.name}{!s.isActive && <small className="muted"> (inactivo)</small>}</td>
+                      {sessions.map((t) => <td key={t.id}><AttendanceMark mark={s.byTopic[t.id]} /></td>)}
+                      <td><b className={s.pct !== null && s.pct < 80 ? 'pg-pct danger' : 'pg-pct'}>{s.pct === null ? '—' : `${s.pct}%`}</b></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <p className="pg-legend muted">
+            {Object.entries(ATTENDANCE_MARKS).map(([code, m]) => <span key={code}><span className={`pg-mark ${m.tone}`}>{m.short}</span> {m.label}</span>)}
+          </p>
+        </>
+      )}
+    </div>
+  )
+}
+
+const DETAIL_TABS = [
+  { key: 'board', label: 'Tablero', Icon: SquareKanban },
+  { key: 'syllabus', label: 'Temario', Icon: ListOrdered },
+  { key: 'attendance', label: 'Asistencia', Icon: UserCheck },
+]
+
+function ComponentDetail({ board, component, session, onBack, onChanged }) {
+  const isStudent = session.role === 'student'
   const [groupId, setGroupId] = useState(component.groups[0]?.id)
-  const [selected, setSelected] = useState(null)
+  const [tab, setTab] = useState('board')
+  const [selectedId, setSelectedId] = useState(null)
   const [materialTopic, setMaterialTopic] = useState(null)
+  const [registerTopic, setRegisterTopic] = useState(null)
+  const [reloadKey, setReloadKey] = useState(0)
   const group = component.groups.find((g) => g.id === groupId) || component.groups[0]
   const color = component.palette.primary
+  // El detalle abierto se lee del tablero actual: tras registrar
+  // asistencia muestra los datos recargados.
+  const selected = selectedId ? group.topics.find((t) => t.id === selectedId) || null : null
+  const openTopic = (t) => setSelectedId(t.id)
+
+  function closeRegister() {
+    setRegisterTopic(null)
+    setReloadKey((k) => k + 1)
+    onChanged()
+  }
 
   return (
     <div className="pg-detail-view">
@@ -212,10 +437,19 @@ function ComponentDetail({ board, component, session, onBack }) {
             {group.firstDate ? ` · ${formatDay(group.firstDate, { weekday: false })} – ${formatDay(group.lastDate, { weekday: false })}` : ''}
           </p>
         </div>
-        <div className="pg-head-progress">
-          <strong>{group.progressPct}%</strong>
-          <ProgressBar value={group.progressPct} color={color} label={`Avance de ${component.name}`} />
-          <small className="muted">{group.counts.completed} de {group.total} temas dictados</small>
+        <div className="pg-head-stats">
+          <div className="pg-head-progress">
+            <strong>{group.progressPct}%</strong>
+            <ProgressBar value={group.progressPct} color={color} label={`Avance de ${component.name}`} />
+            <small className="muted">{group.counts.completed} de {group.total} temas dictados</small>
+          </div>
+          {group.attendance && (
+            <div className="pg-head-progress">
+              <strong>{group.attendance.pct}%</strong>
+              <ProgressBar value={group.attendance.pct} color="#12875a" label={`Asistencia de ${component.name}`} />
+              <small className="muted">asistencia en {group.attendance.sessions} sesiones</small>
+            </div>
+          )}
         </div>
       </header>
       {component.groups.length > 1 && (
@@ -230,22 +464,45 @@ function ComponentDetail({ board, component, session, onBack }) {
       {group.nextClass && (
         <p className="pg-next"><CalendarClock size={16} aria-hidden="true" /> Próxima clase: <b>{classWhen(group.nextClass, board.today)}</b> — {group.nextClass.title}</p>
       )}
-      <div className="pg-board pg-board-5">
-        {board.topicColumns.map((col) => {
-          const items = group.topics.filter((t) => t.column === col.key)
-          return (
-            <Column key={col.key} column={col} count={items.length}>
-              {items.map((t) => <TopicCard key={t.id} topic={t} today={board.today} color={color} onOpen={setSelected} />)}
-            </Column>
-          )
-        })}
+      <div className="pg-tabs" role="tablist" aria-label="Vista del componente">
+        {DETAIL_TABS.map(({ key, label, Icon }) => (
+          <button key={key} type="button" role="tab" aria-selected={tab === key} className={tab === key ? 'pg-tab active' : 'pg-tab'} onClick={() => setTab(key)}>
+            <Icon size={15} aria-hidden="true" />{key === 'attendance' && isStudent ? 'Mi asistencia' : label}
+          </button>
+        ))}
       </div>
+      {tab === 'board' && (
+        <div className="pg-board pg-board-5">
+          {board.topicColumns.map((col) => {
+            const items = group.topics.filter((t) => t.column === col.key)
+            return (
+              <Column key={col.key} column={col} count={items.length}>
+                {items.map((t) => <TopicCard key={t.id} topic={t} today={board.today} color={color} onOpen={openTopic} />)}
+              </Column>
+            )
+          })}
+        </div>
+      )}
+      {tab === 'syllabus' && <SyllabusTable board={board} group={group} isStudent={isStudent} onOpen={openTopic} />}
+      {tab === 'attendance' && <AttendanceGrid key={group.id} session={session} group={group} reloadKey={reloadKey} onOpen={openTopic} />}
       {selected && (
         <TopicDetail
-          topic={selected} component={component} group={group} today={board.today}
-          onClose={() => setSelected(null)}
-          onOpenMaterial={() => { setMaterialTopic(selected); setSelected(null) }}
+          key={`${selected.id}-${reloadKey}`}
+          session={session} topic={selected} component={component} group={group} today={board.today} isStudent={isStudent}
+          onClose={() => setSelectedId(null)}
+          onOpenMaterial={() => { setMaterialTopic(selected); setSelectedId(null) }}
+          onRegister={() => setRegisterTopic(selected)}
         />
+      )}
+      {registerTopic && (
+        <Modal title={`Asistencia — ${registerTopic.title}`} onClose={closeRegister} full>
+          <InstructorAttendancePanel
+            session={session}
+            topic={{ id: registerTopic.id, title: registerTopic.title, scheduled_on: registerTopic.scheduledOn, status_code: registerTopic.statusCode }}
+            onBack={closeRegister}
+            embedded
+          />
+        </Modal>
       )}
       {materialTopic && <MaterialViewer session={session} topic={materialTopic} onClose={() => setMaterialTopic(null)} />}
     </div>
@@ -261,6 +518,7 @@ export function ProgressPanel({ session }) {
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
   const [openComponentId, setOpenComponentId] = useState(null)
+  const [boardReload, setBoardReload] = useState(0)
 
   // Admins: lista de programas para el selector (instructor/alumno la
   // obtienen del mismo tablero).
@@ -289,7 +547,7 @@ export function ProgressPanel({ session }) {
       .catch((err) => { if (!cancelled) setError(err.message) })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [isAdmin, programId, token])
+  }, [isAdmin, programId, token, boardReload])
 
   function chooseProgram(id) {
     if (isAdmin) writeStored(PROGRAM_KEY, id)
@@ -331,7 +589,7 @@ export function ProgressPanel({ session }) {
         </section>
       ) : board && (
         openComponent
-          ? <ComponentDetail key={openComponent.id} board={board} component={openComponent} session={session} onBack={() => setOpenComponentId(null)} />
+          ? <ComponentDetail key={openComponent.id} board={board} component={openComponent} session={session} onBack={() => setOpenComponentId(null)} onChanged={() => setBoardReload((k) => k + 1)} />
           : <>
               <SummaryStrip board={board} />
               <ComponentBoard board={board} onOpen={(c) => setOpenComponentId(c.id)} />

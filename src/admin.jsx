@@ -2823,7 +2823,8 @@ export function HolidaysPanel({ session }) {
 // por fila. Un solo "Guardar asistencia" al final guarda todo el roster.
 const DEFAULT_ATTENDANCE_STATUS = 'present'
 
-function InstructorAttendancePanel({ session, topic, onBack }) {
+// embedded: abierto dentro de un modal (Avance), sin el enlace de volver.
+export function InstructorAttendancePanel({ session, topic, onBack, embedded = false }) {
   const { token } = session
   const { items, error, loading, reload } = useList(`/api/topics/${topic.id}/attendance`, token)
   const statuses = useCatalog('ATTENDANCE_STATUS', token)
@@ -2886,7 +2887,7 @@ function InstructorAttendancePanel({ session, topic, onBack }) {
 
   return (
     <div className="admin-wrap">
-      <button className="text-button crumb-back" onClick={onBack}>← Volver al temario</button>
+      {!embedded && <button className="text-button crumb-back" onClick={onBack}>← Volver al temario</button>}
       <section className="panel">
         <div className="panel-title-row">
           <h3>Asistencia — {topic.title}</h3>

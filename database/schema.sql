@@ -630,6 +630,7 @@ DROP PROCEDURE IF EXISTS sp_component_materials_remove;
 DROP PROCEDURE IF EXISTS sp_topic_material_get;
 DROP PROCEDURE IF EXISTS sp_topics_list_by_student;
 DROP PROCEDURE IF EXISTS sp_progress_board;
+DROP PROCEDURE IF EXISTS sp_progress_group_attendance;
 DROP PROCEDURE IF EXISTS sp_component_material_prompt_data;
 DROP PROCEDURE IF EXISTS sp_program_temario_export;
 DROP PROCEDURE IF EXISTS sp_topics_update_by_position;
@@ -4044,7 +4045,20 @@ BEGIN
          m.topic_file_count AS material_topic_file_count,
          t.id AS topic_id, t.title, t.description, t.sort_order, t.scheduled_on, t.actual_date, t.duration_minutes,
          ts.code AS status_code, ts.label AS status_label,
-         sd.start_time, sd.end_time
+         sd.start_time, sd.end_time,
+         -- Asistencia de la sesion: conteos del grupo para admins/instructor;
+         -- el alumno solo recibe su propio registro.
+         IF(p_actor_role = 'student', NULL,
+            (SELECT COUNT(*) FROM attendance a WHERE a.topic_id = t.id AND a.is_deleted = FALSE)) AS attendance_recorded,
+         IF(p_actor_role = 'student', NULL,
+            (SELECT COUNT(*) FROM attendance a JOIN master_catalog_values av ON av.id = a.attendance_status_id
+             WHERE a.topic_id = t.id AND a.is_deleted = FALSE AND av.code IN ('present', 'late'))) AS attendance_present,
+         IF(p_actor_role = 'student',
+            (SELECT av.code FROM attendance a JOIN master_catalog_values av ON av.id = a.attendance_status_id
+             WHERE a.topic_id = t.id AND a.student_id = p_actor_user_id AND a.is_deleted = FALSE), NULL) AS my_attendance_code,
+         IF(p_actor_role = 'student',
+            (SELECT av.label FROM attendance a JOIN master_catalog_values av ON av.id = a.attendance_status_id
+             WHERE a.topic_id = t.id AND a.student_id = p_actor_user_id AND a.is_deleted = FALSE), NULL) AS my_attendance_label
   FROM topics t
   JOIN component_groups g ON g.id = t.group_id AND g.is_deleted = FALSE
   JOIN components c ON c.id = g.component_id AND c.is_deleted = FALSE
@@ -4067,6 +4081,51 @@ BEGIN
       ))
     )
   ORDER BY p.name, c.sort_order, c.name, g.name, t.sort_order, t.id;
+END$$
+
+-- Asistencia de un grupo por alumno y sesion (grilla del tablero de
+-- avance). Admins del tenant e instructor del grupo ven a todos los
+-- inscritos; el alumno inscrito solo su propia fila.
+CREATE PROCEDURE sp_progress_group_attendance(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED,
+  IN p_group_id BIGINT UNSIGNED
+)
+BEGIN
+  DECLARE v_program_tenant_id BIGINT UNSIGNED;
+  DECLARE v_instructor_id BIGINT UNSIGNED;
+
+  SELECT p.tenant_id, g.instructor_id INTO v_program_tenant_id, v_instructor_id
+  FROM component_groups g JOIN components c ON c.id = g.component_id JOIN training_programs p ON p.id = c.program_id
+  WHERE g.id = p_group_id AND g.is_deleted = FALSE;
+
+  IF v_program_tenant_id IS NULL THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'group_not_found';
+  END IF;
+  IF p_actor_role NOT IN ('super_admin', 'tenant_admin', 'instructor', 'student') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  ELSEIF p_actor_role <> 'super_admin' AND v_program_tenant_id <> p_actor_tenant_id THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
+  ELSEIF p_actor_role = 'instructor' AND (v_instructor_id IS NULL OR v_instructor_id <> p_actor_user_id) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  ELSEIF p_actor_role = 'student' AND NOT EXISTS (
+    SELECT 1 FROM group_enrollments ge WHERE ge.group_id = p_group_id AND ge.student_id = p_actor_user_id AND ge.is_deleted = FALSE
+  ) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+
+  SELECT su.id AS student_id, su.full_name AS student_name, su.is_active AS student_is_active,
+         a.topic_id, av.code AS status_code, av.label AS status_label
+  FROM group_enrollments ge
+  JOIN users su ON su.id = ge.student_id
+  LEFT JOIN (
+    SELECT a.topic_id, a.student_id, a.attendance_status_id
+    FROM attendance a JOIN topics t ON t.id = a.topic_id
+    WHERE t.group_id = p_group_id AND t.is_deleted = FALSE AND a.is_deleted = FALSE
+  ) a ON a.student_id = ge.student_id
+  LEFT JOIN master_catalog_values av ON av.id = a.attendance_status_id
+  WHERE ge.group_id = p_group_id AND ge.is_deleted = FALSE
+    AND (p_actor_role <> 'student' OR ge.student_id = p_actor_user_id)
+  ORDER BY su.full_name, a.topic_id;
 END$$
 
 CREATE PROCEDURE sp_dashboard_get(IN p_user_id BIGINT, IN p_role VARCHAR(80), IN p_tenant_id BIGINT)
