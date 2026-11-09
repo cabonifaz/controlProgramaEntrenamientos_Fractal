@@ -387,7 +387,7 @@ function TenantLoginLink({ slug }) {
 
   return (
     <div className="tenant-link">
-      <code>{url}</code>
+      <code title={url}>{url}</code>
       <button type="button" className="btn-mini" onClick={handleCopy}>{copied ? 'Copiado' : 'Copiar'}</button>
     </div>
   )
@@ -470,8 +470,9 @@ export function TenantsPanel({ session, navigate }) {
         <h3>Tenants</h3>
         <ErrorNote message={error} />
         {loading ? <p className="muted">Cargando…</p> : (
+          <div className="table-fit">
           <table className="admin-table">
-            <thead><tr><th>Nombre</th><th>Slug</th><th>Estado</th><th>Contacto</th><th>Logo</th><th>Color</th><th>Link de acceso</th><th></th></tr></thead>
+            <thead><tr><th>Nombre</th><th>Slug</th><th>Estado</th><th>Contacto</th><th>Logo</th><th>Color</th><th>Link de acceso</th><th><span className="sr-only">Acciones</span></th></tr></thead>
             <tbody>
               {items.map((t) => (
                 <tr key={t.id}>
@@ -490,7 +491,7 @@ export function TenantsPanel({ session, navigate }) {
                   <td><LogoUploader session={session} tenantId={t.id} currentLogoUrl={t.logo_path ? `/uploads/${t.logo_path}` : null} onUploaded={reload} /></td>
                   <td><BrandColorPicker session={session} tenantId={t.id} currentColor={t.brand_color} onSaved={reload} /></td>
                   <td><TenantLoginLink slug={t.slug} /></td>
-                  <td className="row-actions">
+                  <td className="row-actions stack">
                     <button className="btn-mini" onClick={() => navigate?.('Usuarios', { tenantId: t.id })} title={`Ver los usuarios de ${t.name}`}>Usuarios ({t.user_count ?? 0})</button>
                     <button className="btn-mini" onClick={() => toggleStatus(t)}>{t.status_code === 'active' ? 'Desactivar' : 'Activar'}</button>
                   </td>
@@ -498,6 +499,7 @@ export function TenantsPanel({ session, navigate }) {
               ))}
             </tbody>
           </table>
+          </div>
         )}
       </section>
     </div>

@@ -141,3 +141,11 @@
 .pg-detail-view>*,.pg-att-view>*{min-width:0}
 .table-scroll{position:relative}
 .pg-detail-view>.table-scroll,.pg-att-view>.table-scroll{background:#fff;border:1px solid var(--line);border-radius:10px;padding:0 10px 4px}.pg-detail-view>.table-scroll .admin-table,.pg-att-view>.table-scroll .admin-table{margin-top:4px}
+/* Acciones en tablas: la celda sigue siendo celda; los botones se alinean dentro */
+.admin-table td.row-actions{display:table-cell;white-space:nowrap;text-align:right}
+.admin-table td.row-actions>*{vertical-align:middle}
+.admin-table td.row-actions>*+*{margin-left:8px}
+.table-fit{overflow-x:auto;max-width:100%;position:relative;-webkit-overflow-scrolling:touch}
+.tenant-link code{max-width:170px}
+.admin-table td.row-actions.stack>*{display:block;width:100%;margin:0}
+.admin-table td.row-actions.stack>*+*{margin-top:6px}
