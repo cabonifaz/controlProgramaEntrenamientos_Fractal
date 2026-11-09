@@ -66,6 +66,7 @@ async function main() {
     await connection.query('CALL sp_migrate_program_public_v1()')
     await connection.query('CALL sp_migrate_tenant_contact_v1()')
     await connection.query('CALL sp_migrate_program_colors_v1()')
+    await connection.query('CALL sp_migrate_leave_topic_v1()')
 
     console.log('Schema applied successfully.')
   } finally {

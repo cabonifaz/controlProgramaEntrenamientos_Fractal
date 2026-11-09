@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { Bell, CalendarDays, ChevronDown, ClipboardCheck, LayoutDashboard, LogOut, Menu, Settings2, ShieldCheck, SquareKanban, Users, X } from 'lucide-react'
-import { AlertsPanel, ChangePasswordPanel, HolidaysPanel, InstructorClassesPanel, LeaveRequestsPanel, PreEnrollmentsPanel, ProgramsPanel, RealDashboard, ReportsPanel, StudentAttendancePanel, StudentTopicsPanel, TenantsPanel, UsersPanel } from './admin.jsx'
+import { AlertsPanel, ChangePasswordPanel, HolidaysPanel, InstructorClassesPanel, LeaveRequestsPanel, PreEnrollmentsPanel, ProgramsPanel, RealDashboard, ReportsPanel, TenantsPanel, UsersPanel } from './admin.jsx'
 import { ProgressPanel } from './progress.jsx'
+import { StudentAttendanceView, StudentSchedulePanel, StudentTopicsOverview } from './student.jsx'
 import { getPublicProgramRoute, PublicProgramApp } from './public.jsx'
 import { getInvitationRoute, InvitationApp } from './invitation.jsx'
 import { apiRequest } from './api'
@@ -26,8 +27,8 @@ const data = {
 const roleKeyByCode = { student: 'student', instructor: 'instructor', tenant_admin: 'admin', super_admin: 'superAdmin' }
 
 const ADMIN_PANEL_BY_NAV = { Avance: ProgressPanel, Tenants: TenantsPanel, Usuarios: UsersPanel, Programas: ProgramsPanel, Inscripciones: PreEnrollmentsPanel, Calendario: HolidaysPanel, Permisos: LeaveRequestsPanel, Alertas: AlertsPanel, Reportes: ReportsPanel, Configuracion: ChangePasswordPanel }
-const INSTRUCTOR_PANEL_BY_NAV = { Inicio: RealDashboard, Avance: ProgressPanel, 'Mis clases': InstructorClassesPanel, Temarios: InstructorClassesPanel, Asistencia: InstructorClassesPanel, Alertas: AlertsPanel, 'Mi cuenta': ChangePasswordPanel }
-const STUDENT_PANEL_BY_NAV = { Inicio: RealDashboard, Avance: ProgressPanel, 'Mis temas': StudentTopicsPanel, Permisos: LeaveRequestsPanel, Asistencia: StudentAttendancePanel, Alertas: AlertsPanel, 'Mi cuenta': ChangePasswordPanel }
+const INSTRUCTOR_PANEL_BY_NAV = { Inicio: RealDashboard, Avance: ProgressPanel, 'Mis clases': InstructorClassesPanel, Temarios: InstructorClassesPanel, Asistencia: InstructorClassesPanel, Permisos: LeaveRequestsPanel, Alertas: AlertsPanel, 'Mi cuenta': ChangePasswordPanel }
+const STUDENT_PANEL_BY_NAV = { Inicio: RealDashboard, Avance: ProgressPanel, 'Mi horario': StudentSchedulePanel, 'Mis temas': StudentTopicsOverview, Permisos: LeaveRequestsPanel, Asistencia: StudentAttendanceView, Alertas: AlertsPanel, 'Mi cuenta': ChangePasswordPanel }
 const SECTION_PANELS_BY_ROLE = { admin: ADMIN_PANEL_BY_NAV, superAdmin: ADMIN_PANEL_BY_NAV, instructor: INSTRUCTOR_PANEL_BY_NAV, student: STUDENT_PANEL_BY_NAV }
 
 function getTenantSlugFromPath() {
@@ -158,7 +159,7 @@ function App() {
   const brandMark = tenantLogoUrl
     ? <img src={tenantLogoUrl} alt="Logo" className="logo-mark logo-mark-image" />
     : <div className="logo-mark">F</div>
-  const baseNav = role === 'student' ? ['Inicio', 'Mi horario', 'Mis temas', 'Asistencia', 'Permisos', 'Alertas', 'Mi cuenta'] : role === 'instructor' ? ['Inicio', 'Mis clases', 'Temarios', 'Asistencia', 'Alertas', 'Reportes', 'Mi cuenta'] : role === 'superAdmin' ? ['Inicio', 'Tenants', 'Usuarios', 'Programas', 'Inscripciones', 'Permisos', 'Alertas', 'Reportes', 'Configuracion'] : ['Inicio', 'Programas', 'Inscripciones', 'Usuarios', 'Calendario', 'Permisos', 'Alertas', 'Reportes', 'Configuracion']
+  const baseNav = role === 'student' ? ['Inicio', 'Mi horario', 'Mis temas', 'Asistencia', 'Permisos', 'Alertas', 'Mi cuenta'] : role === 'instructor' ? ['Inicio', 'Mis clases', 'Temarios', 'Asistencia', 'Permisos', 'Alertas', 'Reportes', 'Mi cuenta'] : role === 'superAdmin' ? ['Inicio', 'Tenants', 'Usuarios', 'Programas', 'Inscripciones', 'Permisos', 'Alertas', 'Reportes', 'Configuracion'] : ['Inicio', 'Programas', 'Inscripciones', 'Usuarios', 'Calendario', 'Permisos', 'Alertas', 'Reportes', 'Configuracion']
   // "Avance" (kanban) va segundo para todos los roles; el resto conserva
   // el icono de la posicion que tenia antes de agregarlo.
   const nav = [baseNav[0], 'Avance', ...baseNav.slice(1)]

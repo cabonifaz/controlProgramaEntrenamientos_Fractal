@@ -1414,15 +1414,19 @@ app.get('/api/leave-requests', authenticate, async (req, res) => {
 })
 
 app.post('/api/leave-requests', authenticate, async (req, res) => {
-  const { startsOn, endsOn, reason, leaveTypeCode, evidenceUrl } = req.body || {}
-  if (typeof startsOn !== 'string' || !startsOn || typeof endsOn !== 'string' || !endsOn || typeof reason !== 'string' || !reason.trim()) {
+  const { startsOn, endsOn, reason, leaveTypeCode, evidenceUrl, topicId } = req.body || {}
+  // Con topicId (aviso para una clase) las fechas las toma el SP de la clase.
+  const hasTopic = topicId !== undefined && topicId !== null
+  if ((hasTopic && !Number.isInteger(topicId)) || typeof reason !== 'string' || !reason.trim()
+    || (!hasTopic && (typeof startsOn !== 'string' || !startsOn || typeof endsOn !== 'string' || !endsOn))) {
     return res.status(400).json({ message: 'Invalid request format' })
   }
 
   try {
     const [result] = await callProcedure('sp_leave_requests_create', {
-      p_actor_user_id: req.user.id, p_actor_role: req.user.roleCode, p_starts_on: startsOn, p_ends_on: endsOn,
+      p_actor_user_id: req.user.id, p_actor_role: req.user.roleCode, p_starts_on: startsOn || null, p_ends_on: endsOn || null,
       p_reason: reason, p_leave_type_code: leaveTypeCode || null, p_evidence_url: evidenceUrl || null,
+      p_topic_id: hasTopic ? topicId : null,
     })
     res.status(201).json({ data: result })
   } catch (err) {

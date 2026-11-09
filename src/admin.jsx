@@ -58,6 +58,7 @@ const ERROR_MESSAGES = {
   holiday_already_exists: 'Ese feriado ya existe.',
   already_enrolled: 'Ya está inscrito.',
   leave_not_pending: 'Ese permiso ya no está pendiente.',
+  leave_already_requested: 'Ya avisaste que no asistirás a esa clase.',
   target_not_found: 'No se encontró el registro.',
   program_not_found: 'Programa no encontrado.',
   component_not_found: 'Componente no encontrado.',
@@ -2646,6 +2647,9 @@ export function ProgramsPanel({ session }) {
 export function LeaveRequestsPanel({ session }) {
   const { token, profile } = session
   const isStudent = profile.roleCode === 'student'
+  // El instructor solo consulta los avisos de sus alumnos; resuelve el admin.
+  const isInstructor = profile.roleCode === 'instructor'
+  const canResolve = !isStudent && !isInstructor
   const { items, error, loading, reload } = useList('/api/leave-requests', token)
   const leaveTypes = useCatalog('LEAVE_TYPE', token)
   const [comments, setComments] = useState({})
@@ -2713,26 +2717,29 @@ export function LeaveRequestsPanel({ session }) {
         </section>
       )}
       <section className="panel">
-        <h3>{isStudent ? 'Mis solicitudes' : 'Solicitudes de permiso'}</h3>
-        {!isStudent && <p className="muted">La creación la hace el propio alumno; aquí se aprueba o rechaza. Sin correo: el alumno revisa el estado dentro de la app.</p>}
+        <h3>{isStudent ? 'Mis solicitudes' : isInstructor ? 'Avisos de inasistencia de mis alumnos' : 'Solicitudes de permiso'}</h3>
+        {canResolve && <p className="muted">La creación la hace el propio alumno; aquí se aprueba o rechaza. Sin correo: el alumno revisa el estado dentro de la app.</p>}
+        {isInstructor && <p className="muted">Avisos de tus alumnos para tus clases. También te llegan como alerta; el administrador los aprueba o rechaza.</p>}
+        {isStudent && <p className="muted">Para avisar que faltarás a una clase concreta, usa <b>Asistencia</b> o <b>Mi horario</b>: el aviso le llega a tu instructor.</p>}
         <ErrorNote message={error || actionError} />
         {loading ? <p className="muted">Cargando…</p> : (
           <table className="admin-table">
-            <thead><tr>{!isStudent && <th>Alumno</th>}<th>Fechas</th><th>Motivo</th><th>Estado</th><th>Comentario</th><th></th></tr></thead>
+            <thead><tr>{!isStudent && <th>Alumno</th>}<th>Clase</th><th>Fechas</th><th>Motivo</th><th>Estado</th><th>Comentario</th><th></th></tr></thead>
             <tbody>
               {items.map((r) => (
                 <tr key={r.id}>
                   {!isStudent && <td>{r.student_name}</td>}
-                  <td>{r.starts_on} → {r.ends_on}</td>
+                  <td>{r.topic_id ? <><strong>{r.topic_title}</strong><br /><span className="muted">{r.component_name}</span></> : <span className="muted">Permiso por fechas</span>}</td>
+                  <td>{r.topic_id ? r.starts_on : <>{r.starts_on} → {r.ends_on}</>}</td>
                   <td>{r.reason}</td>
                   <td><StatusPill label={r.status_label} /></td>
                   <td>
-                    {!isStudent && r.status_code === 'pending' ? (
+                    {canResolve && r.status_code === 'pending' ? (
                       <input placeholder="Comentario (opcional)" value={comments[r.id] || ''} onChange={(e) => setComments({ ...comments, [r.id]: e.target.value })} />
                     ) : (r.admin_comments || '—')}
                   </td>
                   <td className="row-actions">
-                    {!isStudent && r.status_code === 'pending' && (
+                    {canResolve && r.status_code === 'pending' && (
                       <>
                         <button className="btn-mini" onClick={() => resolve(r, 'approved')}>Aprobar</button>
                         <button className="btn-mini" onClick={() => resolve(r, 'rejected')}>Rechazar</button>
@@ -2913,7 +2920,7 @@ export function InstructorAttendancePanel({ session, topic, onBack, embedded = f
               <tbody>
                 {items.map((row) => (
                   <tr key={row.student_id}>
-                    <td>{row.student_name}{row.student_is_active === false && <span className="pill pill-inactive">Inactivo</span>}</td>
+                    <td>{row.student_name}{row.student_is_active === false && <span className="pill pill-inactive">Inactivo</span>}{row.leave_status_code && <span className="pill pill-leave" title={row.leave_reason ? `Motivo: ${row.leave_reason}` : undefined}>Avisó inasistencia{row.leave_status_code === 'approved' ? ' · aprobada' : ''}</span>}</td>
                     <td>
                       <select
                         value={statusFor(row)}
@@ -3106,81 +3113,6 @@ export function InstructorClassesPanel({ session }) {
           <ComponentMaterialBox session={session} componentId={materialGroup.component_id} />
         </Modal>
       )}
-    </div>
-  )
-}
-
-export function StudentAttendancePanel({ session }) {
-  const { token, profile } = session
-  const { items, error, loading } = useList(`/api/students/${profile.id}/attendance`, token)
-
-  return (
-    <div className="admin-wrap">
-      <section className="panel">
-        <h3>Mi asistencia</h3>
-        <ErrorNote message={error} />
-        {loading ? <p className="muted">Cargando…</p> : items.length === 0 ? <p className="muted">Todavía no hay registros de asistencia.</p> : (
-          <table className="admin-table">
-            <thead><tr><th>Tema</th><th>Fecha</th><th>Estado</th><th>Motivo</th></tr></thead>
-            <tbody>
-              {items.map((a) => (
-                <tr key={a.id}>
-                  <td>{a.topic_title}</td>
-                  <td>{a.scheduled_on || '—'}</td>
-                  <td><StatusPill label={a.status_label} /></td>
-                  <td>{a.reason_label || '—'}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </section>
-    </div>
-  )
-}
-
-// "Mis temas" del alumno: todo su temario agrupado por componente, con el
-// material de cada clase (sin soluciones: el servidor nunca se las entrega).
-export function StudentTopicsPanel({ session }) {
-  const { token } = session
-  const { items, error, loading } = useList('/api/my/topics', token)
-  const [materialTopic, setMaterialTopic] = useState(null)
-
-  const groups = useMemo(() => {
-    const byGroup = new Map()
-    items.forEach((t) => {
-      if (!byGroup.has(t.group_id)) byGroup.set(t.group_id, { ...t, topics: [] })
-      byGroup.get(t.group_id).topics.push(t)
-    })
-    return [...byGroup.values()]
-  }, [items])
-
-  return (
-    <div className="admin-wrap">
-      <ErrorNote message={error} />
-      {loading ? <p className="muted">Cargando…</p> : groups.length === 0 ? (
-        <section className="panel"><p className="muted">Todavía no estás inscrito en ningún componente.</p></section>
-      ) : groups.map((g) => (
-        <section className="panel" key={g.group_id}>
-          <h3>{g.component_name}</h3>
-          <p className="muted">{g.program_name} · {g.group_name}{g.instructor_name ? ` · ${g.instructor_name}` : ''}</p>
-          <table className="admin-table">
-            <thead><tr><th>#</th><th>Tema</th><th>Fecha</th><th>Estado</th><th></th></tr></thead>
-            <tbody>
-              {g.topics.map((t, i) => (
-                <tr key={t.id}>
-                  <td>{i + 1}</td>
-                  <td>{t.title}</td>
-                  <td>{t.scheduled_on || '—'}</td>
-                  <td><StatusPill label={t.status_label} /></td>
-                  <td>{t.has_material ? <button className="btn-mini" onClick={() => setMaterialTopic(t)}>Ver material</button> : <span className="muted">Sin material</span>}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </section>
-      ))}
-      {materialTopic && <MaterialViewer session={session} topic={materialTopic} onClose={() => setMaterialTopic(null)} />}
     </div>
   )
 }

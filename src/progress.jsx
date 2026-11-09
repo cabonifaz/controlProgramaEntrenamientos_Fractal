@@ -19,19 +19,19 @@ function writeStored(key, value) {
 }
 
 // Fechas YYYY-MM-DD como fecha de calendario (sin corrimiento por zona).
-function formatDay(isoDate, { weekday = true } = {}) {
+export function formatDay(isoDate, { weekday = true } = {}) {
   if (!isoDate) return null
   const [y, m, d] = isoDate.split('-').map(Number)
   return new Intl.DateTimeFormat('es-PE', { weekday: weekday ? 'short' : undefined, day: 'numeric', month: 'short', timeZone: 'UTC' })
     .format(new Date(Date.UTC(y, m - 1, d)))
 }
 
-function daysUntil(isoDate, today) {
+export function daysUntil(isoDate, today) {
   if (!isoDate || !today) return null
   return Math.round((Date.parse(isoDate) - Date.parse(today)) / 86400000)
 }
 
-function relativeDay(isoDate, today) {
+export function relativeDay(isoDate, today) {
   const n = daysUntil(isoDate, today)
   if (n === null) return null
   if (n === 0) return 'Hoy'
@@ -40,7 +40,7 @@ function relativeDay(isoDate, today) {
   return null
 }
 
-function classWhen(topic, today) {
+export function classWhen(topic, today) {
   if (!topic?.scheduledOn) return 'Sin fecha'
   const rel = relativeDay(topic.scheduledOn, today)
   const day = formatDay(topic.scheduledOn)
@@ -48,7 +48,7 @@ function classWhen(topic, today) {
   return `${rel ? `${rel}, ` : ''}${day}${time}`
 }
 
-function ProgressBar({ value, color, label }) {
+export function ProgressBar({ value, color, label }) {
   return (
     <div className="pg-bar" role="progressbar" aria-valuenow={value} aria-valuemin={0} aria-valuemax={100} aria-label={label}>
       <span style={{ width: `${value}%`, background: color }} />
@@ -93,7 +93,7 @@ function SummaryStrip({ board }) {
 }
 
 // Abreviatura y tono de cada estado de asistencia para la grilla.
-const ATTENDANCE_MARKS = {
+export const ATTENDANCE_MARKS = {
   present: { short: 'P', tone: 'ok', label: 'Presente' },
   late: { short: 'T', tone: 'warn', label: 'Tarde' },
   left_early: { short: 'R', tone: 'warn', label: 'Retirado' },
@@ -107,7 +107,7 @@ function attendanceText(attendance) {
   return `${attendance.present}/${attendance.recorded} asistieron`
 }
 
-function AttendanceMark({ mark }) {
+export function AttendanceMark({ mark }) {
   if (!mark) return <span className="pg-mark empty" title="Sin registro">·<span className="sr-only">Sin registro</span></span>
   const meta = ATTENDANCE_MARKS[mark.code] || { short: '?', tone: 'info' }
   return <span className={`pg-mark ${meta.tone}`} title={mark.label}>{meta.short}<span className="sr-only">{mark.label}</span></span>
@@ -159,6 +159,8 @@ function TopicCard({ topic, today, color, onOpen }) {
       <span className="pg-meta"><Clock size={14} aria-hidden="true" />{classWhen(topic, today)}</span>
       {attendanceText(topic.attendance) && <span className="pg-meta"><UserCheck size={14} aria-hidden="true" />{attendanceText(topic.attendance)}</span>}
       {topic.myAttendance && <span className="pg-meta"><UserCheck size={14} aria-hidden="true" />Tu asistencia: {topic.myAttendance.label}</span>}
+      {topic.leaveCount > 0 && <span className="pg-chip warn">{topic.leaveCount} avisó{topic.leaveCount > 1 ? 'aron' : ''} inasistencia</span>}
+      {topic.myLeave && <span className="pg-chip warn">Avisaste inasistencia</span>}
       {topic.column === 'delayed' && topic.statusCode !== 'delayed' && topic.statusCode !== 'rescheduled' && (
         <span className="pg-chip danger">Fecha pasada · sin marcar</span>
       )}
@@ -250,6 +252,7 @@ function SessionAttendance({ session, topic, isStudent, onRegister }) {
                 <AttendanceMark mark={r.status_code ? { code: r.status_code, label: r.status_label } : null} />
                 <span>{r.student_name}</span>
                 {r.reason_label && <small className="muted">{r.reason_label}</small>}
+                {r.leave_status_code && <small className="pill pill-leave" title={r.leave_reason ? `Motivo: ${r.leave_reason}` : undefined}>Avisó inasistencia</small>}
               </li>
             ))}
           </ul>

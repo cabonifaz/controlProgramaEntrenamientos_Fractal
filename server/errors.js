@@ -21,6 +21,7 @@ const STATUS_BY_SP_MESSAGE = {
   holiday_already_exists: 409,
   already_enrolled: 409,
   leave_not_pending: 409,
+  leave_already_requested: 409,
   tenant_not_found: 404,
   target_not_found: 404,
   program_not_found: 404,

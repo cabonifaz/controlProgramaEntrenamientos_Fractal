@@ -480,6 +480,7 @@ INSERT IGNORE INTO master_catalog_values (catalog_id, code, label, sort_order) V
   ((SELECT id FROM master_catalogs WHERE code = 'ALERT_TYPE'), 'component_without_students', 'Componente sin alumnos', 13),
   ((SELECT id FROM master_catalogs WHERE code = 'ALERT_TYPE'), 'tenant_inactive', 'Tenant inactivo', 14),
   ((SELECT id FROM master_catalogs WHERE code = 'ALERT_TYPE'), 'configuration_error', 'Error de configuracion', 15),
+  ((SELECT id FROM master_catalogs WHERE code = 'ALERT_TYPE'), 'absence_notice', 'Aviso de inasistencia del alumno', 16),
 
   ((SELECT id FROM master_catalogs WHERE code = 'ALERT_PRIORITY'), 'low', 'Baja', 1),
   ((SELECT id FROM master_catalogs WHERE code = 'ALERT_PRIORITY'), 'medium', 'Media', 2),
@@ -544,6 +545,7 @@ DROP PROCEDURE IF EXISTS sp_migrate_program_public_v1;
 DROP PROCEDURE IF EXISTS sp_migrate_tenant_contact_v1;
 DROP PROCEDURE IF EXISTS sp_tenants_set_contact;
 DROP PROCEDURE IF EXISTS sp_migrate_program_colors_v1;
+DROP PROCEDURE IF EXISTS sp_migrate_leave_topic_v1;
 DROP PROCEDURE IF EXISTS sp_programs_set_colors;
 DROP PROCEDURE IF EXISTS sp_components_set_colors;
 DROP PROCEDURE IF EXISTS sp_user_invitations_create;
@@ -782,6 +784,19 @@ BEGIN
     ALTER TABLE components
       ADD COLUMN color_primary VARCHAR(7) NULL AFTER sort_order,
       ADD COLUMN color_accent VARCHAR(7) NULL AFTER color_primary;
+  END IF;
+END$$
+
+-- Una solicitud de inasistencia puede apuntar a una clase concreta
+-- (topic_id); sin clase sigue siendo un permiso por rango de fechas.
+-- Idempotente.
+CREATE PROCEDURE sp_migrate_leave_topic_v1()
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+    WHERE table_schema = DATABASE() AND table_name = 'leave_requests' AND column_name = 'topic_id') THEN
+    ALTER TABLE leave_requests
+      ADD COLUMN topic_id BIGINT UNSIGNED NULL AFTER student_id,
+      ADD CONSTRAINT fk_leave_topic FOREIGN KEY (topic_id) REFERENCES topics(id);
   END IF;
 END$$
 
@@ -2497,7 +2512,16 @@ BEGIN
 
   SELECT ge.student_id, su.full_name AS student_name, su.is_active AS student_is_active, a.id AS attendance_id,
          ast.code AS status_code, ast.label AS status_label,
-         ar.code AS reason_code, ar.label AS reason_label, a.observations
+         ar.code AS reason_code, ar.label AS reason_label, a.observations,
+         -- Aviso de inasistencia vigente del alumno para esta clase.
+         (SELECT ls.code FROM leave_requests l JOIN master_catalog_values ls ON ls.id = l.status_id
+          WHERE l.student_id = ge.student_id AND l.is_deleted = FALSE AND ls.code IN ('pending', 'approved')
+            AND (l.topic_id = t.id OR (l.topic_id IS NULL AND t.scheduled_on BETWEEN l.starts_on AND l.ends_on))
+          ORDER BY ls.code = 'approved' DESC, l.created_at DESC LIMIT 1) AS leave_status_code,
+         (SELECT l.reason FROM leave_requests l JOIN master_catalog_values ls ON ls.id = l.status_id
+          WHERE l.student_id = ge.student_id AND l.is_deleted = FALSE AND ls.code IN ('pending', 'approved')
+            AND (l.topic_id = t.id OR (l.topic_id IS NULL AND t.scheduled_on BETWEEN l.starts_on AND l.ends_on))
+          ORDER BY ls.code = 'approved' DESC, l.created_at DESC LIMIT 1) AS leave_reason
   FROM group_enrollments ge
   JOIN users su ON su.id = ge.student_id
   JOIN topics t ON t.id = p_topic_id
@@ -2544,14 +2568,35 @@ END$$
 CREATE PROCEDURE sp_leave_requests_create(
   IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80),
   IN p_starts_on DATE, IN p_ends_on DATE, IN p_reason VARCHAR(500),
-  IN p_leave_type_code VARCHAR(80), IN p_evidence_url VARCHAR(500)
+  IN p_leave_type_code VARCHAR(80), IN p_evidence_url VARCHAR(500), IN p_topic_id BIGINT UNSIGNED
 )
 BEGIN
   DECLARE v_status_id BIGINT UNSIGNED;
   DECLARE v_type_id BIGINT UNSIGNED;
+  DECLARE v_topic_date DATE;
+  DECLARE v_leave_id BIGINT UNSIGNED;
 
   IF p_actor_role <> 'student' THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+
+  -- Aviso para una clase concreta: el alumno debe estar inscrito en su
+  -- grupo, la clase debe tener fecha y no puede haber otro aviso vigente.
+  IF p_topic_id IS NOT NULL THEN
+    SELECT t.scheduled_on INTO v_topic_date
+    FROM topics t
+    JOIN group_enrollments ge ON ge.group_id = t.group_id AND ge.student_id = p_actor_user_id AND ge.is_deleted = FALSE
+    WHERE t.id = p_topic_id AND t.is_deleted = FALSE;
+    IF v_topic_date IS NULL THEN
+      SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'target_not_found';
+    END IF;
+    IF EXISTS (
+      SELECT 1 FROM leave_requests l JOIN master_catalog_values ls ON ls.id = l.status_id
+      WHERE l.student_id = p_actor_user_id AND l.topic_id = p_topic_id AND l.is_deleted = FALSE AND ls.code IN ('pending', 'approved')
+    ) THEN
+      SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'leave_already_requested';
+    END IF;
+    SET p_starts_on = v_topic_date, p_ends_on = v_topic_date;
   END IF;
 
   IF p_starts_on IS NULL OR p_ends_on IS NULL OR p_starts_on > p_ends_on THEN
@@ -2566,10 +2611,32 @@ BEGIN
     WHERE c.code = 'LEAVE_TYPE' AND v.code = p_leave_type_code;
   END IF;
 
-  INSERT INTO leave_requests (student_id, starts_on, ends_on, reason, leave_type_id, evidence_url, status_id, created_by)
-  VALUES (p_actor_user_id, p_starts_on, p_ends_on, p_reason, v_type_id, p_evidence_url, v_status_id, p_actor_user_id);
+  INSERT INTO leave_requests (student_id, topic_id, starts_on, ends_on, reason, leave_type_id, evidence_url, status_id, created_by)
+  VALUES (p_actor_user_id, p_topic_id, p_starts_on, p_ends_on, p_reason, v_type_id, p_evidence_url, v_status_id, p_actor_user_id);
+  SET v_leave_id = LAST_INSERT_ID();
 
-  SELECT LAST_INSERT_ID() AS leave_request_id;
+  -- Avisa a cada instructor que dicta alguna de las clases afectadas
+  -- (la clase indicada, o las del rango de fechas en los grupos del alumno).
+  INSERT INTO alerts (tenant_id, type_id, priority_id, recipient_user_id, title, description, status_id, source_type, source_id, created_by)
+  SELECT su.tenant_id,
+         (SELECT v.id FROM master_catalog_values v JOIN master_catalogs c ON c.id = v.catalog_id WHERE c.code = 'ALERT_TYPE' AND v.code = 'absence_notice'),
+         (SELECT v.id FROM master_catalog_values v JOIN master_catalogs c ON c.id = v.catalog_id WHERE c.code = 'ALERT_PRIORITY' AND v.code = 'medium'),
+         g.instructor_id,
+         LEFT(CONCAT(su.full_name, ' avisó que no asistirá'), 200),
+         LEFT(CONCAT(GROUP_CONCAT(CONCAT(DATE_FORMAT(t.scheduled_on, '%d/%m'), ' · ', co.name, ': ', t.title) ORDER BY t.scheduled_on SEPARATOR '; '),
+                     ' — Motivo: ', p_reason), 1000),
+         (SELECT v.id FROM master_catalog_values v JOIN master_catalogs c ON c.id = v.catalog_id WHERE c.code = 'ALERT_STATUS' AND v.code = 'open'),
+         'leave_request', v_leave_id, p_actor_user_id
+  FROM topics t
+  JOIN component_groups g ON g.id = t.group_id AND g.is_deleted = FALSE
+  JOIN components co ON co.id = g.component_id
+  JOIN group_enrollments ge ON ge.group_id = g.id AND ge.student_id = p_actor_user_id AND ge.is_deleted = FALSE
+  JOIN users su ON su.id = p_actor_user_id
+  WHERE t.is_deleted = FALSE AND g.instructor_id IS NOT NULL
+    AND (t.id = p_topic_id OR (p_topic_id IS NULL AND t.scheduled_on BETWEEN p_starts_on AND p_ends_on))
+  GROUP BY g.instructor_id, su.tenant_id, su.full_name;
+
+  SELECT v_leave_id AS leave_request_id;
 END$$
 
 CREATE PROCEDURE sp_leave_requests_list(
@@ -2579,14 +2646,27 @@ BEGIN
   SELECT l.id, l.student_id, su.full_name AS student_name, l.starts_on, l.ends_on, l.reason,
          lt.code AS type_code, lt.label AS type_label, l.evidence_url,
          ls.code AS status_code, ls.label AS status_label,
-         l.admin_comments, l.resolved_at, l.created_at
+         l.admin_comments, l.resolved_at, l.created_at,
+         l.topic_id, lt2.title AS topic_title, lt2.scheduled_on AS topic_scheduled_on, lc.name AS component_name
   FROM leave_requests l
   JOIN users su ON su.id = l.student_id
   JOIN master_catalog_values ls ON ls.id = l.status_id
   LEFT JOIN master_catalog_values lt ON lt.id = l.leave_type_id
+  LEFT JOIN topics lt2 ON lt2.id = l.topic_id
+  LEFT JOIN component_groups lg ON lg.id = lt2.group_id
+  LEFT JOIN components lc ON lc.id = lg.component_id
   WHERE l.is_deleted = FALSE
     AND (
       (p_actor_role = 'student' AND l.student_id = p_actor_user_id)
+      -- El instructor ve (sin resolver) las de sus clases: la clase
+      -- indicada si es suya, o cualquier permiso de un alumno de sus grupos.
+      OR (p_actor_role = 'instructor' AND (
+        lg.instructor_id = p_actor_user_id
+        OR (l.topic_id IS NULL AND EXISTS (
+          SELECT 1 FROM group_enrollments ge JOIN component_groups g ON g.id = ge.group_id
+          WHERE ge.student_id = l.student_id AND ge.is_deleted = FALSE AND g.is_deleted = FALSE AND g.instructor_id = p_actor_user_id
+        ))
+      ))
       OR (p_actor_role = 'tenant_admin' AND su.tenant_id = p_actor_tenant_id)
       OR (p_actor_role = 'super_admin')
     )
@@ -2659,6 +2739,21 @@ BEGIN
   WHERE c.code = 'LEAVE_STATUS' AND v.code = 'cancelled';
 
   UPDATE leave_requests SET status_id = v_status_id, updated_at = NOW(), updated_by = p_actor_user_id WHERE id = p_leave_request_id;
+
+  -- El aviso al instructor deja de valer: si no lo leyo se retira; si ya
+  -- lo leyo, recibe otra alerta diciendo que el alumno si asistira.
+  UPDATE alerts SET is_deleted = TRUE, deleted_at = NOW(), deleted_by = p_actor_user_id
+  WHERE source_type = 'leave_request' AND source_id = p_leave_request_id AND is_deleted = FALSE AND read_at IS NULL;
+  INSERT INTO alerts (tenant_id, type_id, priority_id, recipient_user_id, title, description, status_id, source_type, source_id, created_by)
+  SELECT a.tenant_id, a.type_id,
+         (SELECT v.id FROM master_catalog_values v JOIN master_catalogs c ON c.id = v.catalog_id WHERE c.code = 'ALERT_PRIORITY' AND v.code = 'low'),
+         a.recipient_user_id,
+         LEFT(CONCAT((SELECT full_name FROM users WHERE id = v_owner_id), ' retiró su aviso: sí asistirá'), 200),
+         a.description,
+         (SELECT v.id FROM master_catalog_values v JOIN master_catalogs c ON c.id = v.catalog_id WHERE c.code = 'ALERT_STATUS' AND v.code = 'open'),
+         a.source_type, a.source_id, p_actor_user_id
+  FROM alerts a
+  WHERE a.source_type = 'leave_request' AND a.source_id = p_leave_request_id AND a.is_deleted = FALSE AND a.read_at IS NOT NULL;
 END$$
 
 -- Componentes propios de un instructor (para su vista "Mis clases" / temario / asistencia).
@@ -4058,7 +4153,20 @@ BEGIN
              WHERE a.topic_id = t.id AND a.student_id = p_actor_user_id AND a.is_deleted = FALSE), NULL) AS my_attendance_code,
          IF(p_actor_role = 'student',
             (SELECT av.label FROM attendance a JOIN master_catalog_values av ON av.id = a.attendance_status_id
-             WHERE a.topic_id = t.id AND a.student_id = p_actor_user_id AND a.is_deleted = FALSE), NULL) AS my_attendance_label
+             WHERE a.topic_id = t.id AND a.student_id = p_actor_user_id AND a.is_deleted = FALSE), NULL) AS my_attendance_label,
+         -- Avisos de inasistencia vigentes (pendientes o aprobados) que
+         -- cubren la clase: el del propio alumno, o cuantos tiene el grupo.
+         IF(p_actor_role = 'student',
+            (SELECT CONCAT(ls.code, ':', l.id) FROM leave_requests l JOIN master_catalog_values ls ON ls.id = l.status_id
+             WHERE l.student_id = p_actor_user_id AND l.is_deleted = FALSE AND ls.code IN ('pending', 'approved')
+               AND (l.topic_id = t.id OR (l.topic_id IS NULL AND t.scheduled_on BETWEEN l.starts_on AND l.ends_on))
+             ORDER BY ls.code = 'approved' DESC, l.created_at DESC LIMIT 1), NULL) AS my_leave,
+         IF(p_actor_role = 'student', NULL,
+            (SELECT COUNT(DISTINCT l.student_id) FROM leave_requests l
+             JOIN master_catalog_values ls ON ls.id = l.status_id
+             JOIN group_enrollments ge2 ON ge2.student_id = l.student_id AND ge2.group_id = g.id AND ge2.is_deleted = FALSE
+             WHERE l.is_deleted = FALSE AND ls.code IN ('pending', 'approved')
+               AND (l.topic_id = t.id OR (l.topic_id IS NULL AND t.scheduled_on BETWEEN l.starts_on AND l.ends_on)))) AS leave_count
   FROM topics t
   JOIN component_groups g ON g.id = t.group_id AND g.is_deleted = FALSE
   JOIN components c ON c.id = g.component_id AND c.is_deleted = FALSE

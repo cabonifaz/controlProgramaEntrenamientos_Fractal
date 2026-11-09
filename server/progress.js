@@ -127,6 +127,9 @@ export function buildProgressBoard(rows, today = todayIn(rows[0]?.timezone)) {
       attendance: r.attendance_recorded === null || r.attendance_recorded === undefined ? null
         : { recorded: Number(r.attendance_recorded), present: Number(r.attendance_present) },
       myAttendance: r.my_attendance_code ? { code: r.my_attendance_code, label: r.my_attendance_label } : null,
+      // Aviso de inasistencia vigente: el propio (alumno) o cuantos del grupo.
+      myLeave: r.my_leave ? { status: r.my_leave.split(':')[0], id: Number(r.my_leave.split(':')[1]) } : null,
+      leaveCount: r.leave_count === null || r.leave_count === undefined ? null : Number(r.leave_count),
     })
   }
 
