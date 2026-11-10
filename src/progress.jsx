@@ -349,7 +349,7 @@ function SyllabusTable({ board, group, isStudent, onOpen }) {
 
 // Grilla alumnos x sesiones con el % de cada alumno. Solo columnas de
 // sesiones con al menos un registro (las futuras no aportan).
-function AttendanceGrid({ session, group, reloadKey, onOpen }) {
+export function AttendanceGrid({ session, group, reloadKey, onOpen }) {
   const { token } = session
   const [students, setStudents] = useState(null)
   const [error, setError] = useState('')

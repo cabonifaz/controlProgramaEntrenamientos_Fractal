@@ -46,7 +46,7 @@ export function registerProfileRoutes(app) {
   app.get('/api/me/profile', authenticate, async (req, res) => {
     try {
       const [row] = await callProcedure('sp_profile_get_mine', { p_actor_user_id: req.user.id })
-      res.json({ data: row ? { ...toProfile(row), roleCode: row.role_code } : null })
+      res.json({ data: row ? { ...toProfile(row), roleCode: row.role_code, tenantName: row.tenant_name } : null })
     } catch (err) {
       sendError(res, err)
     }

@@ -4507,8 +4507,9 @@ END$$
 CREATE PROCEDURE sp_profile_get_mine(IN p_actor_user_id BIGINT UNSIGNED)
 BEGIN
   SELECT u.id, u.full_name, u.email, r.code AS role_code, u.public_headline AS headline, u.public_bio AS bio,
-         u.photo_path, u.linkedin_url, u.github_url, u.portfolio_url, u.contact_email, u.phone, u.city
+         u.photo_path, u.linkedin_url, u.github_url, u.portfolio_url, u.contact_email, u.phone, u.city, t.name AS tenant_name
   FROM users u JOIN master_catalog_values r ON r.id = u.role_id
+  LEFT JOIN tenants t ON t.id = u.tenant_id
   WHERE u.id = p_actor_user_id AND u.is_deleted = FALSE;
 END$$
 

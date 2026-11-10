@@ -169,8 +169,10 @@ const SCREEN_GUIDES = {
       { selector: '.st-record', title: 'Por componente', text: 'Tu asistencia en cada componente del programa.' },
     ],
     default: [
-      { selector: '.week-grid, ' + PANEL, title: 'Tus clases', text: 'Elige una clase del calendario o un grupo para abrir su registro de asistencia.' },
-      { selector: '.admin-table', title: 'Registrar', text: 'Todos empiezan como Presente: marca solo ausentes, tardanzas o retiros y guarda.' },
+      { selector: '.in-groups', title: 'Elige el grupo', text: 'Cambia entre tus grupos (y de programa si tienes varios).' },
+      { selector: '.in-cards .in-card', title: 'Clases por registrar', text: 'Las clases ya dictadas sin asistencia. Toca Registrar: todos empiezan como Presente y marcas solo ausentes, tardanzas o retiros.' },
+      { selector: '.in-cards .in-card + .in-card', title: 'Avisos de tus alumnos', text: 'Quiénes avisaron que faltarán a tus próximas clases.' },
+      { selector: '.pg-att-view', title: 'Récord del grupo', text: 'La asistencia de cada alumno por sesión y su porcentaje. Toca una sesión para abrir su registro.' },
     ],
   },
   'Mis clases': {
@@ -179,7 +181,13 @@ const SCREEN_GUIDES = {
       { selector: '.admin-table', title: 'Mis grupos', text: 'Abre el temario o el material de cada grupo.' },
     ],
   },
-  Temarios: { default: [{ selector: '.admin-table, ' + PANEL, title: 'Temarios', text: 'Elige un grupo para ver su temario con fechas y estados, y abrir el material de cada tema.' }] },
+  Temarios: {
+    default: [
+      { selector: '.in-groups', title: 'Elige el grupo', text: 'Cada tarjeta es uno de tus grupos con su componente y cantidad de alumnos.' },
+      { selector: '.in-summary', title: 'Avance', text: 'Cuántos temas dictaste, cuántos están atrasados y tu próxima clase.' },
+      { selector: '.in-table', title: 'Temario', text: 'Cada tema con su fecha, estado, asistencia y la opinión de los alumnos. Desde aquí registras asistencia o abres el material.' },
+    ],
+  },
   Permisos: {
     student: [
       { selector: '.admin-form-panel', title: 'Permiso por fechas', text: 'Para ausencias de varios días: fechas, tipo, motivo e imagen opcional.' },
