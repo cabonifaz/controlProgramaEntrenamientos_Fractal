@@ -3,6 +3,7 @@ import { AlertTriangle, ArrowRight, Calendar, ImagePlus, Paperclip, Users as Use
 import { apiBlob, apiDownload, apiRequest, apiUpload } from './api'
 import { CHANGE_REASONS, MyInstructorAbsences } from './indicators.jsx'
 import { formatDay } from './progress.jsx'
+import { ClassroomPanel, JoinButton } from './classroom.jsx'
 import { buildMaterialPrompt, DEFAULT_PROMPT_OPTIONS, MATERIAL_LEVELS, SKILL_NAME, suggestedBatchSize } from './materialPrompt'
 import { BANNER_STYLES, buildBannerPrompt, DEFAULT_BANNER_OPTIONS } from './bannerPrompt'
 import { DEFAULT_ACCENT, PALETTE_PRESETS, readableTextOn, resolvePalette } from './palette'
@@ -3365,7 +3366,9 @@ function InstructorWeeklyCalendar({ session, onSelectTopic }) {
   )
 }
 
-export function InstructorClassesPanel({ session }) {
+// Ver temario y las clases del calendario llevan a las mismas secciones
+// Temarios y Asistencia (con el grupo / la clase ya elegidos).
+export function InstructorClassesPanel({ session, navigate }) {
   const { token } = session
   const { items, error, loading } = useList('/api/my/groups', token)
   const [selectedGroup, setSelectedGroup] = useState(null)
@@ -3381,7 +3384,7 @@ export function InstructorClassesPanel({ session }) {
 
   return (
     <div className="admin-wrap">
-      <InstructorWeeklyCalendar session={session} onSelectTopic={setSelectedTopic} />
+      <InstructorWeeklyCalendar session={session} onSelectTopic={(t) => (navigate ? navigate('Asistencia', { groupId: t.group_id, topicId: t.id }) : setSelectedTopic(t))} />
       <section className="panel">
         <h3>Mis grupos</h3>
         <ErrorNote message={error} />
@@ -3396,7 +3399,7 @@ export function InstructorClassesPanel({ session }) {
                   <td>{g.name}</td>
                   <td><StatusPill label={g.status_label} /></td>
                   <td className="row-actions">
-                    <button className="btn-mini" onClick={() => setSelectedGroup(g)}>Ver temario</button>
+                    <button className="btn-mini" onClick={() => (navigate ? navigate('Temarios', { groupId: g.id }) : setSelectedGroup(g))}>Ver temario</button>
                     <button className="btn-mini" onClick={() => setMaterialGroup(g)}>Material</button>
                   </td>
                 </tr>
@@ -3696,6 +3699,18 @@ function NextClassBanner({ session, onOpenAttendance }) {
   }, [])
 
   if (!next) return null
+  return <NextClassBannerCard session={session} next={next} todayIso={todayIso} scheduleDays={scheduleDays} onOpenAttendance={onOpenAttendance} />
+}
+
+// Tarjeta de la proxima clase del profesor: cuenta regresiva, unirse a la
+// reunion (o agregar su link) y abrir la lista de asistencia.
+function NextClassBannerCard({ session, next, todayIso, scheduleDays, onOpenAttendance }) {
+  const [meetingUrl, setMeetingUrl] = useState(null)
+  const [classOpen, setClassOpen] = useState(false)
+  const [version, setVersion] = useState(0)
+  useEffect(() => {
+    apiRequest(`/api/topics/${next.id}/class`, { token: session.token }).then(({ data }) => setMeetingUrl(data.meetingUrl || null)).catch(() => {})
+  }, [next.id, session.token, version])
 
   const weekday = new Date(`${next.scheduled_on}T00:00:00Z`).getUTCDay()
   const timeBlock = scheduleDays.find((d) => d.weekday === weekday)
@@ -3728,18 +3743,29 @@ function NextClassBanner({ session, onOpenAttendance }) {
         <span>👥 {next.enrolled_students} alumno(s)</span>
         {countdownLabel && <span className="next-class-countdown">⏳ {countdownLabel}</span>}
       </div>
-      <button className="primary" onClick={() => onOpenAttendance(next)}>Ver lista de asistencia</button>
+      <div className="next-class-actions">
+        {meetingUrl ? <JoinButton url={meetingUrl} /> : <button type="button" className="secondary next-class-add" onClick={() => setClassOpen(true)}>Agregar link de la reunión</button>}
+        <button className="primary" onClick={() => onOpenAttendance(next)}>Ver lista de asistencia</button>
+        {meetingUrl && <button type="button" className="text-button next-class-edit" onClick={() => setClassOpen(true)}>Clase y materiales</button>}
+      </div>
+      {classOpen && (
+        <Modal title={next.title} onClose={() => { setClassOpen(false); setVersion((v) => v + 1) }} wide>
+          <ClassroomPanel session={session} topic={{ id: next.id, title: next.title }} />
+        </Modal>
+      )}
     </section>
   )
 }
 
-export function RealDashboard({ session }) {
+export function RealDashboard({ session, navigate }) {
   const { token, profile } = session
   const isStudent = profile.roleCode === 'student'
   const { items: agenda, error: agendaError, loading: agendaLoading } = useList('/api/me/agenda', token)
   const [metrics, setMetrics] = useState(null)
   const [metricsError, setMetricsError] = useState('')
   const [selectedTopic, setSelectedTopic] = useState(null)
+  // Mismo destino que el resto de la app: la seccion Asistencia con la clase abierta.
+  const openAttendance = (groupId, topicId, fallback) => (navigate && groupId ? navigate('Asistencia', { groupId, topicId }) : setSelectedTopic(fallback || { id: topicId }))
 
   useEffect(() => {
     let cancelled = false
@@ -3760,7 +3786,7 @@ export function RealDashboard({ session }) {
 
   return (
     <div className="admin-wrap">
-      {!isStudent && <NextClassBanner session={session} onOpenAttendance={setSelectedTopic} />}
+      {!isStudent && <NextClassBanner session={session} onOpenAttendance={(t) => openAttendance(t.group_id, t.id, t)} />}
       <section className="panel">
         <h3>Hola, {profile.fullName}</h3>
         <ErrorNote message={metricsError} />
@@ -3813,7 +3839,7 @@ export function RealDashboard({ session }) {
                 type="button"
                 key={t.topic_id}
                 className="agenda-card"
-                onClick={() => setSelectedTopic({ id: t.topic_id, title: t.title, scheduled_on: t.scheduled_on, status_code: t.status_code })}
+                onClick={() => (isStudent ? navigate?.('Mi horario') : openAttendance(t.group_id, t.topic_id, { id: t.topic_id, title: t.title, scheduled_on: t.scheduled_on, status_code: t.status_code }))}
               >
                 <div className="agenda-card-date"><Calendar size={14} /><span>{t.scheduled_on}</span></div>
                 <div className="agenda-card-body">

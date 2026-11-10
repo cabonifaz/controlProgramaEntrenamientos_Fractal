@@ -3488,7 +3488,7 @@ BEGIN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
   END IF;
 
-  SELECT t.id AS topic_id, t.title, t.scheduled_on, t.duration_minutes,
+  SELECT t.id AS topic_id, t.title, t.scheduled_on, t.duration_minutes, g.id AS group_id,
     p.name AS program_name, c.name AS component_name,
     (SELECT COUNT(*) FROM group_enrollments ge WHERE ge.group_id = g.id AND ge.is_deleted = FALSE) AS enrolled_students,
     ts.code AS status_code, ts.label AS status_label

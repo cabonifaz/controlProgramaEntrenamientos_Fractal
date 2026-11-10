@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react'
-import { Clapperboard, Download, ExternalLink, FileText, Link2, Pencil, Trash2, Upload, Video } from 'lucide-react'
+import { BookOpen, ClipboardCheck, Clapperboard, Download, ExternalLink, FileText, Link2, Maximize2, Pencil, Trash2, Upload, Video } from 'lucide-react'
 import { apiDownload, apiRequest, apiUpload } from './api'
-import { ErrorNote } from './admin.jsx'
+import { ErrorNote, MaterialViewer, Modal } from './admin.jsx'
 import { classWhen } from './progress.jsx'
 
 // Clase en linea: unirse a la reunion (Teams/Meet/Zoom), ver la grabacion,
@@ -188,15 +188,43 @@ export function ClassroomPanel({ session, topic, onChanged }) {
 
 // ===================================================================
 // Aviso de la proxima clase (alumno y profesor), arriba en todas las
-// pantallas: cuando es, que tema y el boton para unirse.
-export function NextClassBar({ session, refreshKey }) {
+// pantallas. Minimalista: iconos con texto de ayuda para unirse a la
+// reunion, abrir el material del tema, ver la grabacion y abrir la
+// tarjeta de la clase con todo (toma de lista, links, materiales).
+
+function IconAction({ tip, href, onClick, disabled, children, tone }) {
+  const cls = `cl-icon${tone ? ` ${tone}` : ''}${disabled ? ' off' : ''}`
+  if (href && !disabled) return <a className={cls} href={href} target="_blank" rel="noreferrer" data-tip={tip} aria-label={tip}>{children}</a>
+  return <button type="button" className={cls} onClick={disabled ? undefined : onClick} aria-disabled={disabled || undefined} data-tip={tip} aria-label={tip}>{children}</button>
+}
+
+// Tarjeta de la clase: todo en un solo lugar.
+function NextClassCard({ session, topic, today, navigate, onClose, onMaterial }) {
+  const isInstructor = session.profile?.roleCode === 'instructor'
+  return (
+    <Modal title={`${topic.componentName} · ${topic.title}`} onClose={onClose} wide>
+      <div className="cl-card">
+        <p className="cl-card-when"><Video size={15} aria-hidden="true" /> {classWhen(topic, today)}{topic.groupName ? ` · ${topic.groupName}` : ''}</p>
+        <div className="cl-card-actions">
+          {isInstructor && <button type="button" className="primary" onClick={() => { onClose(); navigate?.('Asistencia', { groupId: topic.groupId, topicId: topic.id }) }}><ClipboardCheck size={16} aria-hidden="true" /> Tomar lista</button>}
+          {topic.hasMaterial && <button type="button" className="btn-mini cl-card-btn" onClick={onMaterial}><BookOpen size={15} aria-hidden="true" /> Abrir contenido del tema</button>}
+        </div>
+        <ClassroomPanel session={session} topic={topic} />
+      </div>
+    </Modal>
+  )
+}
+
+export function NextClassBar({ session, refreshKey, navigate }) {
   const { token } = session
   const [next, setNext] = useState(undefined)
+  const [cardOpen, setCardOpen] = useState(false)
+  const [materialOpen, setMaterialOpen] = useState(false)
   useEffect(() => {
     let cancelled = false
     const load = () => apiRequest('/api/progress', { token }).then(({ data }) => {
       if (cancelled) return
-      const topics = data.components.flatMap((c) => c.groups.flatMap((g) => g.topics.map((t) => ({ ...t, componentName: c.name, groupName: g.name }))))
+      const topics = data.components.flatMap((c) => c.groups.flatMap((g) => g.topics.map((t) => ({ ...t, componentName: c.name, groupId: g.id, groupName: g.name }))))
         .filter((t) => t.scheduledOn && t.scheduledOn >= data.today && t.column !== 'completed')
         .sort((a, b) => (a.scheduledOn + (a.startTime || '')).localeCompare(b.scheduledOn + (b.startTime || '')))
       setNext(topics[0] ? { ...topics[0], today: data.today } : null)
@@ -208,11 +236,24 @@ export function NextClassBar({ session, refreshKey }) {
   }, [token, refreshKey])
   if (!next) return null
   const isToday = next.scheduledOn === next.today
+  const provider = PROVIDER[providerOf(next.meetingUrl)]
   return (
-    <div className={isToday ? 'cl-nextbar today' : 'cl-nextbar'} role="status" data-no-capture>
-      <span className="cl-nextbar-when"><Video size={15} aria-hidden="true" /> {isToday ? 'Clase de hoy' : 'Próxima clase'}: <b>{classWhen(next, next.today)}</b></span>
-      <span className="cl-nextbar-topic">{next.componentName} — {next.title}</span>
-      {next.meetingUrl ? <JoinButton url={next.meetingUrl} compact /> : <span className="cl-nextbar-pending">Link pendiente</span>}
-    </div>
+    <>
+      <div className={isToday ? 'cl-nextbar today' : 'cl-nextbar'} role="region" aria-label="Próxima clase" data-no-capture>
+        <button type="button" className="cl-nextbar-main" onClick={() => setCardOpen(true)} title="Abrir la clase">
+          <span className="cl-nextbar-when"><Video size={15} aria-hidden="true" /> {isToday ? 'Clase de hoy' : 'Próxima clase'}: <b>{classWhen(next, next.today)}</b></span>
+          <span className="cl-nextbar-topic">{next.componentName} — {next.title}</span>
+        </button>
+        <div className="cl-nextbar-icons">
+          <IconAction tone="join" href={next.meetingUrl} disabled={!next.meetingUrl} tip={next.meetingUrl ? `Unirse a la clase por ${provider}` : 'El link de la reunión todavía no está publicado'}><Video size={17} aria-hidden="true" /></IconAction>
+          <IconAction onClick={() => setMaterialOpen(true)} disabled={!next.hasMaterial} tip={next.hasMaterial ? 'Abrir el material del tema' : 'Este tema todavía no tiene material'}><BookOpen size={17} aria-hidden="true" /></IconAction>
+          {next.recordingUrl && <IconAction href={next.recordingUrl} tip="Ver la grabación"><Clapperboard size={17} aria-hidden="true" /></IconAction>}
+          {next.resourceCount > 0 && <IconAction onClick={() => setCardOpen(true)} tip={`${next.resourceCount} archivo(s) y link(s) de la clase`}><FileText size={17} aria-hidden="true" /><span className="cl-icon-count">{next.resourceCount}</span></IconAction>}
+          <IconAction onClick={() => setCardOpen(true)} tip={session.profile?.roleCode === 'instructor' ? 'Abrir la clase: tomar lista, links y materiales' : 'Abrir la clase: links, materiales y grabación'}><Maximize2 size={16} aria-hidden="true" /></IconAction>
+        </div>
+      </div>
+      {cardOpen && <NextClassCard session={session} topic={next} today={next.today} navigate={navigate} onClose={() => setCardOpen(false)} onMaterial={() => { setCardOpen(false); setMaterialOpen(true) }} />}
+      {materialOpen && <MaterialViewer session={session} topic={next} onClose={() => setMaterialOpen(false)} />}
+    </>
   )
 }

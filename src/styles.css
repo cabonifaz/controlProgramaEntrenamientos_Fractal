@@ -822,3 +822,35 @@
 .in-class-flags{display:flex;flex-wrap:wrap;gap:8px;margin-top:3px}
 .in-class-flags span{display:inline-flex;align-items:center;gap:3px;font-size:11px;font-weight:600;color:#4f52b2}
 @media (max-width:560px){.cl-resources li{grid-template-columns:auto 1fr;}.cl-resources li .btn-mini,.cl-resources li .cl-remove{grid-column:2}.cl-nextbar-topic{white-space:normal}.cl-join:not(.compact){width:100%;justify-content:center}}
+/* Tarjeta de proxima clase del profesor: el fondo oscuro debe ganarle a .panel */
+.panel.next-class-banner{background:linear-gradient(135deg,var(--deep),var(--blue));color:#fff;border-color:transparent}
+.panel.next-class-banner h2{color:#fff}
+.next-class-actions{display:flex;flex-wrap:wrap;gap:10px;align-items:center;position:relative;z-index:1}
+.next-class-actions .cl-join{background:#fff;color:#3f4296;box-shadow:none}
+.next-class-actions .cl-join:hover{background:#eef0ff}
+.next-class-add{background:transparent;border-color:#ffffff66;color:#fff;font-weight:600}
+.next-class-add:hover{background:#ffffff1a}
+.next-class-edit{color:#cfe3ee;text-decoration:underline}
+@media (max-width:560px){.next-class-actions>*{width:100%;justify-content:center}}
+/* Proxima clase minimalista: iconos con texto de ayuda */
+.cl-nextbar{padding:6px 8px 6px 4px;gap:8px}
+.cl-nextbar-main{display:flex;flex-wrap:wrap;align-items:center;gap:6px 14px;flex:1 1 300px;min-width:0;border:0;background:transparent;text-align:left;padding:6px 10px;border-radius:8px;color:inherit;font:inherit;cursor:pointer}
+.cl-nextbar-main:hover{background:#f3f3fd}
+.cl-nextbar-main:focus-visible{outline:3px solid #087fb859}
+.cl-nextbar-icons{display:flex;gap:6px;align-items:center}
+.cl-icon{position:relative;display:inline-grid;place-items:center;width:36px;height:36px;border-radius:9px;border:1px solid var(--line);background:#fff;color:var(--deep);text-decoration:none;cursor:pointer}
+.cl-icon:hover{background:var(--soft)}
+.cl-icon.join{background:#4f52b2;border-color:#4f52b2;color:#fff}
+.cl-icon.join:hover{background:#3f4296}
+.cl-icon.off{opacity:.45;cursor:not-allowed;background:#fff;color:#8b989e;border-style:dashed}
+.cl-icon:focus-visible{outline:3px solid #087fb859;outline-offset:2px}
+.cl-icon-count{position:absolute;top:-6px;right:-6px;background:var(--orange);color:#3a2a08;border-radius:999px;font-size:10px;font-weight:700;min-width:17px;height:17px;display:grid;place-items:center;padding:0 4px}
+.cl-icon[data-tip]:hover::after,.cl-icon[data-tip]:focus-visible::after{content:attr(data-tip);position:absolute;top:calc(100% + 8px);right:0;z-index:40;width:max-content;max-width:240px;background:#17232d;color:#fff;font-size:11.5px;font-weight:500;line-height:1.35;padding:7px 9px;border-radius:7px;box-shadow:0 8px 20px rgba(0,0,0,.18);white-space:normal;text-align:left;pointer-events:none}
+.cl-card{display:grid;gap:12px}
+.cl-card-when{display:flex;align-items:center;gap:6px;color:#3f4296;font-weight:600;font-size:14px;margin:0}
+.cl-card-actions{display:flex;flex-wrap:wrap;gap:8px}
+.cl-card-actions .primary,.cl-card-btn{display:inline-flex;align-items:center;gap:6px}
+.cl-card-btn{padding:10px 14px;font-size:13px}
+@media (max-width:560px){.cl-nextbar-main{flex-basis:100%}.cl-nextbar-icons{width:100%;justify-content:flex-end;padding:0 6px 4px}}
+.cl-icon.off,.cl-icon.join.off{opacity:1;background:#fff;color:#a9b5ba;border:1px dashed #c9d5da}
+.cl-icon.off:hover{background:#fff}

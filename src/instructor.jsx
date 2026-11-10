@@ -34,11 +34,13 @@ function useInstructorBoard(token) {
 }
 
 // Programa (el mas actual por defecto) y grupo elegidos.
-function useGroupPicker(board) {
+function useGroupPicker(board, initialGroupId = null) {
   const [programId, setProgramId] = useState(null)
-  const [groupId, setGroupId] = useState(null)
+  const [groupId, setGroupId] = useState(initialGroupId)
   const programs = board?.programs || []
-  const program = programs.find((p) => p.id === programId) || programs[0] || null
+  // Si llega un grupo elegido desde otra seccion, se abre su programa.
+  const programOfGroup = initialGroupId && board ? board.components.find((c) => c.groups.some((g) => g.id === initialGroupId))?.programId : null
+  const program = programs.find((p) => p.id === (programId ?? programOfGroup)) || programs[0] || null
   const groups = useMemo(() => (board && program ? board.components.filter((c) => c.programId === program.id)
     .flatMap((c) => c.groups.map((g) => ({ ...g, component: c }))) : []), [board, program])
   // Por defecto el grupo con clase mas cercana (o el primero).
@@ -96,10 +98,10 @@ function Empty({ board, error }) {
 // ===================================================================
 // Temarios: el temario del grupo con fecha, estado, asistencia,
 // reacciones y material de cada tema.
-export function InstructorSyllabusPanel({ session }) {
+export function InstructorSyllabusPanel({ session, navParams }) {
   const { token } = session
   const { board, error, reload } = useInstructorBoard(token)
-  const picker = useGroupPicker(board)
+  const picker = useGroupPicker(board, navParams?.groupId ?? null)
   const { byTopic: reactions } = useReactionSummary(token)
   const [registering, setRegistering] = useState(null)
   const [material, setMaterial] = useState(null)
@@ -169,11 +171,19 @@ export function InstructorSyllabusPanel({ session }) {
 // ===================================================================
 // Asistencia: indicadores del grupo, clases por registrar, avisos de
 // inasistencia proximos y la grilla de alumnos por sesion.
-export function InstructorAttendanceOverview({ session }) {
+export function InstructorAttendanceOverview({ session, navParams }) {
   const { token } = session
   const { board, error, reload } = useInstructorBoard(token)
-  const picker = useGroupPicker(board)
+  const picker = useGroupPicker(board, navParams?.groupId ?? null)
   const [registering, setRegistering] = useState(null)
+  // Clase elegida en el calendario de Mis clases: se abre su registro.
+  const [openedFromNav, setOpenedFromNav] = useState(false)
+  useEffect(() => {
+    if (openedFromNav || !navParams?.topicId || !picker.group) return
+    const topic = picker.group.topics.find((t) => t.id === navParams.topicId)
+    if (topic) setRegistering(topic)
+    setOpenedFromNav(true)
+  }, [navParams, picker.group, openedFromNav])
   const [reloadKey, setReloadKey] = useState(0)
   const { group } = picker
 
