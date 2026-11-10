@@ -1,9 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
-import { BookOpen, CalendarClock, ClipboardCheck, UserX } from 'lucide-react'
+import { BookOpen, CalendarClock, Clapperboard, ClipboardCheck, FileText, UserX, Video } from 'lucide-react'
 import { apiRequest } from './api'
 import { ErrorNote, InstructorAttendancePanel, MaterialViewer, Modal } from './admin.jsx'
 import { AttendanceGrid, PERIOD_LABEL, ProgressBar, classWhen, programOptionLabel } from './progress.jsx'
 import { ReactionChip, useReactionSummary } from './satisfaction.jsx'
+import { ClassroomPanel } from './classroom.jsx'
 
 // Temarios y Asistencia del profesor. Usan el mismo tablero de Avance
 // (GET /api/progress, solo sus grupos): eligen programa (el actual por
@@ -102,6 +103,7 @@ export function InstructorSyllabusPanel({ session }) {
   const { byTopic: reactions } = useReactionSummary(token)
   const [registering, setRegistering] = useState(null)
   const [material, setMaterial] = useState(null)
+  const [classroom, setClassroom] = useState(null)
   const { group, program } = picker
 
   if (!board || !group) return <Empty board={board} error={error} />
@@ -131,12 +133,19 @@ export function InstructorSyllabusPanel({ session }) {
               {group.topics.map((t) => (
                 <tr key={t.id} className={t.column === 'completed' ? 'done' : ''}>
                   <td>{String(t.position).padStart(2, '0')}</td>
-                  <td className="st-topic-title">{t.title}{t.leaveCount > 0 && <small className="in-leave"><UserX size={12} aria-hidden="true" /> {t.leaveCount} avisó{t.leaveCount > 1 ? 'aron' : ''} inasistencia</small>}</td>
+                  <td className="st-topic-title">{t.title}
+                    <span className="in-class-flags">
+                      {t.meetingUrl && <span title="Tiene link de la reunión"><Video size={12} aria-hidden="true" /> Link</span>}
+                      {t.recordingUrl && <span title="Tiene grabación"><Clapperboard size={12} aria-hidden="true" /> Grabación</span>}
+                      {t.resourceCount > 0 && <span title="Materiales"><FileText size={12} aria-hidden="true" /> {t.resourceCount}</span>}
+                    </span>
+                    {t.leaveCount > 0 && <small className="in-leave"><UserX size={12} aria-hidden="true" /> {t.leaveCount} avisó{t.leaveCount > 1 ? 'aron' : ''} inasistencia</small>}</td>
                   <td>{t.scheduledOn ? classWhen(t, board.today) : '—'}</td>
                   <td><StateChip topic={t} /></td>
                   <td>{t.attendance?.recorded ? `${t.attendance.present}/${t.attendance.recorded} (${percent(t.attendance.present, t.attendance.recorded)}%)` : <span className="muted">—</span>}</td>
                   <td><ReactionChip summary={reactions.get(t.id)} /></td>
                   <td className="row-actions">
+                    <button type="button" className="btn-mini" onClick={() => setClassroom(t)}><Video size={13} aria-hidden="true" /> Clase</button>
                     {t.scheduledOn && t.scheduledOn <= board.today && <button type="button" className="btn-mini" onClick={() => setRegistering(t)}>{t.attendance?.recorded ? 'Ver asistencia' : 'Registrar'}</button>}
                     {t.hasMaterial && <button type="button" className="btn-mini" onClick={() => setMaterial(t)}><BookOpen size={13} aria-hidden="true" /> Material</button>}
                   </td>
@@ -148,6 +157,11 @@ export function InstructorSyllabusPanel({ session }) {
       </section>
       {registering && <RegisterModal session={session} topic={registering} onClose={() => { setRegistering(null); reload() }} />}
       {material && <MaterialViewer session={session} topic={material} onClose={() => setMaterial(null)} />}
+      {classroom && (
+        <Modal title={`Tema ${String(classroom.position).padStart(2, '0')} · ${classroom.title}`} onClose={() => { setClassroom(null); reload() }} wide>
+          <ClassroomPanel session={session} topic={classroom} />
+        </Modal>
+      )}
     </div>
   )
 }

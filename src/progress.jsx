@@ -4,6 +4,7 @@ import { apiRequest } from './api'
 import { ErrorNote, InstructorAttendancePanel, MaterialViewer, Modal } from './admin.jsx'
 import { ReactionBreakdown, ReactionChip, ReactionPicker, aggregate, canReact, useReactionSummary } from './satisfaction.jsx'
 import { InstructorAbsenceNotice, useMyInstructorAbsences } from './indicators.jsx'
+import { ClassroomPanel } from './classroom.jsx'
 
 // Vista "Avance": kanban de componentes del programa y, al entrar a uno,
 // kanban de sus temas. Los datos y las columnas vienen armados por la API
@@ -302,6 +303,7 @@ function TopicDetail({ session, topic, component, group, today, isStudent, react
           {rows.map(([k, v]) => <div key={k}><dt>{k}</dt><dd>{v}</dd></div>)}
         </dl>
         {topic.description && <p className="muted">{topic.description}</p>}
+        <ClassroomPanel session={session} topic={topic} />
         <SessionAttendance session={session} topic={topic} isStudent={isStudent} onRegister={isStudent ? null : onRegister} />
         {isStudent ? <ReactionPicker token={session.token} topic={topic} today={today} /> : (reaction || canReact(topic, today)) && <ReactionBreakdown summary={reaction} />}
         {session.role === 'instructor' && <InstructorAbsenceNotice token={session.token} topic={topic} today={today} absence={absence} onChanged={onAbsenceChanged} />}

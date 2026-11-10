@@ -135,6 +135,7 @@ const PANEL = '.content .panel, .content .admin-wrap > *'
 const SCREEN_GUIDES = {
   Inicio: {
     default: [
+      { selector: '.cl-nextbar', title: 'Tu próxima clase', text: 'Siempre arriba, en todas las pantallas: cuándo es tu próxima clase y el botón para unirte a la reunión de Teams, Meet o Zoom.' },
       { selector: '.content .metrics, .content .panel', title: 'Tu resumen', text: 'Aquí ves de un vistazo lo más importante de tu día: indicadores y próximas clases.' },
       { selector: '.content .action-row, .content .next-class-banner, .content .panel + .panel', title: 'Atajos', text: 'Usa estos accesos para ir directo a lo que más haces. Todo lo demás está en el menú de la izquierda.' },
       { selector: '.sp-report-btn', title: 'Reportar y guía', text: '“Reportar” envía una incidencia o mejora con captura de la pantalla. “Guía” abre esta ayuda en cualquier pantalla.' },
@@ -186,6 +187,7 @@ const SCREEN_GUIDES = {
       { selector: '.in-groups', title: 'Elige el grupo', text: 'Cada tarjeta es uno de tus grupos con su componente y cantidad de alumnos.' },
       { selector: '.in-summary', title: 'Avance', text: 'Cuántos temas dictaste, cuántos están atrasados y tu próxima clase.' },
       { selector: '.in-table', title: 'Temario', text: 'Cada tema con su fecha, estado, asistencia y la opinión de los alumnos. Desde aquí registras asistencia o abres el material.' },
+      { selector: '.in-table .row-actions .btn-mini', title: 'La clase en línea', text: '“Clase” abre el link de la reunión (puedes dejar uno para todas las clases del grupo), la grabación, una nota y los archivos para tus alumnos.' },
     ],
   },
   Permisos: {

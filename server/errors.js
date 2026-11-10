@@ -36,6 +36,8 @@ const STATUS_BY_SP_MESSAGE = {
   ai_not_configured: 503,
   ai_failed: 502,
   no_comments: 400,
+  too_many_resources: 409,
+  invalid_url: 400,
   tenant_not_found: 404,
   target_not_found: 404,
   program_not_found: 404,
@@ -58,6 +60,7 @@ const STATUS_BY_SP_MESSAGE = {
   ai_not_configured: 503,
   ai_failed: 502,
   no_comments: 400,
+  too_many_resources: 409,
 }
 
 // Los procedimientos almacenados comunican decisiones de negocio con

@@ -137,6 +137,9 @@ export function buildProgressBoard(rows, today = todayIn(rows[0]?.timezone)) {
       statusCode: r.status_code, statusLabel: r.status_label,
       column: topicColumn(r, today),
       hasMaterial: position <= component.materialTopicFileCount,
+      // Clase en linea: link efectivo (de la clase o del grupo), grabacion, nota y materiales.
+      meetingUrl: r.meeting_url || null, ownMeetingUrl: r.topic_meeting_url || null, groupMeetingUrl: r.group_meeting_url || null,
+      recordingUrl: r.recording_url || null, classNotes: r.class_notes || null, resourceCount: Number(r.resource_count) || 0,
       // null = sin datos para este rol (el alumno solo ve su propio registro)
       attendance: r.attendance_recorded === null || r.attendance_recorded === undefined ? null
         : { recorded: Number(r.attendance_recorded), present: Number(r.attendance_present) },

@@ -4,6 +4,7 @@ import { apiRequest } from './api'
 import { ErrorNote, EvidencePicker, MaterialViewer, Modal, postLeaveRequest } from './admin.jsx'
 import { AttendanceMark, PERIOD_LABEL, ProgressBar, classWhen, formatDay, programOptionLabel, relativeDay } from './progress.jsx'
 import { FeedbackForm, ReactionEmoji, ReactionPicker, canReact, useMyReactions } from './satisfaction.jsx'
+import { ClassroomPanel } from './classroom.jsx'
 
 // Vistas del alumno: "Mi horario" (calendario semana / mes / programa),
 // "Mis temas" (programas -> componentes -> temas con su avance) y
@@ -149,6 +150,7 @@ function ClassModal({ session, topic, today, startWithNotice = false, onClose, o
           <div className="st-chips"><TopicState topic={topic} /><LeaveChip leave={topic.myLeave} /></div>
           <dl>{rows.map(([k, v]) => <div key={k}><dt>{k}</dt><dd>{v}</dd></div>)}</dl>
           {topic.description && <p className="muted">{topic.description}</p>}
+          <ClassroomPanel session={session} topic={topic} />
           <section className="pg-session-att">
             <h4>Tu asistencia</h4>
             {topic.myAttendance

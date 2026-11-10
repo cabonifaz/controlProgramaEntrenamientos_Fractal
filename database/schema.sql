@@ -570,6 +570,29 @@ CREATE TABLE IF NOT EXISTS ai_reports (
   CONSTRAINT fk_ai_report_author FOREIGN KEY (created_by) REFERENCES users(id)
 );
 
+-- Materiales de una clase: archivos (privados, en el volumen) o links que
+-- deja el profesor o el admin; los alumnos inscritos los ven y descargan.
+CREATE TABLE IF NOT EXISTS topic_resources (
+  id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+  topic_id BIGINT UNSIGNED NOT NULL,
+  kind VARCHAR(10) NOT NULL,
+  title VARCHAR(200) NOT NULL,
+  url VARCHAR(500) NULL,
+  file_path VARCHAR(255) NULL,
+  original_name VARCHAR(255) NULL,
+  size_bytes INT UNSIGNED NULL,
+  mime_type VARCHAR(120) NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  created_by BIGINT UNSIGNED NULL,
+  deleted_at DATETIME NULL,
+  deleted_by BIGINT UNSIGNED NULL,
+  is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+  CONSTRAINT fk_topic_resource_topic FOREIGN KEY (topic_id) REFERENCES topics(id),
+  CONSTRAINT fk_topic_resource_author FOREIGN KEY (created_by) REFERENCES users(id),
+  CONSTRAINT chk_topic_resource_kind CHECK (kind IN ('file', 'link')),
+  INDEX idx_topic_resource_topic (topic_id)
+);
+
 -- ===================================================================
 -- Maestro de maestros: catalogos y valores iniciales (idempotente)
 -- ===================================================================
@@ -736,6 +759,7 @@ DROP PROCEDURE IF EXISTS sp_migrate_program_colors_v1;
 DROP PROCEDURE IF EXISTS sp_migrate_leave_topic_v1;
 DROP PROCEDURE IF EXISTS sp_migrate_student_profile_v1;
 DROP PROCEDURE IF EXISTS sp_migrate_onboarding_v1;
+DROP PROCEDURE IF EXISTS sp_migrate_class_links_v1;
 DROP PROCEDURE IF EXISTS sp_programs_set_colors;
 DROP PROCEDURE IF EXISTS sp_components_set_colors;
 DROP PROCEDURE IF EXISTS sp_user_invitations_create;
@@ -871,6 +895,14 @@ DROP PROCEDURE IF EXISTS sp_ai_reports_list;
 DROP PROCEDURE IF EXISTS sp_ai_reports_get;
 DROP PROCEDURE IF EXISTS sp_onboarding_get;
 DROP PROCEDURE IF EXISTS sp_onboarding_set;
+DROP PROCEDURE IF EXISTS sp_class_access;
+DROP PROCEDURE IF EXISTS sp_topic_class_info_set;
+DROP PROCEDURE IF EXISTS sp_group_meeting_set;
+DROP PROCEDURE IF EXISTS sp_topic_class_get;
+DROP PROCEDURE IF EXISTS sp_topic_resources_list;
+DROP PROCEDURE IF EXISTS sp_topic_resources_add;
+DROP PROCEDURE IF EXISTS sp_topic_resources_remove;
+DROP PROCEDURE IF EXISTS sp_topic_resource_get;
 DROP PROCEDURE IF EXISTS sp_pre_enrollments_create;
 DROP PROCEDURE IF EXISTS sp_pre_enrollments_list;
 DROP PROCEDURE IF EXISTS sp_pre_enrollments_resolve;
@@ -1050,6 +1082,24 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM information_schema.columns
     WHERE table_schema = DATABASE() AND table_name = 'users' AND column_name = 'onboarding_done_at') THEN
     ALTER TABLE users ADD COLUMN onboarding_done_at DATETIME NULL AFTER must_change_password;
+  END IF;
+END$$
+
+-- Clase en linea: link de la reunion (Teams/Meet/Zoom) por clase o por
+-- grupo (vale para todas sus clases sin link propio), link de la grabacion
+-- y una nota del profesor para los alumnos.
+CREATE PROCEDURE sp_migrate_class_links_v1()
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+    WHERE table_schema = DATABASE() AND table_name = 'topics' AND column_name = 'meeting_url') THEN
+    ALTER TABLE topics
+      ADD COLUMN meeting_url VARCHAR(500) NULL AFTER duration_minutes,
+      ADD COLUMN recording_url VARCHAR(500) NULL AFTER meeting_url,
+      ADD COLUMN class_notes VARCHAR(2000) NULL AFTER recording_url;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+    WHERE table_schema = DATABASE() AND table_name = 'component_groups' AND column_name = 'meeting_url') THEN
+    ALTER TABLE component_groups ADD COLUMN meeting_url VARCHAR(500) NULL AFTER instructor_id;
   END IF;
 END$$
 
@@ -4404,6 +4454,9 @@ BEGIN
          (SELECT COUNT(*) FROM group_enrollments ge WHERE ge.group_id = g.id AND ge.is_deleted = FALSE) AS enrolled_students,
          m.topic_file_count AS material_topic_file_count,
          t.id AS topic_id, t.title, t.description, t.sort_order, t.scheduled_on, t.actual_date, t.duration_minutes,
+         COALESCE(NULLIF(t.meeting_url, ''), g.meeting_url) AS meeting_url, t.meeting_url AS topic_meeting_url,
+         g.meeting_url AS group_meeting_url, t.recording_url, t.class_notes,
+         (SELECT COUNT(*) FROM topic_resources tr WHERE tr.topic_id = t.id AND tr.is_deleted = FALSE) AS resource_count,
          ts.code AS status_code, ts.label AS status_label,
          sd.start_time, sd.end_time,
          -- Asistencia de la sesion: conteos del grupo para admins/instructor;
@@ -5490,6 +5543,94 @@ END$$
 CREATE PROCEDURE sp_onboarding_set(IN p_actor_user_id BIGINT UNSIGNED, IN p_done BOOLEAN)
 BEGIN
   UPDATE users SET onboarding_done_at = IF(p_done, NOW(), NULL) WHERE id = p_actor_user_id;
+END$$
+
+-- ===================================================================
+-- Clase en linea y materiales. Acceso a una clase: 'edit' para su profesor
+-- y el admin del tenant (o super admin); 'view' para sus alumnos.
+CREATE PROCEDURE sp_class_access(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED, IN p_topic_id BIGINT UNSIGNED
+)
+BEGIN
+  SELECT t.id AS topic_id, g.id AS group_id, p.tenant_id,
+         CASE
+           WHEN p_actor_role = 'super_admin' THEN 'edit'
+           WHEN p_actor_role = 'tenant_admin' AND p.tenant_id <=> p_actor_tenant_id THEN 'edit'
+           WHEN p_actor_role = 'instructor' AND g.instructor_id = p_actor_user_id THEN 'edit'
+           WHEN p_actor_role = 'student' AND EXISTS (SELECT 1 FROM group_enrollments ge WHERE ge.group_id = g.id AND ge.student_id = p_actor_user_id AND ge.is_deleted = FALSE) THEN 'view'
+           ELSE 'none'
+         END AS access
+  FROM topics t
+  JOIN component_groups g ON g.id = t.group_id AND g.is_deleted = FALSE
+  JOIN components c ON c.id = g.component_id
+  JOIN training_programs p ON p.id = c.program_id
+  WHERE t.id = p_topic_id AND t.is_deleted = FALSE;
+END$$
+
+CREATE PROCEDURE sp_topic_class_get(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED, IN p_topic_id BIGINT UNSIGNED
+)
+BEGIN
+  SELECT t.id AS topic_id, t.title, t.scheduled_on, t.meeting_url AS topic_meeting_url, g.meeting_url AS group_meeting_url,
+         COALESCE(NULLIF(t.meeting_url, ''), g.meeting_url) AS meeting_url, t.recording_url, t.class_notes, g.id AS group_id, g.name AS group_name
+  FROM topics t JOIN component_groups g ON g.id = t.group_id
+  WHERE t.id = p_topic_id AND t.is_deleted = FALSE;
+END$$
+
+-- p_meeting_url NULL/'' = la clase usa el link del grupo.
+CREATE PROCEDURE sp_topic_class_info_set(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_topic_id BIGINT UNSIGNED,
+  IN p_meeting_url VARCHAR(500), IN p_recording_url VARCHAR(500), IN p_class_notes VARCHAR(2000)
+)
+BEGIN
+  UPDATE topics
+  SET meeting_url = NULLIF(TRIM(p_meeting_url), ''), recording_url = NULLIF(TRIM(p_recording_url), ''),
+      class_notes = NULLIF(TRIM(p_class_notes), ''), updated_at = NOW(), updated_by = p_actor_user_id
+  WHERE id = p_topic_id;
+END$$
+
+-- Link del grupo; con p_apply_all las clases futuras del grupo dejan su
+-- link propio y pasan a usar este.
+CREATE PROCEDURE sp_group_meeting_set(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_group_id BIGINT UNSIGNED, IN p_meeting_url VARCHAR(500), IN p_apply_all BOOLEAN
+)
+BEGIN
+  UPDATE component_groups SET meeting_url = NULLIF(TRIM(p_meeting_url), ''), updated_at = NOW(), updated_by = p_actor_user_id WHERE id = p_group_id;
+  IF p_apply_all THEN
+    UPDATE topics SET meeting_url = NULL, updated_at = NOW(), updated_by = p_actor_user_id
+    WHERE group_id = p_group_id AND is_deleted = FALSE AND (scheduled_on IS NULL OR scheduled_on >= CURDATE());
+  END IF;
+END$$
+
+CREATE PROCEDURE sp_topic_resources_list(IN p_topic_id BIGINT UNSIGNED)
+BEGIN
+  SELECT r.id, r.kind, r.title, r.url, r.original_name, r.size_bytes, r.mime_type, r.created_at, u.full_name AS created_by_name
+  FROM topic_resources r LEFT JOIN users u ON u.id = r.created_by
+  WHERE r.topic_id = p_topic_id AND r.is_deleted = FALSE
+  ORDER BY r.created_at, r.id;
+END$$
+
+CREATE PROCEDURE sp_topic_resources_add(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_topic_id BIGINT UNSIGNED, IN p_kind VARCHAR(10), IN p_title VARCHAR(200),
+  IN p_url VARCHAR(500), IN p_file_path VARCHAR(255), IN p_original_name VARCHAR(255), IN p_size_bytes INT UNSIGNED, IN p_mime_type VARCHAR(120)
+)
+BEGIN
+  IF (SELECT COUNT(*) FROM topic_resources WHERE topic_id = p_topic_id AND is_deleted = FALSE) >= 30 THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'too_many_resources';
+  END IF;
+  INSERT INTO topic_resources (topic_id, kind, title, url, file_path, original_name, size_bytes, mime_type, created_by)
+  VALUES (p_topic_id, p_kind, LEFT(TRIM(p_title), 200), p_url, p_file_path, p_original_name, p_size_bytes, p_mime_type, p_actor_user_id);
+  SELECT LAST_INSERT_ID() AS resource_id;
+END$$
+
+CREATE PROCEDURE sp_topic_resource_get(IN p_resource_id BIGINT UNSIGNED)
+BEGIN
+  SELECT id, topic_id, kind, file_path, original_name, mime_type FROM topic_resources WHERE id = p_resource_id AND is_deleted = FALSE;
+END$$
+
+CREATE PROCEDURE sp_topic_resources_remove(IN p_actor_user_id BIGINT UNSIGNED, IN p_resource_id BIGINT UNSIGNED)
+BEGIN
+  UPDATE topic_resources SET is_deleted = TRUE, deleted_at = NOW(), deleted_by = p_actor_user_id WHERE id = p_resource_id;
 END$$
 
 CREATE PROCEDURE sp_dashboard_get(IN p_user_id BIGINT, IN p_role VARCHAR(80), IN p_tenant_id BIGINT)
