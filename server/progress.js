@@ -61,6 +61,20 @@ function nextClassOf(topics) {
     .sort((a, b) => (a.scheduledOn + (a.startTime || '')).localeCompare(b.scheduledOn + (b.startTime || '')))[0] || null
 }
 
+// En curso primero; luego los proximos (el mas cercano antes) y al final
+// los terminados (el mas reciente antes). Asi programs[0] es "el actual".
+const PERIOD_ORDER = { current: 0, upcoming: 1, past: 2, undated: 3 }
+export function programPeriod(firstDate, lastDate, today) {
+  if (!firstDate) return 'undated'
+  if (firstDate > today) return 'upcoming'
+  if (lastDate && lastDate < today) return 'past'
+  return 'current'
+}
+export function sortPrograms(programs) {
+  return programs.sort((a, b) => PERIOD_ORDER[a.period] - PERIOD_ORDER[b.period]
+    || (a.period === 'past' ? (b.lastDate || '').localeCompare(a.lastDate || '') : (a.firstDate || '').localeCompare(b.firstDate || '')))
+}
+
 function dateRange(topics) {
   const dates = topics.map((t) => t.scheduledOn).filter(Boolean).sort()
   return { firstDate: dates[0] || null, lastDate: dates.at(-1) || null }
@@ -168,7 +182,11 @@ export function buildProgressBoard(rows, today = todayIn(rows[0]?.timezone)) {
     .sort((a, b) => (a.scheduledOn + (a.startTime || '')).localeCompare(b.scheduledOn + (b.startTime || '')))
     .slice(0, 5)
 
-  const programs = [...new Map(list.map((c) => [c.programId, { id: c.programId, name: c.programName, cohort: c.cohort }])).values()]
+  const programs = sortPrograms([...new Set(list.map((c) => c.programId))].map((id) => {
+    const comps = list.filter((c) => c.programId === id)
+    const { firstDate, lastDate } = dateRange(comps.flatMap((c) => [{ scheduledOn: c.firstDate }, { scheduledOn: c.lastDate }]))
+    return { id, name: comps[0].programName, cohort: comps[0].cohort, firstDate, lastDate, period: programPeriod(firstDate, lastDate, today) }
+  }))
 
   return {
     today,

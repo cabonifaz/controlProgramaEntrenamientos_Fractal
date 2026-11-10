@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import { BookOpen, CalendarClock, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Clock, MessageSquareText, UserCheck, UserX, Users as UsersIcon } from 'lucide-react'
 import { apiRequest } from './api'
 import { ErrorNote, EvidencePicker, MaterialViewer, Modal, postLeaveRequest } from './admin.jsx'
-import { AttendanceMark, ProgressBar, classWhen, formatDay, relativeDay } from './progress.jsx'
+import { AttendanceMark, PERIOD_LABEL, ProgressBar, classWhen, formatDay, programOptionLabel, relativeDay } from './progress.jsx'
 import { FeedbackForm, ReactionEmoji, ReactionPicker, canReact, useMyReactions } from './satisfaction.jsx'
 
 // Vistas del alumno: "Mi horario" (calendario semana / mes / programa),
@@ -54,7 +54,7 @@ function ProgramPicker({ programs, current, onChange }) {
   return (
     <label className="st-program-picker">Programa
       <select value={current?.id ?? ''} onChange={(e) => onChange(Number(e.target.value))}>
-        {programs.map((p) => <option key={p.id} value={p.id}>{p.name}{p.cohort ? ` · ${p.cohort}` : ''}</option>)}
+        {programs.map((p) => <option key={p.id} value={p.id}>{programOptionLabel(p)}</option>)}
       </select>
     </label>
   )
@@ -484,6 +484,7 @@ function ComponentSection({ token, component, today, onOpen, defaultOpen }) {
 
 export function StudentTopicsOverview({ session }) {
   const { board, error, reload } = useStudentBoard(session.token)
+  const { programs, current, setProgramId } = useProgramFilter(board)
   const allTopics = useMemo(() => (board ? flattenTopics(board.components) : []), [board])
   const { topic: openTopic, openClass, close } = useOpenClass(allTopics)
 
@@ -493,7 +494,8 @@ export function StudentTopicsOverview({ session }) {
 
   return (
     <div className="admin-wrap st-wrap">
-      {board.programs.map((p) => {
+      <ProgramPicker programs={programs} current={current} onChange={setProgramId} />
+      {board.programs.filter((p) => p.id === current?.id).map((p) => {
         const components = board.components.filter((c) => c.programId === p.id)
         const total = components.reduce((n, c) => n + c.total, 0)
         const done = components.reduce((n, c) => n + c.counts.completed, 0)
@@ -505,7 +507,7 @@ export function StudentTopicsOverview({ session }) {
           <section key={p.id} className="panel st-program">
             <div className="st-program-head">
               <div>
-                <span className="pg-stat-label">Programa</span>
+                <span className="pg-stat-label">Programa{p.period ? <span className={`st-period st-period-${p.period}`}>{PERIOD_LABEL[p.period]}</span> : null}</span>
                 <h2>{p.name}{p.cohort ? <small> · {p.cohort}</small> : null}</h2>
               </div>
               <div className="st-program-pct">

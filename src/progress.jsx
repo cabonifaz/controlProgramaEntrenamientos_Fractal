@@ -12,12 +12,30 @@ import { InstructorAbsenceNotice, useMyInstructorAbsences } from './indicators.j
 
 const PROGRAM_KEY = 'fractal-progress-program'
 
+// El programa elegido se recuerda solo durante la sesion del navegador: al
+// volver a entrar se abre de nuevo el programa mas actual.
 function readStored(key) {
-  try { return localStorage.getItem(key) } catch { return null }
+  try { return sessionStorage.getItem(key) } catch { return null }
 }
 
 function writeStored(key, value) {
-  try { localStorage.setItem(key, value) } catch { /* sin almacenamiento: no se recuerda */ }
+  try { sessionStorage.setItem(key, value) } catch { /* sin almacenamiento: no se recuerda */ }
+}
+
+export const PERIOD_LABEL = { current: 'En curso', upcoming: 'Próximo', past: 'Finalizado', undated: 'Sin fechas' }
+export const programOptionLabel = (p) => `${p.name}${p.cohort ? ` · ${p.cohort}` : ''}${p.period ? ` — ${PERIOD_LABEL[p.period]}` : ''}`
+
+// Programas de la lista de admin (fechas del programa) ordenados igual que
+// el tablero: en curso, proximos y finalizados.
+function withPeriod(list, today) {
+  const order = { current: 0, upcoming: 1, past: 2, undated: 3 }
+  return list.map((p) => {
+    const first = p.starts_on ? String(p.starts_on).slice(0, 10) : null
+    const last = p.ends_on ? String(p.ends_on).slice(0, 10) : null
+    const period = !first ? 'undated' : first > today ? 'upcoming' : last && last < today ? 'past' : 'current'
+    return { id: p.id, name: p.name, cohort: p.cohort, firstDate: first, lastDate: last, period }
+  }).sort((a, b) => order[a.period] - order[b.period]
+    || (a.period === 'past' ? (b.lastDate || '').localeCompare(a.lastDate || '') : (a.firstDate || '').localeCompare(b.firstDate || '')))
 }
 
 // Fechas YYYY-MM-DD como fecha de calendario (sin corrimiento por zona).
@@ -550,7 +568,7 @@ export function ProgressPanel({ session }) {
     apiRequest('/api/programs', { token })
       .then((res) => {
         if (cancelled) return
-        const list = res.data || []
+        const list = withPeriod(res.data || [], new Date().toISOString().slice(0, 10))
         setPrograms(list)
         setProgramId((current) => (list.some((p) => String(p.id) === String(current)) ? current : String(list[0]?.id || '')))
       })
@@ -580,10 +598,17 @@ export function ProgressPanel({ session }) {
   // Sin filtro, el tablero del instructor/alumno trae todos sus programas:
   // esa lista alimenta el selector aunque luego se filtre por uno.
   const [ownPrograms, setOwnPrograms] = useState([])
+  const [pickedDefault, setPickedDefault] = useState(false)
   useEffect(() => {
-    if (!isAdmin && board && !programId) setOwnPrograms(board.programs)
-  }, [isAdmin, board, programId])
-  const programOptions = isAdmin ? (programs || []).map((p) => ({ id: p.id, name: p.name, cohort: p.cohort })) : ownPrograms
+    if (isAdmin || !board || programId) return
+    setOwnPrograms(board.programs)
+    // Con varios programas se abre el mas actual; los demas quedan en el selector.
+    if (!pickedDefault && board.programs.length > 1) {
+      setPickedDefault(true)
+      setProgramId(String(board.programs[0].id))
+    }
+  }, [isAdmin, board, programId, pickedDefault])
+  const programOptions = isAdmin ? (programs || []) : ownPrograms
   const openComponent = board?.components.find((c) => c.id === openComponentId) || null
   const programName = programOptions.find((p) => String(p.id) === String(programId))?.name || (board?.programs.length === 1 ? board.programs[0].name : null)
 
@@ -599,7 +624,7 @@ export function ProgressPanel({ session }) {
           <label className="pg-program-select">Programa
             <select value={programId} onChange={(e) => chooseProgram(e.target.value)}>
               {!isAdmin && <option value="">Todos mis programas</option>}
-              {programOptions.map((p) => <option key={p.id} value={p.id}>{p.name}{p.cohort ? ` · ${p.cohort}` : ''}</option>)}
+              {programOptions.map((p) => <option key={p.id} value={p.id}>{programOptionLabel(p)}</option>)}
             </select>
           </label>
         )}
