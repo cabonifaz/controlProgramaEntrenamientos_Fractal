@@ -3733,6 +3733,7 @@ function NextClassBannerCard({ session, next, todayIso, scheduleDays, onOpenAtte
   }
 
   return (
+    <>
     <section className="panel next-class-banner">
       <div className="next-class-tag">{whenLabel}</div>
       <h2>{next.title}</h2>
@@ -3748,12 +3749,13 @@ function NextClassBannerCard({ session, next, todayIso, scheduleDays, onOpenAtte
         <button className="primary" onClick={() => onOpenAttendance(next)}>Ver lista de asistencia</button>
         {meetingUrl && <button type="button" className="text-button next-class-edit" onClick={() => setClassOpen(true)}>Clase y materiales</button>}
       </div>
-      {classOpen && (
-        <Modal title={next.title} onClose={() => { setClassOpen(false); setVersion((v) => v + 1) }} wide>
-          <ClassroomPanel session={session} topic={{ id: next.id, title: next.title }} />
-        </Modal>
-      )}
     </section>
+    {classOpen && (
+      <Modal title={next.title} onClose={() => { setClassOpen(false); setVersion((v) => v + 1) }} wide>
+        <ClassroomPanel session={session} topic={{ id: next.id, title: next.title }} />
+      </Modal>
+    )}
+    </>
   )
 }
 
