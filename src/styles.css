@@ -505,3 +505,13 @@
 .btn-compact{padding:8px 13px;font-size:12px}
 .st-period{display:inline-block;margin-left:8px;border-radius:999px;padding:2px 8px;font-size:9.5px;letter-spacing:.4px;vertical-align:middle}
 .st-period-current{background:#e3f5ec;color:#1f6f45}.st-period-upcoming{background:#e6f2fb;color:#0b5c8a}.st-period-past,.st-period-undated{background:#eef1f3;color:#5d6d75}
+/* Feriados de Peru */
+.holiday-loader-head{display:flex;flex-wrap:wrap;gap:16px;justify-content:space-between;align-items:flex-end}
+.holiday-loader-head>div:first-child{flex:1 1 360px;display:grid;gap:4px}
+.holiday-loader-actions{display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end}
+.holiday-loader-actions label{margin:0;display:grid;gap:5px;font-size:11px}
+.holiday-loader-actions select{height:42px;border:1px solid var(--line);border-radius:7px;padding:0 10px;background:#fff;min-width:110px}
+.holiday-loader .temp-password-box{margin-top:12px}
+.holiday-chips{list-style:none;margin:14px 0 0;padding:0;display:flex;flex-wrap:wrap;gap:6px}
+.holiday-chips li{background:var(--soft);border-radius:999px;padding:5px 11px;font-size:11.5px;color:#41535c}
+.holiday-chips b{color:var(--deep);margin-right:3px}

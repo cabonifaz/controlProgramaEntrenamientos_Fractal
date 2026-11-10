@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { AlertTriangle, ArrowRight, Calendar, ImagePlus, Paperclip, Users as UsersIcon } from 'lucide-react'
 import { apiBlob, apiDownload, apiRequest, apiUpload } from './api'
 import { CHANGE_REASONS, MyInstructorAbsences } from './indicators.jsx'
+import { formatDay } from './progress.jsx'
 import { buildMaterialPrompt, DEFAULT_PROMPT_OPTIONS, MATERIAL_LEVELS, SKILL_NAME, suggestedBatchSize } from './materialPrompt'
 import { BANNER_STYLES, buildBannerPrompt, DEFAULT_BANNER_OPTIONS } from './bannerPrompt'
 import { DEFAULT_ACCENT, PALETTE_PRESETS, readableTextOn, resolvePalette } from './palette'
@@ -2981,6 +2982,79 @@ export function LeaveRequestsPanel({ session }) {
   )
 }
 
+// Feriados nacionales de Peru: se cargan (o recargan) por año en el
+// calendario del tenant. Los que ya existen en esa fecha no se tocan.
+function PeruHolidaysLoader({ token, isSuperAdmin, tenants, onLoaded }) {
+  const thisYear = new Date().getFullYear()
+  const [year, setYear] = useState(thisYear)
+  const [tenantId, setTenantId] = useState('')
+  const [preview, setPreview] = useState([])
+  const [result, setResult] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    setResult(null)
+    apiRequest(`/api/holidays/peru/${year}`, { token }).then(({ data }) => setPreview(data)).catch(() => setPreview([]))
+  }, [year, token])
+
+  async function load() {
+    setBusy(true)
+    setError('')
+    setResult(null)
+    try {
+      const { data } = await apiRequest('/api/holidays/peru', {
+        method: 'POST', token, body: { year, ...(isSuperAdmin ? { tenantId: tenantId ? Number(tenantId) : null } : {}) },
+      })
+      setResult(data)
+      onLoaded()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <section className="panel admin-form-panel holiday-loader">
+      <div className="holiday-loader-head">
+        <div>
+          <h3>Feriados de Perú</h3>
+          <p className="muted">Carga los feriados nacionales del año (incluye Jueves y Viernes Santo de ese año). La generación de horarios los salta automáticamente. Los días no laborables que decrete el gobierno agrégalos abajo.</p>
+        </div>
+        <div className="holiday-loader-actions">
+          {isSuperAdmin && (
+            <label>Tenant
+              <select value={tenantId} onChange={(e) => setTenantId(e.target.value)}>
+                <option value="">Selecciona…</option>
+                {tenants.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+              </select>
+            </label>
+          )}
+          <label>Año
+            <select value={year} onChange={(e) => setYear(Number(e.target.value))}>
+              {[thisYear - 1, thisYear, thisYear + 1, thisYear + 2].map((y) => <option key={y} value={y}>{y}</option>)}
+            </select>
+          </label>
+          <button type="button" className="primary" onClick={load} disabled={busy || (isSuperAdmin && !tenantId)}>{busy ? 'Cargando…' : `Recargar feriados ${year}`}</button>
+        </div>
+      </div>
+      <ErrorNote message={error} />
+      {result && (
+        <p className="temp-password-box" role="status">
+          {result.added.length ? `Se agregaron ${result.added.length} feriado${result.added.length === 1 ? '' : 's'} de ${result.year}.` : `Los feriados de ${result.year} ya estaban cargados.`}
+          {result.existing.length > 0 && result.added.length > 0 ? ` ${result.existing.length} ya existían.` : ''}
+        </p>
+      )}
+      {preview.length > 0 && (
+        <ul className="holiday-chips" aria-label={`Feriados de Perú ${year}`}>
+          {preview.map((h) => <li key={h.date}><b>{formatDay(h.date, { weekday: false })}</b> {h.name}</li>)}
+        </ul>
+      )}
+    </section>
+  )
+}
+
 export function HolidaysPanel({ session }) {
   const { token, profile } = session
   const isSuperAdmin = profile.roleCode === 'super_admin'
@@ -3007,6 +3081,7 @@ export function HolidaysPanel({ session }) {
 
   return (
     <div className="admin-wrap">
+      <PeruHolidaysLoader token={token} isSuperAdmin={isSuperAdmin} tenants={tenants} onLoaded={reload} />
       <section className="panel admin-form-panel">
         <h3>Nuevo feriado</h3>
         <form className="admin-form" onSubmit={handleCreate}>

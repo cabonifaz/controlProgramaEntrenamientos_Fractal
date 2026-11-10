@@ -28,6 +28,7 @@ const data = {
 }
 
 const PROFILE_NAV = new Set(['Mi perfil', 'Mis alumnos', 'Alumnos', 'Satisfacción', 'Inasistencias'])
+const SUPER_ADMIN_EXTRA_NAV = new Set(['Calendario'])
 
 const roleKeyByCode = { student: 'student', instructor: 'instructor', tenant_admin: 'admin', super_admin: 'superAdmin' }
 
@@ -199,7 +200,7 @@ function App() {
   const brandMark = tenantLogoUrl
     ? <img src={tenantLogoUrl} alt="Logo" className="logo-mark logo-mark-image" />
     : <div className="logo-mark">F</div>
-  const baseNav = role === 'student' ? ['Inicio', 'Mi horario', 'Mis temas', 'Asistencia', 'Permisos', 'Alertas', 'Mi perfil', 'Mi cuenta'] : role === 'instructor' ? ['Inicio', 'Mis clases', 'Temarios', 'Asistencia', 'Mis alumnos', 'Permisos', 'Alertas', 'Reportes', 'Mi cuenta'] : role === 'superAdmin' ? ['Inicio', 'Tenants', 'Usuarios', 'Alumnos', 'Programas', 'Inscripciones', 'Satisfacción', 'Inasistencias', 'Permisos', 'Alertas', 'Reportes', 'Configuracion'] : ['Inicio', 'Programas', 'Inscripciones', 'Usuarios', 'Alumnos', 'Calendario', 'Satisfacción', 'Inasistencias', 'Permisos', 'Alertas', 'Reportes', 'Configuracion']
+  const baseNav = role === 'student' ? ['Inicio', 'Mi horario', 'Mis temas', 'Asistencia', 'Permisos', 'Alertas', 'Mi perfil', 'Mi cuenta'] : role === 'instructor' ? ['Inicio', 'Mis clases', 'Temarios', 'Asistencia', 'Mis alumnos', 'Permisos', 'Alertas', 'Reportes', 'Mi cuenta'] : role === 'superAdmin' ? ['Inicio', 'Tenants', 'Usuarios', 'Alumnos', 'Programas', 'Calendario', 'Inscripciones', 'Satisfacción', 'Inasistencias', 'Permisos', 'Alertas', 'Reportes', 'Configuracion'] : ['Inicio', 'Programas', 'Inscripciones', 'Usuarios', 'Alumnos', 'Calendario', 'Satisfacción', 'Inasistencias', 'Permisos', 'Alertas', 'Reportes', 'Configuracion']
   // "Avance" (kanban) va segundo para todos los roles; el resto conserva
   // el icono de la posicion que tenia antes de agregarlo.
   const nav = [baseNav[0], 'Avance', ...baseNav.slice(1)]
@@ -210,7 +211,8 @@ function App() {
     if (item === 'Satisfacción') return <Smile size={18} />
     if (item === 'Inasistencias') return <CalendarX2 size={18} />
     // Las secciones agregadas despues no corren el icono de las demas.
-    const i = baseNav.filter((x) => !PROFILE_NAV.has(x)).indexOf(item)
+    if (role === 'superAdmin' && SUPER_ADMIN_EXTRA_NAV.has(item)) return <CalendarDays size={18} />
+    const i = baseNav.filter((x) => !PROFILE_NAV.has(x) && !(role === 'superAdmin' && SUPER_ADMIN_EXTRA_NAV.has(x))).indexOf(item)
     return i === 0 ? <LayoutDashboard size={18} /> : i === 1 ? <CalendarDays size={18} /> : i === 2 ? <ClipboardCheck size={18} /> : i === 3 ? <Users size={18} /> : i === 4 ? <Bell size={18} /> : <Settings2 size={18} />
   }
   const AdminPanel = SECTION_PANELS_BY_ROLE[role]?.[active] || null
