@@ -27,7 +27,7 @@ export const programOptionLabel = (p) => `${p.name}${p.cohort ? ` · ${p.cohort}
 
 // Programas de la lista de admin (fechas del programa) ordenados igual que
 // el tablero: en curso, proximos y finalizados.
-function withPeriod(list, today) {
+export function withPeriod(list, today) {
   const order = { current: 0, upcoming: 1, past: 2, undated: 3 }
   return list.map((p) => {
     const first = p.starts_on ? String(p.starts_on).slice(0, 10) : null
