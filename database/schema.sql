@@ -517,6 +517,43 @@ CREATE TABLE IF NOT EXISTS instructor_availability (
   INDEX idx_avail_instructor (instructor_id)
 );
 
+-- Incidencias, observaciones y mejoras que reporta cualquier usuario, con
+-- la captura de la pantalla desde donde reporta y una imagen opcional
+-- (archivos privados en el volumen). Las atiende el admin del tenant o el
+-- super admin; la conversacion vive en support_ticket_messages.
+CREATE TABLE IF NOT EXISTS support_tickets (
+  id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+  tenant_id BIGINT UNSIGNED NULL,
+  reporter_id BIGINT UNSIGNED NOT NULL,
+  ticket_type VARCHAR(20) NOT NULL,
+  title VARCHAR(140) NOT NULL,
+  description VARCHAR(2000) NOT NULL,
+  section VARCHAR(80) NULL,
+  page_url VARCHAR(300) NULL,
+  user_agent VARCHAR(300) NULL,
+  viewport VARCHAR(30) NULL,
+  screenshot_path VARCHAR(255) NULL,
+  image_path VARCHAR(255) NULL,
+  status VARCHAR(20) NOT NULL DEFAULT 'open',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NULL,
+  updated_by BIGINT UNSIGNED NULL,
+  CONSTRAINT fk_ticket_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(id),
+  CONSTRAINT fk_ticket_reporter FOREIGN KEY (reporter_id) REFERENCES users(id),
+  CONSTRAINT chk_ticket_type CHECK (ticket_type IN ('incident', 'observation', 'improvement')),
+  CONSTRAINT chk_ticket_status CHECK (status IN ('open', 'in_progress', 'resolved', 'closed'))
+);
+
+CREATE TABLE IF NOT EXISTS support_ticket_messages (
+  id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+  ticket_id BIGINT UNSIGNED NOT NULL,
+  author_id BIGINT UNSIGNED NOT NULL,
+  message VARCHAR(2000) NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_ticket_msg_ticket FOREIGN KEY (ticket_id) REFERENCES support_tickets(id),
+  CONSTRAINT fk_ticket_msg_author FOREIGN KEY (author_id) REFERENCES users(id)
+);
+
 -- ===================================================================
 -- Maestro de maestros: catalogos y valores iniciales (idempotente)
 -- ===================================================================
@@ -615,6 +652,7 @@ INSERT IGNORE INTO master_catalog_values (catalog_id, code, label, sort_order) V
   ((SELECT id FROM master_catalogs WHERE code = 'ALERT_TYPE'), 'absence_notice', 'Aviso de inasistencia del alumno', 16),
   ((SELECT id FROM master_catalogs WHERE code = 'ALERT_TYPE'), 'instructor_absence_notice', 'Aviso de inasistencia del profesor', 17),
   ((SELECT id FROM master_catalogs WHERE code = 'ALERT_TYPE'), 'password_reset_request', 'Solicitud de recuperación de clave', 18),
+  ((SELECT id FROM master_catalogs WHERE code = 'ALERT_TYPE'), 'support_ticket', 'Reporte de soporte', 19),
 
   ((SELECT id FROM master_catalogs WHERE code = 'ALERT_PRIORITY'), 'low', 'Baja', 1),
   ((SELECT id FROM master_catalogs WHERE code = 'ALERT_PRIORITY'), 'medium', 'Media', 2),
@@ -805,6 +843,12 @@ DROP PROCEDURE IF EXISTS sp_instructor_availability_set;
 DROP PROCEDURE IF EXISTS sp_schedule_planning_groups;
 DROP PROCEDURE IF EXISTS sp_schedule_busy_dates;
 DROP PROCEDURE IF EXISTS sp_group_schedule_replace;
+DROP PROCEDURE IF EXISTS sp_support_tickets_create;
+DROP PROCEDURE IF EXISTS sp_support_tickets_list;
+DROP PROCEDURE IF EXISTS sp_support_ticket_get;
+DROP PROCEDURE IF EXISTS sp_support_ticket_messages;
+DROP PROCEDURE IF EXISTS sp_support_ticket_reply;
+DROP PROCEDURE IF EXISTS sp_support_ticket_set_status;
 DROP PROCEDURE IF EXISTS sp_pre_enrollments_create;
 DROP PROCEDURE IF EXISTS sp_pre_enrollments_list;
 DROP PROCEDURE IF EXISTS sp_pre_enrollments_resolve;
@@ -5199,6 +5243,162 @@ BEGIN
   SELECT p_group_id, jt.weekday, jt.start_time, jt.end_time, p_actor_user_id
   FROM JSON_TABLE(p_days, '$[*]' COLUMNS (weekday INT PATH '$.weekday', start_time TIME PATH '$.start', end_time TIME PATH '$.end')) jt
   ON DUPLICATE KEY UPDATE start_time = VALUES(start_time), end_time = VALUES(end_time), is_deleted = FALSE, deleted_at = NULL, deleted_by = NULL;
+END$$
+
+-- ===================================================================
+-- Soporte. Ve un reporte quien lo creo, el admin de su tenant y el super
+-- admin. Freno de abuso: maximo 20 reportes por usuario por dia.
+CREATE PROCEDURE sp_support_tickets_create(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED,
+  IN p_type VARCHAR(20), IN p_title VARCHAR(140), IN p_description VARCHAR(2000), IN p_section VARCHAR(80),
+  IN p_page_url VARCHAR(300), IN p_user_agent VARCHAR(300), IN p_viewport VARCHAR(30),
+  IN p_screenshot_path VARCHAR(255), IN p_image_path VARCHAR(255)
+)
+BEGIN
+  DECLARE v_id BIGINT UNSIGNED;
+  DECLARE v_today INT;
+  IF p_type NOT IN ('incident', 'observation', 'improvement') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'invalid_ticket_type';
+  END IF;
+  IF CHAR_LENGTH(TRIM(COALESCE(p_title, ''))) = 0 OR CHAR_LENGTH(TRIM(COALESCE(p_description, ''))) = 0 THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'reason_required';
+  END IF;
+  SELECT COUNT(*) INTO v_today FROM support_tickets WHERE reporter_id = p_actor_user_id AND created_at >= CURDATE();
+  IF v_today >= 20 THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'too_many_requests';
+  END IF;
+
+  INSERT INTO support_tickets (tenant_id, reporter_id, ticket_type, title, description, section, page_url, user_agent, viewport, screenshot_path, image_path)
+  VALUES (p_actor_tenant_id, p_actor_user_id, p_type, TRIM(p_title), TRIM(p_description), p_section, p_page_url, p_user_agent, p_viewport, p_screenshot_path, p_image_path);
+  SET v_id = LAST_INSERT_ID();
+
+  -- Avisa a los admins del tenant (si quien reporta no lo es) y a los super admin.
+  INSERT INTO alerts (tenant_id, type_id, priority_id, recipient_user_id, title, description, status_id, source_type, source_id, created_by)
+  SELECT p_actor_tenant_id,
+         (SELECT v.id FROM master_catalog_values v JOIN master_catalogs c ON c.id = v.catalog_id WHERE c.code = 'ALERT_TYPE' AND v.code = 'support_ticket'),
+         (SELECT v.id FROM master_catalog_values v JOIN master_catalogs c ON c.id = v.catalog_id WHERE c.code = 'ALERT_PRIORITY' AND v.code = IF(p_type = 'incident', 'high', 'medium')),
+         au.id,
+         LEFT(CONCAT(CASE p_type WHEN 'incident' THEN 'Incidencia' WHEN 'observation' THEN 'Observación' ELSE 'Mejora' END, ' de ', ru.full_name, ': ', TRIM(p_title)), 200),
+         LEFT(CONCAT(COALESCE(CONCAT('En ', p_section, ' — '), ''), TRIM(p_description)), 1000),
+         (SELECT v.id FROM master_catalog_values v JOIN master_catalogs c ON c.id = v.catalog_id WHERE c.code = 'ALERT_STATUS' AND v.code = 'open'),
+         'support_ticket', v_id, p_actor_user_id
+  FROM users au
+  JOIN master_catalog_values ar ON ar.id = au.role_id
+  JOIN users ru ON ru.id = p_actor_user_id
+  WHERE au.is_deleted = FALSE AND au.is_active = TRUE AND au.id <> p_actor_user_id
+    AND (ar.code = 'super_admin' OR (ar.code = 'tenant_admin' AND au.tenant_id <=> p_actor_tenant_id AND p_actor_role <> 'tenant_admin'));
+  SELECT v_id AS ticket_id;
+END$$
+
+CREATE PROCEDURE sp_support_tickets_list(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED
+)
+BEGIN
+  SELECT st.id, st.ticket_type, st.title, st.description, st.section, st.status, st.created_at, st.updated_at,
+         st.reporter_id, ru.full_name AS reporter_name, rr.code AS reporter_role, rr.label AS reporter_role_label,
+         t.name AS tenant_name, st.screenshot_path IS NOT NULL AS has_screenshot, st.image_path IS NOT NULL AS has_image,
+         (SELECT COUNT(*) FROM support_ticket_messages m WHERE m.ticket_id = st.id) AS replies,
+         (SELECT MAX(m.created_at) FROM support_ticket_messages m WHERE m.ticket_id = st.id) AS last_reply_at
+  FROM support_tickets st
+  JOIN users ru ON ru.id = st.reporter_id
+  JOIN master_catalog_values rr ON rr.id = ru.role_id
+  LEFT JOIN tenants t ON t.id = st.tenant_id
+  WHERE p_actor_role = 'super_admin'
+     OR st.reporter_id = p_actor_user_id
+     OR (p_actor_role = 'tenant_admin' AND st.tenant_id <=> p_actor_tenant_id)
+  ORDER BY FIELD(st.status, 'open', 'in_progress', 'resolved', 'closed'), st.created_at DESC
+  LIMIT 500;
+END$$
+
+CREATE PROCEDURE sp_support_ticket_get(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED, IN p_ticket_id BIGINT UNSIGNED
+)
+BEGIN
+  SELECT st.*, ru.full_name AS reporter_name, ru.email AS reporter_email, rr.label AS reporter_role_label, t.name AS tenant_name
+  FROM support_tickets st
+  JOIN users ru ON ru.id = st.reporter_id
+  JOIN master_catalog_values rr ON rr.id = ru.role_id
+  LEFT JOIN tenants t ON t.id = st.tenant_id
+  WHERE st.id = p_ticket_id
+    AND (p_actor_role = 'super_admin' OR st.reporter_id = p_actor_user_id OR (p_actor_role = 'tenant_admin' AND st.tenant_id <=> p_actor_tenant_id));
+END$$
+
+CREATE PROCEDURE sp_support_ticket_messages(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED, IN p_ticket_id BIGINT UNSIGNED
+)
+BEGIN
+  SELECT m.id, m.message, m.created_at, m.author_id, au.full_name AS author_name, ar.code AS author_role, ar.label AS author_role_label
+  FROM support_ticket_messages m
+  JOIN support_tickets st ON st.id = m.ticket_id
+  JOIN users au ON au.id = m.author_id
+  JOIN master_catalog_values ar ON ar.id = au.role_id
+  WHERE m.ticket_id = p_ticket_id
+    AND (p_actor_role = 'super_admin' OR st.reporter_id = p_actor_user_id OR (p_actor_role = 'tenant_admin' AND st.tenant_id <=> p_actor_tenant_id))
+  ORDER BY m.created_at, m.id;
+END$$
+
+-- Responde quien atiende (admin/super admin) o quien reporto. La respuesta
+-- de un admin le llega como alerta a quien reporto, y la de quien reporto
+-- a los que atienden.
+CREATE PROCEDURE sp_support_ticket_reply(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED,
+  IN p_ticket_id BIGINT UNSIGNED, IN p_message VARCHAR(2000)
+)
+BEGIN
+  DECLARE v_reporter BIGINT UNSIGNED;
+  DECLARE v_tenant BIGINT UNSIGNED;
+  DECLARE v_title VARCHAR(140);
+  DECLARE v_status VARCHAR(20);
+  DECLARE v_reporter_role VARCHAR(80);
+  SELECT st.reporter_id, st.tenant_id, st.title, st.status, rr.code INTO v_reporter, v_tenant, v_title, v_status, v_reporter_role
+  FROM support_tickets st JOIN users ru ON ru.id = st.reporter_id JOIN master_catalog_values rr ON rr.id = ru.role_id
+  WHERE st.id = p_ticket_id;
+  IF v_reporter IS NULL OR NOT (p_actor_role = 'super_admin' OR v_reporter = p_actor_user_id OR (p_actor_role = 'tenant_admin' AND v_tenant <=> p_actor_tenant_id)) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'target_not_found';
+  END IF;
+  IF CHAR_LENGTH(TRIM(COALESCE(p_message, ''))) = 0 THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'reason_required';
+  END IF;
+  INSERT INTO support_ticket_messages (ticket_id, author_id, message) VALUES (p_ticket_id, p_actor_user_id, TRIM(p_message));
+  -- Si responde quien atiende y estaba abierto, pasa a "en atencion".
+  IF v_reporter <> p_actor_user_id AND v_status = 'open' THEN
+    UPDATE support_tickets SET status = 'in_progress', updated_at = NOW(), updated_by = p_actor_user_id WHERE id = p_ticket_id;
+  ELSE
+    UPDATE support_tickets SET updated_at = NOW(), updated_by = p_actor_user_id WHERE id = p_ticket_id;
+  END IF;
+
+  INSERT INTO alerts (tenant_id, type_id, priority_id, recipient_user_id, title, description, status_id, source_type, source_id, created_by)
+  SELECT v_tenant,
+         (SELECT v.id FROM master_catalog_values v JOIN master_catalogs c ON c.id = v.catalog_id WHERE c.code = 'ALERT_TYPE' AND v.code = 'support_ticket'),
+         (SELECT v.id FROM master_catalog_values v JOIN master_catalogs c ON c.id = v.catalog_id WHERE c.code = 'ALERT_PRIORITY' AND v.code = 'medium'),
+         u.id,
+         LEFT(CONCAT(au.full_name, ' respondió: ', v_title), 200),
+         LEFT(TRIM(p_message), 1000),
+         (SELECT v.id FROM master_catalog_values v JOIN master_catalogs c ON c.id = v.catalog_id WHERE c.code = 'ALERT_STATUS' AND v.code = 'open'),
+         'support_ticket', p_ticket_id, p_actor_user_id
+  FROM users u
+  JOIN master_catalog_values r ON r.id = u.role_id
+  JOIN users au ON au.id = p_actor_user_id
+  WHERE u.is_deleted = FALSE AND u.is_active = TRUE AND u.id <> p_actor_user_id
+    AND ((p_actor_user_id <> v_reporter AND u.id = v_reporter)
+      OR (p_actor_user_id = v_reporter AND (r.code = 'super_admin' OR (r.code = 'tenant_admin' AND u.tenant_id <=> v_tenant AND v_reporter_role <> 'tenant_admin'))));
+END$$
+
+CREATE PROCEDURE sp_support_ticket_set_status(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED,
+  IN p_ticket_id BIGINT UNSIGNED, IN p_status VARCHAR(20)
+)
+BEGIN
+  DECLARE v_tenant BIGINT UNSIGNED;
+  DECLARE v_found INT;
+  IF p_status NOT IN ('open', 'in_progress', 'resolved', 'closed') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'invalid_status';
+  END IF;
+  SELECT COUNT(*), MAX(tenant_id) INTO v_found, v_tenant FROM support_tickets WHERE id = p_ticket_id;
+  IF v_found = 0 OR NOT (p_actor_role = 'super_admin' OR (p_actor_role = 'tenant_admin' AND v_tenant <=> p_actor_tenant_id)) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+  UPDATE support_tickets SET status = p_status, updated_at = NOW(), updated_by = p_actor_user_id WHERE id = p_ticket_id;
 END$$
 
 CREATE PROCEDURE sp_dashboard_get(IN p_user_id BIGINT, IN p_role VARCHAR(80), IN p_tenant_id BIGINT)

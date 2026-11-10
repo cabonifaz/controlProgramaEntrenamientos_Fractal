@@ -2775,7 +2775,7 @@ export function postLeaveRequest(token, fields, file) {
   return apiUpload('/api/leave-requests', { token, formData })
 }
 
-export function EvidencePicker({ file, onChange }) {
+export function EvidencePicker({ file, onChange, label = 'Evidencia (imagen, opcional)' }) {
   const [preview, setPreview] = useState('')
   const [error, setError] = useState('')
 
@@ -2798,7 +2798,7 @@ export function EvidencePicker({ file, onChange }) {
 
   return (
     <div className="evidence-picker">
-      <span className="evidence-title">Evidencia (imagen, opcional)</span>
+      <span className="evidence-title">{label}</span>
       {file ? (
         <div className="evidence-chosen">
           {preview && <img src={preview} alt="Vista previa de la evidencia" />}

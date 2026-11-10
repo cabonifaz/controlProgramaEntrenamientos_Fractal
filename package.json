@@ -19,6 +19,7 @@
     "dotenv": "latest",
     "exceljs": "^4.4.0",
     "express": "latest",
+    "html-to-image": "^1.11.13",
     "jsonwebtoken": "latest",
     "jszip": "^3.10.2",
     "lucide-react": "latest",
