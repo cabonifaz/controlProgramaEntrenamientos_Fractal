@@ -385,6 +385,49 @@ CREATE TABLE IF NOT EXISTS alerts (
   INDEX idx_alert_source (type_id, source_type, source_id)
 );
 
+-- Reaccion del alumno a un tema ya dictado: satisfaccion 1..5 y si quiere
+-- que se repita. Una por alumno y tema (se puede cambiar).
+CREATE TABLE IF NOT EXISTS topic_reactions (
+  id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+  topic_id BIGINT UNSIGNED NOT NULL,
+  student_id BIGINT UNSIGNED NOT NULL,
+  satisfaction TINYINT UNSIGNED NULL,
+  wants_repeat BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NULL,
+  UNIQUE KEY uq_reaction_topic_student (topic_id, student_id),
+  CONSTRAINT fk_reaction_topic FOREIGN KEY (topic_id) REFERENCES topics(id),
+  CONSTRAINT fk_reaction_student FOREIGN KEY (student_id) REFERENCES users(id),
+  CONSTRAINT chk_reaction_satisfaction CHECK (satisfaction IS NULL OR satisfaction BETWEEN 1 AND 5)
+);
+
+-- Comentario corto (500) del alumno sobre un tema, un curso (componente)
+-- o un profesor. Se guarda todo el contexto (grupo, componente, profesor
+-- de ese momento) para los reportes. Lo lee el admin.
+CREATE TABLE IF NOT EXISTS student_feedback (
+  id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+  tenant_id BIGINT UNSIGNED NULL,
+  student_id BIGINT UNSIGNED NOT NULL,
+  target_type VARCHAR(20) NOT NULL,
+  topic_id BIGINT UNSIGNED NULL,
+  group_id BIGINT UNSIGNED NULL,
+  component_id BIGINT UNSIGNED NULL,
+  instructor_id BIGINT UNSIGNED NULL,
+  message VARCHAR(500) NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  deleted_at DATETIME NULL,
+  deleted_by BIGINT UNSIGNED NULL,
+  is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+  CONSTRAINT fk_feedback_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(id),
+  CONSTRAINT fk_feedback_student FOREIGN KEY (student_id) REFERENCES users(id),
+  CONSTRAINT fk_feedback_topic FOREIGN KEY (topic_id) REFERENCES topics(id),
+  CONSTRAINT fk_feedback_group FOREIGN KEY (group_id) REFERENCES component_groups(id),
+  CONSTRAINT fk_feedback_component FOREIGN KEY (component_id) REFERENCES components(id),
+  CONSTRAINT fk_feedback_instructor FOREIGN KEY (instructor_id) REFERENCES users(id),
+  CONSTRAINT chk_feedback_target CHECK (target_type IN ('topic', 'component', 'instructor')),
+  INDEX idx_feedback_student_day (student_id, created_at)
+);
+
 -- ===================================================================
 -- Maestro de maestros: catalogos y valores iniciales (idempotente)
 -- ===================================================================
@@ -649,6 +692,11 @@ DROP PROCEDURE IF EXISTS sp_profile_get_mine;
 DROP PROCEDURE IF EXISTS sp_profile_update_mine;
 DROP PROCEDURE IF EXISTS sp_profile_set_my_photo;
 DROP PROCEDURE IF EXISTS sp_student_profiles_list;
+DROP PROCEDURE IF EXISTS sp_reactions_set;
+DROP PROCEDURE IF EXISTS sp_reactions_list_mine;
+DROP PROCEDURE IF EXISTS sp_reactions_summary;
+DROP PROCEDURE IF EXISTS sp_feedback_create;
+DROP PROCEDURE IF EXISTS sp_feedback_list;
 DROP PROCEDURE IF EXISTS sp_pre_enrollments_create;
 DROP PROCEDURE IF EXISTS sp_pre_enrollments_list;
 DROP PROCEDURE IF EXISTS sp_pre_enrollments_resolve;
@@ -4331,6 +4379,149 @@ BEGIN
            u.linkedin_url, u.github_url, u.portfolio_url, u.contact_email, u.city, u.phone, t.name
   HAVING p_actor_role <> 'instructor' OR COUNT(c.id) > 0
   ORDER BY u.full_name;
+END$$
+
+-- ===================================================================
+-- Reacciones y feedback de los alumnos.
+CREATE PROCEDURE sp_reactions_set(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_topic_id BIGINT UNSIGNED,
+  IN p_satisfaction TINYINT UNSIGNED, IN p_wants_repeat BOOLEAN
+)
+BEGIN
+  DECLARE v_status VARCHAR(80);
+  DECLARE v_date DATE;
+  IF p_actor_role <> 'student' THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+  IF p_satisfaction IS NOT NULL AND (p_satisfaction < 1 OR p_satisfaction > 5) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'invalid_satisfaction';
+  END IF;
+  SELECT sv.code, t.scheduled_on INTO v_status, v_date
+  FROM topics t
+  JOIN group_enrollments ge ON ge.group_id = t.group_id AND ge.student_id = p_actor_user_id AND ge.is_deleted = FALSE
+  JOIN master_catalog_values sv ON sv.id = t.status_id
+  WHERE t.id = p_topic_id AND t.is_deleted = FALSE;
+  IF v_status IS NULL THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'target_not_found';
+  END IF;
+  -- Solo se califica lo que ya se dicto (o ya paso su fecha).
+  IF v_status <> 'completed' AND (v_date IS NULL OR v_date > CURDATE()) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'topic_not_taught_yet';
+  END IF;
+
+  INSERT INTO topic_reactions (topic_id, student_id, satisfaction, wants_repeat)
+  VALUES (p_topic_id, p_actor_user_id, p_satisfaction, COALESCE(p_wants_repeat, FALSE))
+  ON DUPLICATE KEY UPDATE satisfaction = VALUES(satisfaction), wants_repeat = VALUES(wants_repeat), updated_at = NOW();
+END$$
+
+CREATE PROCEDURE sp_reactions_list_mine(IN p_actor_user_id BIGINT UNSIGNED)
+BEGIN
+  SELECT topic_id, satisfaction, wants_repeat FROM topic_reactions WHERE student_id = p_actor_user_id;
+END$$
+
+-- Totales por tema. El instructor ve solo sus grupos (cantidades, sin
+-- nombres de alumnos); el admin, todo su tenant.
+CREATE PROCEDURE sp_reactions_summary(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED
+)
+BEGIN
+  IF p_actor_role NOT IN ('instructor', 'tenant_admin', 'super_admin') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+  SELECT t.id AS topic_id, t.title AS topic_title, t.scheduled_on, t.sort_order,
+         g.id AS group_id, g.name AS group_name, c.id AS component_id, c.name AS component_name,
+         p.id AS program_id, p.name AS program_name, g.instructor_id, iu.full_name AS instructor_name,
+         COUNT(r.satisfaction) AS votes, ROUND(AVG(r.satisfaction), 2) AS avg_satisfaction,
+         SUM(r.satisfaction = 1) AS s1, SUM(r.satisfaction = 2) AS s2, SUM(r.satisfaction = 3) AS s3,
+         SUM(r.satisfaction = 4) AS s4, SUM(r.satisfaction = 5) AS s5,
+         SUM(r.wants_repeat) AS repeat_count, COUNT(r.id) AS reactions
+  FROM topic_reactions r
+  JOIN topics t ON t.id = r.topic_id AND t.is_deleted = FALSE
+  JOIN component_groups g ON g.id = t.group_id AND g.is_deleted = FALSE
+  JOIN components c ON c.id = g.component_id AND c.is_deleted = FALSE
+  JOIN training_programs p ON p.id = c.program_id AND p.is_deleted = FALSE
+  LEFT JOIN users iu ON iu.id = g.instructor_id
+  WHERE (p_actor_role = 'super_admin' OR p.tenant_id <=> p_actor_tenant_id)
+    AND (p_actor_role <> 'instructor' OR g.instructor_id = p_actor_user_id)
+  GROUP BY t.id, t.title, t.scheduled_on, t.sort_order, g.id, g.name, c.id, c.name, p.id, p.name, g.instructor_id, iu.full_name
+  ORDER BY p.name, c.name, t.sort_order, t.id;
+END$$
+
+-- p_target_type: topic (p_topic_id), component (p_component_id) o
+-- instructor (p_group_id: el profesor de ese grupo). El alumno debe estar
+-- inscrito. Freno de abuso: maximo 10 comentarios por dia.
+CREATE PROCEDURE sp_feedback_create(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_target_type VARCHAR(20),
+  IN p_topic_id BIGINT UNSIGNED, IN p_component_id BIGINT UNSIGNED, IN p_group_id BIGINT UNSIGNED, IN p_message VARCHAR(500)
+)
+BEGIN
+  DECLARE v_group_id BIGINT UNSIGNED;
+  DECLARE v_component_id BIGINT UNSIGNED;
+  DECLARE v_instructor_id BIGINT UNSIGNED;
+  DECLARE v_tenant_id BIGINT UNSIGNED;
+  DECLARE v_today INT;
+  IF p_actor_role <> 'student' THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+  IF p_message IS NULL OR CHAR_LENGTH(TRIM(p_message)) = 0 THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'feedback_empty';
+  END IF;
+  SELECT COUNT(*) INTO v_today FROM student_feedback
+  WHERE student_id = p_actor_user_id AND created_at >= CURDATE() AND is_deleted = FALSE;
+  IF v_today >= 10 THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'feedback_daily_limit';
+  END IF;
+
+  IF p_target_type = 'topic' THEN
+    SELECT g.id, g.component_id, g.instructor_id INTO v_group_id, v_component_id, v_instructor_id
+    FROM topics t JOIN component_groups g ON g.id = t.group_id
+    JOIN group_enrollments ge ON ge.group_id = g.id AND ge.student_id = p_actor_user_id AND ge.is_deleted = FALSE
+    WHERE t.id = p_topic_id AND t.is_deleted = FALSE AND g.is_deleted = FALSE;
+  ELSEIF p_target_type = 'component' THEN
+    SELECT g.id, g.component_id, g.instructor_id INTO v_group_id, v_component_id, v_instructor_id
+    FROM component_groups g
+    JOIN group_enrollments ge ON ge.group_id = g.id AND ge.student_id = p_actor_user_id AND ge.is_deleted = FALSE
+    WHERE g.component_id = p_component_id AND g.is_deleted = FALSE
+    LIMIT 1;
+  ELSEIF p_target_type = 'instructor' THEN
+    SELECT g.id, g.component_id, g.instructor_id INTO v_group_id, v_component_id, v_instructor_id
+    FROM component_groups g
+    JOIN group_enrollments ge ON ge.group_id = g.id AND ge.student_id = p_actor_user_id AND ge.is_deleted = FALSE
+    WHERE g.id = p_group_id AND g.is_deleted = FALSE AND g.instructor_id IS NOT NULL;
+  ELSE
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'invalid_feedback_target';
+  END IF;
+  IF v_group_id IS NULL THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'target_not_found';
+  END IF;
+  SELECT tenant_id INTO v_tenant_id FROM users WHERE id = p_actor_user_id;
+
+  INSERT INTO student_feedback (tenant_id, student_id, target_type, topic_id, group_id, component_id, instructor_id, message)
+  VALUES (v_tenant_id, p_actor_user_id, p_target_type, IF(p_target_type = 'topic', p_topic_id, NULL), v_group_id, v_component_id, v_instructor_id, TRIM(p_message));
+  SELECT LAST_INSERT_ID() AS feedback_id;
+END$$
+
+CREATE PROCEDURE sp_feedback_list(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED
+)
+BEGIN
+  IF p_actor_role NOT IN ('tenant_admin', 'super_admin') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+  SELECT f.id, f.target_type, f.message, f.created_at, f.student_id, su.full_name AS student_name,
+         f.topic_id, t.title AS topic_title, f.component_id, c.name AS component_name,
+         p.id AS program_id, p.name AS program_name, f.group_id, g.name AS group_name,
+         f.instructor_id, iu.full_name AS instructor_name
+  FROM student_feedback f
+  JOIN users su ON su.id = f.student_id
+  LEFT JOIN topics t ON t.id = f.topic_id
+  LEFT JOIN components c ON c.id = f.component_id
+  LEFT JOIN training_programs p ON p.id = c.program_id
+  LEFT JOIN component_groups g ON g.id = f.group_id
+  LEFT JOIN users iu ON iu.id = f.instructor_id
+  WHERE f.is_deleted = FALSE AND (p_actor_role = 'super_admin' OR f.tenant_id <=> p_actor_tenant_id)
+  ORDER BY f.created_at DESC, f.id DESC
+  LIMIT 500;
 END$$
 
 CREATE PROCEDURE sp_dashboard_get(IN p_user_id BIGINT, IN p_role VARCHAR(80), IN p_tenant_id BIGINT)

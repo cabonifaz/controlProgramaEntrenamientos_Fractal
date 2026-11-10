@@ -1,8 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
-import { BookOpen, CalendarClock, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Clock, UserCheck, UserX, Users as UsersIcon } from 'lucide-react'
+import { BookOpen, CalendarClock, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Clock, MessageSquareText, UserCheck, UserX, Users as UsersIcon } from 'lucide-react'
 import { apiRequest } from './api'
 import { ErrorNote, EvidencePicker, MaterialViewer, Modal, postLeaveRequest } from './admin.jsx'
 import { AttendanceMark, ProgressBar, classWhen, formatDay, relativeDay } from './progress.jsx'
+import { FeedbackForm, ReactionEmoji, ReactionPicker, canReact, useMyReactions } from './satisfaction.jsx'
 
 // Vistas del alumno: "Mi horario" (calendario semana / mes / programa),
 // "Mis temas" (programas -> componentes -> temas con su avance) y
@@ -30,7 +31,7 @@ function useStudentBoard(token) {
 function flattenTopics(components) {
   return components.flatMap((c) => c.groups.flatMap((g) => g.topics.map((t) => ({
     ...t, componentId: c.id, componentName: c.name, programId: c.programId, programName: c.programName,
-    groupName: g.name, instructorName: g.instructorName, palette: c.palette,
+    groupId: g.id, groupName: g.name, instructorName: g.instructorName, palette: c.palette,
   }))))
 }
 
@@ -82,6 +83,14 @@ function LeaveChip({ leave }) {
 // Detalle de una clase con las acciones del alumno: abrir el material y
 // avisar (o retirar el aviso) de que no asistira. El aviso le llega como
 // alerta al instructor que dicta la clase.
+function feedbackTargets(topic) {
+  return [
+    { key: 'topic', type: 'topic', label: topic.title, topicId: topic.id },
+    { key: 'component', type: 'component', label: topic.componentName, componentId: topic.componentId },
+    ...(topic.instructorName && topic.groupId ? [{ key: 'instructor', type: 'instructor', label: topic.instructorName, groupId: topic.groupId }] : []),
+  ]
+}
+
 function ClassModal({ session, topic, today, startWithNotice = false, onClose, onChanged }) {
   const { token } = session
   const [noticeOpen, setNoticeOpen] = useState(startWithNotice)
@@ -91,6 +100,7 @@ function ClassModal({ session, topic, today, startWithNotice = false, onClose, o
   const [error, setError] = useState('')
   const [done, setDone] = useState('')
   const [materialOpen, setMaterialOpen] = useState(false)
+  const [feedbackOpen, setFeedbackOpen] = useState(false)
   const canNotify = isUpcoming(topic) && topic.scheduledOn >= today && !topic.myLeave
 
   async function sendNotice(e) {
@@ -145,8 +155,12 @@ function ClassModal({ session, topic, today, startWithNotice = false, onClose, o
               ? <p className="pg-my-att"><AttendanceMark mark={topic.myAttendance} /> {topic.myAttendance.label}</p>
               : <p className="muted">{topic.column === 'completed' ? 'El instructor todavía no registró la asistencia.' : 'Se registra el día de la clase.'}</p>}
           </section>
+          <ReactionPicker token={token} topic={topic} today={today} />
           {done && <p className="st-done" role="status">{done}</p>}
           <ErrorNote message={error} />
+          {feedbackOpen && (
+            <FeedbackForm token={token} targets={feedbackTargets(topic)} onCancel={() => setFeedbackOpen(false)} onDone={(msg) => { setDone(msg); setFeedbackOpen(false) }} />
+          )}
           {noticeOpen && (
             <form className="st-notice-form" onSubmit={sendNotice}>
               <h4>Avisar que no asistiré</h4>
@@ -163,6 +177,7 @@ function ClassModal({ session, topic, today, startWithNotice = false, onClose, o
             {topic.hasMaterial && <button type="button" className="primary" onClick={() => setMaterialOpen(true)}><BookOpen size={16} aria-hidden="true" /> Abrir contenido del tema</button>}
             {canNotify && !noticeOpen && <button type="button" className="btn-mini" onClick={() => setNoticeOpen(true)}><UserX size={14} aria-hidden="true" /> Avisar que no asistiré</button>}
             {topic.myLeave?.status === 'pending' && <button type="button" className="btn-mini" onClick={cancelNotice} disabled={busy}>Retirar aviso</button>}
+            {!feedbackOpen && <button type="button" className="btn-mini" onClick={() => { setFeedbackOpen(true); setNoticeOpen(false); setDone('') }}><MessageSquareText size={14} aria-hidden="true" /> Dejar un comentario</button>}
           </div>
         </div>
       </Modal>
@@ -402,11 +417,18 @@ export function StudentSchedulePanel({ session }) {
 // ===================================================================
 // Mis temas: por programa, su % de avance segun las clases ya dictadas, y
 // cada componente con su avance y sus temas (si el profesor ya los dicto).
-function ComponentSection({ component, today, onOpen, defaultOpen }) {
+function ComponentSection({ token, component, today, onOpen, defaultOpen }) {
   const [open, setOpen] = useState(defaultOpen)
+  const [feedbackOpen, setFeedbackOpen] = useState(false)
+  const [thanks, setThanks] = useState('')
+  const { reactions } = useMyReactions(token)
   const topics = component.groups.flatMap((g) => g.topics.map((t) => ({
-    ...t, componentId: component.id, componentName: component.name, groupName: g.name, instructorName: g.instructorName, palette: component.palette,
+    ...t, componentId: component.id, componentName: component.name, groupId: g.id, groupName: g.name, instructorName: g.instructorName, palette: component.palette,
   })))
+  const targets = [
+    { key: 'component', type: 'component', label: component.name, componentId: component.id },
+    ...component.groups.filter((g) => g.instructorName).map((g) => ({ key: `instructor-${g.id}`, type: 'instructor', label: g.instructorName, groupId: g.id })),
+  ]
   const mine = topics.filter((t) => t.myAttendance)
   const attended = mine.filter((t) => t.myAttendance.code === 'present' || t.myAttendance.code === 'late').length
   const panelId = `st-comp-${component.id}`
@@ -431,7 +453,7 @@ function ComponentSection({ component, today, onOpen, defaultOpen }) {
       {open && (
         <div id={panelId} className="table-scroll">
           <table className="admin-table st-topics">
-            <thead><tr><th>N°</th><th>Tema</th><th>Fecha</th><th>Estado</th><th>Tu asistencia</th><th><span className="sr-only">Acciones</span></th></tr></thead>
+            <thead><tr><th>N°</th><th>Tema</th><th>Fecha</th><th>Estado</th><th>Tu asistencia</th><th>Tu opinión</th><th><span className="sr-only">Acciones</span></th></tr></thead>
             <tbody>
               {topics.map((t) => (
                 <tr key={t.id} className={t.column === 'completed' ? 'done' : ''}>
@@ -440,11 +462,20 @@ function ComponentSection({ component, today, onOpen, defaultOpen }) {
                   <td>{t.scheduledOn ? classWhen(t, today) : '—'}</td>
                   <td><span className="st-chips"><TopicState topic={t} /><LeaveChip leave={t.myLeave} /></span></td>
                   <td><AttendanceMark mark={t.myAttendance} /></td>
+                  <td>{reactions.get(t.id)?.satisfaction || reactions.get(t.id)?.wantsRepeat
+                    ? <ReactionEmoji reaction={reactions.get(t.id)} />
+                    : canReact(t, today) ? <button type="button" className="btn-mini" onClick={() => onOpen(t)}>Calificar</button> : <span className="muted">—</span>}</td>
                   <td className="row-actions"><button type="button" className="btn-mini" onClick={() => onOpen(t)}>{t.hasMaterial ? 'Ver tema' : 'Detalle'}</button></td>
                 </tr>
               ))}
             </tbody>
           </table>
+          <div className="st-comp-foot">
+            {thanks && <p className="st-done" role="status">{thanks}</p>}
+            {feedbackOpen
+              ? <FeedbackForm token={token} targets={targets} onCancel={() => setFeedbackOpen(false)} onDone={(msg) => { setThanks(msg); setFeedbackOpen(false) }} />
+              : <button type="button" className="btn-mini" onClick={() => { setFeedbackOpen(true); setThanks('') }}><MessageSquareText size={14} aria-hidden="true" /> Comentar sobre el curso o el profesor</button>}
+          </div>
         </div>
       )}
     </section>
@@ -484,7 +515,7 @@ export function StudentTopicsOverview({ session }) {
               </div>
             </div>
             <div className="st-comps">
-              {components.map((c) => <ComponentSection key={c.id} component={c} today={board.today} onOpen={openClass} defaultOpen={c.id === active?.id} />)}
+              {components.map((c) => <ComponentSection key={c.id} token={session.token} component={c} today={board.today} onOpen={openClass} defaultOpen={c.id === active?.id} />)}
             </div>
           </section>
         )

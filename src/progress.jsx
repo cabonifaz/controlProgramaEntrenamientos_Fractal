@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react'
 import { ArrowLeft, BookOpen, CalendarClock, CheckCircle2, ChevronRight, Clock, FileText, ListOrdered, SquareKanban, UserCheck, Users as UsersIcon } from 'lucide-react'
 import { apiRequest } from './api'
 import { ErrorNote, InstructorAttendancePanel, MaterialViewer, Modal } from './admin.jsx'
+import { ReactionBreakdown, ReactionChip, ReactionPicker, aggregate, useReactionSummary } from './satisfaction.jsx'
 
 // Vista "Avance": kanban de componentes del programa y, al entrar a uno,
 // kanban de sus temas. Los datos y las columnas vienen armados por la API
@@ -146,7 +147,7 @@ function ComponentCard({ component, today, onOpen }) {
   )
 }
 
-function TopicCard({ topic, today, color, onOpen }) {
+function TopicCard({ topic, today, color, onOpen, reaction }) {
   return (
     <button type="button" className="pg-card pg-topic" style={{ '--pg-color': color }} onClick={() => onOpen(topic)}>
       <span className="pg-card-top">
@@ -165,6 +166,7 @@ function TopicCard({ topic, today, color, onOpen }) {
         <span className="pg-chip danger">Fecha pasada · sin marcar</span>
       )}
       {topic.statusCode === 'rescheduled' && <span className="pg-chip warn">Reprogramado</span>}
+      <ReactionChip summary={reaction} />
     </button>
   )
 }
@@ -262,7 +264,7 @@ function SessionAttendance({ session, topic, isStudent, onRegister }) {
   )
 }
 
-function TopicDetail({ session, topic, component, group, today, isStudent, onClose, onOpenMaterial, onRegister }) {
+function TopicDetail({ session, topic, component, group, today, isStudent, reaction, onClose, onOpenMaterial, onRegister }) {
   const rows = [
     ['Componente', component.name],
     ['Grupo', group.name],
@@ -281,6 +283,7 @@ function TopicDetail({ session, topic, component, group, today, isStudent, onClo
         </dl>
         {topic.description && <p className="muted">{topic.description}</p>}
         <SessionAttendance session={session} topic={topic} isStudent={isStudent} onRegister={isStudent ? null : onRegister} />
+        {isStudent ? <ReactionPicker token={session.token} topic={topic} today={today} /> : <ReactionBreakdown summary={reaction} />}
         <div className="pg-detail-actions">
           {topic.hasMaterial
             ? <button type="button" className="primary" onClick={onOpenMaterial}><BookOpen size={16} aria-hidden="true" /> Abrir contenido del tema</button>
@@ -409,6 +412,7 @@ const DETAIL_TABS = [
 
 function ComponentDetail({ board, component, session, onBack, onChanged }) {
   const isStudent = session.role === 'student'
+  const { byTopic: reactions } = useReactionSummary(session.token, !isStudent)
   const [groupId, setGroupId] = useState(component.groups[0]?.id)
   const [tab, setTab] = useState('board')
   const [selectedId, setSelectedId] = useState(null)
@@ -421,6 +425,7 @@ function ComponentDetail({ board, component, session, onBack, onChanged }) {
   // asistencia muestra los datos recargados.
   const selected = selectedId ? group.topics.find((t) => t.id === selectedId) || null : null
   const openTopic = (t) => setSelectedId(t.id)
+  const groupReactions = isStudent ? null : aggregate(group.topics.map((t) => reactions.get(t.id)).filter(Boolean))
 
   function closeRegister() {
     setRegisterTopic(null)
@@ -446,6 +451,12 @@ function ComponentDetail({ board, component, session, onBack, onChanged }) {
             <ProgressBar value={group.progressPct} color={color} label={`Avance de ${component.name}`} />
             <small className="muted">{group.counts.completed} de {group.total} temas dictados</small>
           </div>
+          {groupReactions?.votes > 0 && (
+            <div className="pg-head-progress sf-head-stat">
+              <strong>{groupReactions.avg.toFixed(1).replace('.', ',')}<small>/5</small></strong>
+              <small className="muted">satisfacción · {groupReactions.votes} voto{groupReactions.votes === 1 ? '' : 's'}{groupReactions.repeatCount ? ` · ${groupReactions.repeatCount} piden repetir` : ''}</small>
+            </div>
+          )}
           {group.attendance && (
             <div className="pg-head-progress">
               <strong>{group.attendance.pct}%</strong>
@@ -480,7 +491,7 @@ function ComponentDetail({ board, component, session, onBack, onChanged }) {
             const items = group.topics.filter((t) => t.column === col.key)
             return (
               <Column key={col.key} column={col} count={items.length}>
-                {items.map((t) => <TopicCard key={t.id} topic={t} today={board.today} color={color} onOpen={openTopic} />)}
+                {items.map((t) => <TopicCard key={t.id} topic={t} today={board.today} color={color} onOpen={openTopic} reaction={reactions.get(t.id)} />)}
               </Column>
             )
           })}
@@ -492,6 +503,7 @@ function ComponentDetail({ board, component, session, onBack, onChanged }) {
         <TopicDetail
           key={`${selected.id}-${reloadKey}`}
           session={session} topic={selected} component={component} group={group} today={board.today} isStudent={isStudent}
+          reaction={reactions.get(selected.id)}
           onClose={() => setSelectedId(null)}
           onOpenMaterial={() => { setMaterialTopic(selected); setSelectedId(null) }}
           onRegister={() => setRegisterTopic(selected)}

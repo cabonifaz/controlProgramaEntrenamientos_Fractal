@@ -14,6 +14,7 @@ import { registerPublicProgramRoutes, renderPublicProgramHtml } from './publicPr
 import { createInvitation, NO_PASSWORD, registerInvitationRoutes } from './invitations.js'
 import { registerProgressRoutes } from './progress.js'
 import { registerProfileRoutes } from './profiles.js'
+import { registerFeedbackRoutes } from './feedback.js'
 import { HEX_COLOR, resolvePalette } from '../src/palette.js'
 import {
   uploadMaterialZip, extractMaterialZip, materialDir, removeMaterialDir, describeMaterial,
@@ -218,6 +219,7 @@ app.post('/api/auth/change-password', authenticate, async (req, res) => {
 registerInvitationRoutes(app)
 registerProgressRoutes(app)
 registerProfileRoutes(app)
+registerFeedbackRoutes(app)
 
 app.get('/api/tenants', authenticate, async (req, res) => {
   try {
