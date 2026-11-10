@@ -546,6 +546,7 @@ DROP PROCEDURE IF EXISTS sp_migrate_tenant_contact_v1;
 DROP PROCEDURE IF EXISTS sp_tenants_set_contact;
 DROP PROCEDURE IF EXISTS sp_migrate_program_colors_v1;
 DROP PROCEDURE IF EXISTS sp_migrate_leave_topic_v1;
+DROP PROCEDURE IF EXISTS sp_migrate_student_profile_v1;
 DROP PROCEDURE IF EXISTS sp_programs_set_colors;
 DROP PROCEDURE IF EXISTS sp_components_set_colors;
 DROP PROCEDURE IF EXISTS sp_user_invitations_create;
@@ -644,6 +645,10 @@ DROP PROCEDURE IF EXISTS sp_programs_update_public;
 DROP PROCEDURE IF EXISTS sp_programs_set_banner;
 DROP PROCEDURE IF EXISTS sp_users_update_public_profile;
 DROP PROCEDURE IF EXISTS sp_users_set_photo;
+DROP PROCEDURE IF EXISTS sp_profile_get_mine;
+DROP PROCEDURE IF EXISTS sp_profile_update_mine;
+DROP PROCEDURE IF EXISTS sp_profile_set_my_photo;
+DROP PROCEDURE IF EXISTS sp_student_profiles_list;
 DROP PROCEDURE IF EXISTS sp_pre_enrollments_create;
 DROP PROCEDURE IF EXISTS sp_pre_enrollments_list;
 DROP PROCEDURE IF EXISTS sp_pre_enrollments_resolve;
@@ -797,6 +802,22 @@ BEGIN
     ALTER TABLE leave_requests
       ADD COLUMN topic_id BIGINT UNSIGNED NULL AFTER student_id,
       ADD CONSTRAINT fk_leave_topic FOREIGN KEY (topic_id) REFERENCES topics(id);
+  END IF;
+END$$
+
+-- Perfil del alumno: links (GitHub, portafolio) y datos de contacto. El
+-- telefono es privado: solo lo ve el admin del tenant (lo filtra el SP).
+-- linkedin_url, photo_path, public_headline y public_bio ya existen.
+CREATE PROCEDURE sp_migrate_student_profile_v1()
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+    WHERE table_schema = DATABASE() AND table_name = 'users' AND column_name = 'github_url') THEN
+    ALTER TABLE users
+      ADD COLUMN github_url VARCHAR(255) NULL AFTER linkedin_url,
+      ADD COLUMN portfolio_url VARCHAR(255) NULL AFTER github_url,
+      ADD COLUMN contact_email VARCHAR(190) NULL AFTER portfolio_url,
+      ADD COLUMN phone VARCHAR(40) NULL AFTER contact_email,
+      ADD COLUMN city VARCHAR(120) NULL AFTER phone;
   END IF;
 END$$
 
@@ -4234,6 +4255,82 @@ BEGIN
   WHERE ge.group_id = p_group_id AND ge.is_deleted = FALSE
     AND (p_actor_role <> 'student' OR ge.student_id = p_actor_user_id)
   ORDER BY su.full_name, a.topic_id;
+END$$
+
+-- ===================================================================
+-- Perfil propio (hoy solo el alumno lo edita; el perfil publico del
+-- instructor lo sigue editando el admin).
+CREATE PROCEDURE sp_profile_get_mine(IN p_actor_user_id BIGINT UNSIGNED)
+BEGIN
+  SELECT u.id, u.full_name, u.email, r.code AS role_code, u.public_headline AS headline, u.public_bio AS bio,
+         u.photo_path, u.linkedin_url, u.github_url, u.portfolio_url, u.contact_email, u.phone, u.city
+  FROM users u JOIN master_catalog_values r ON r.id = u.role_id
+  WHERE u.id = p_actor_user_id AND u.is_deleted = FALSE;
+END$$
+
+CREATE PROCEDURE sp_profile_update_mine(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80),
+  IN p_headline VARCHAR(160), IN p_bio VARCHAR(500), IN p_linkedin_url VARCHAR(255), IN p_github_url VARCHAR(255),
+  IN p_portfolio_url VARCHAR(255), IN p_contact_email VARCHAR(190), IN p_phone VARCHAR(40), IN p_city VARCHAR(120)
+)
+BEGIN
+  IF p_actor_role <> 'student' THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+  UPDATE users
+  SET public_headline = NULLIF(TRIM(p_headline), ''), public_bio = NULLIF(TRIM(p_bio), ''),
+      linkedin_url = NULLIF(TRIM(p_linkedin_url), ''), github_url = NULLIF(TRIM(p_github_url), ''),
+      portfolio_url = NULLIF(TRIM(p_portfolio_url), ''), contact_email = NULLIF(TRIM(p_contact_email), ''),
+      phone = NULLIF(TRIM(p_phone), ''), city = NULLIF(TRIM(p_city), ''),
+      updated_at = NOW(), updated_by = p_actor_user_id
+  WHERE id = p_actor_user_id AND is_deleted = FALSE;
+END$$
+
+CREATE PROCEDURE sp_profile_set_my_photo(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_photo_path VARCHAR(255)
+)
+BEGIN
+  DECLARE v_previous VARCHAR(255);
+  IF p_actor_role <> 'student' THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+  SELECT photo_path INTO v_previous FROM users WHERE id = p_actor_user_id;
+  UPDATE users SET photo_path = p_photo_path, updated_at = NOW(), updated_by = p_actor_user_id WHERE id = p_actor_user_id;
+  SELECT v_previous AS previous_photo_path;
+END$$
+
+-- Directorio de alumnos. El instructor ve solo a los alumnos de sus
+-- grupos y SIN telefono; el admin del tenant ve a todos los de su tenant
+-- con telefono (el super admin, a todos).
+CREATE PROCEDURE sp_student_profiles_list(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED
+)
+BEGIN
+  IF p_actor_role NOT IN ('instructor', 'tenant_admin', 'super_admin') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+
+  SELECT u.id, u.full_name, u.email, u.is_active, u.public_headline AS headline, u.public_bio AS bio, u.photo_path,
+         u.linkedin_url, u.github_url, u.portfolio_url, u.contact_email, u.city,
+         CASE WHEN p_actor_role IN ('tenant_admin', 'super_admin') THEN u.phone END AS phone,
+         t.name AS tenant_name,
+         GROUP_CONCAT(DISTINCT p.name ORDER BY p.name SEPARATOR ' · ') AS programs,
+         GROUP_CONCAT(DISTINCT c.name ORDER BY c.name SEPARATOR ' · ') AS components
+  FROM users u
+  JOIN master_catalog_values r ON r.id = u.role_id AND r.code = 'student'
+  LEFT JOIN tenants t ON t.id = u.tenant_id
+  LEFT JOIN group_enrollments ge ON ge.student_id = u.id AND ge.is_deleted = FALSE
+  LEFT JOIN component_groups g ON g.id = ge.group_id AND g.is_deleted = FALSE
+    AND (p_actor_role <> 'instructor' OR g.instructor_id = p_actor_user_id)
+  LEFT JOIN components c ON c.id = g.component_id AND c.is_deleted = FALSE
+  LEFT JOIN training_programs p ON p.id = c.program_id AND p.is_deleted = FALSE
+  WHERE u.is_deleted = FALSE
+    AND (p_actor_role = 'super_admin' OR u.tenant_id <=> p_actor_tenant_id)
+    AND (p_actor_role <> 'instructor' OR u.is_active = TRUE)
+  GROUP BY u.id, u.full_name, u.email, u.is_active, u.public_headline, u.public_bio, u.photo_path,
+           u.linkedin_url, u.github_url, u.portfolio_url, u.contact_email, u.city, u.phone, t.name
+  HAVING p_actor_role <> 'instructor' OR COUNT(c.id) > 0
+  ORDER BY u.full_name;
 END$$
 
 CREATE PROCEDURE sp_dashboard_get(IN p_user_id BIGINT, IN p_role VARCHAR(80), IN p_tenant_id BIGINT)

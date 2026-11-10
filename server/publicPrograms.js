@@ -28,7 +28,7 @@ function actorParams(req) {
 
 // Guarda la imagen ya validada por multer bajo uploads/public/<carpeta>/ y
 // devuelve la ruta relativa (la que se guarda en la base).
-async function saveImage(file, folder, baseName) {
+export async function saveImage(file, folder, baseName) {
   const relative = `public/${folder}/${baseName}-${Date.now()}${PUBLIC_IMAGE_EXTENSIONS[file.mimetype]}`
   const absolute = path.join(UPLOADS_DIR, relative)
   await fs.promises.mkdir(path.dirname(absolute), { recursive: true })
@@ -36,7 +36,7 @@ async function saveImage(file, folder, baseName) {
   return relative
 }
 
-function removeUpload(relativePath) {
+export function removeUpload(relativePath) {
   if (!relativePath || !relativePath.startsWith('public/')) return
   const absolute = path.resolve(UPLOADS_DIR, relativePath)
   if (absolute.startsWith(path.resolve(PUBLIC_UPLOADS_DIR) + path.sep)) fs.unlink(absolute, () => {})
