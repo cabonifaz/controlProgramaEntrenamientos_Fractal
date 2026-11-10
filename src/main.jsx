@@ -1,11 +1,12 @@
 import React, { useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { Bell, CalendarDays, ChevronDown, ClipboardCheck, GraduationCap, LayoutDashboard, Smile, LogOut, Menu, Settings2, ShieldCheck, SquareKanban, UserRound, Users, X } from 'lucide-react'
+import { Bell, CalendarDays, CalendarX2, ChevronDown, ClipboardCheck, GraduationCap, LayoutDashboard, Smile, LogOut, Menu, Settings2, ShieldCheck, SquareKanban, UserRound, Users, X } from 'lucide-react'
 import { AlertsPanel, ChangePasswordPanel, HolidaysPanel, InstructorClassesPanel, LeaveRequestsPanel, PreEnrollmentsPanel, ProgramsPanel, RealDashboard, ReportsPanel, TenantsPanel, UsersPanel } from './admin.jsx'
 import { ProgressPanel } from './progress.jsx'
 import { StudentAttendanceView, StudentSchedulePanel, StudentTopicsOverview } from './student.jsx'
 import { PROFILE_PHOTO_EVENT, StudentDirectoryPanel, StudentProfilePanel } from './profile.jsx'
 import { SatisfactionPanel } from './satisfaction.jsx'
+import { AbsencesPanel } from './indicators.jsx'
 import { getPublicProgramRoute, PublicProgramApp } from './public.jsx'
 import { getInvitationRoute, InvitationApp } from './invitation.jsx'
 import { apiRequest } from './api'
@@ -26,11 +27,11 @@ const data = {
   superAdmin: { greeting: 'Buenos dias, Cris', eyebrow: 'Vista global', metrics: [['Tenants activos', '6', '+1 este mes', 'blue'], ['Programas activos', '18', 'En todos los tenants', 'good'], ['Salud de la plataforma', '99.8%', 'Todos los servicios estables', 'progress']], topics: [['Tenant nuevo', 'Fractal Peru', 'Configuracion inicial pendiente', 'Configurar'], ['Actividad global', '18 programas activos', '142 instructores asignados', 'Ver detalle'], ['Seguridad', '2 invitaciones pendientes', 'Requieren aprobacion', 'Revisar']] },
 }
 
-const PROFILE_NAV = new Set(['Mi perfil', 'Mis alumnos', 'Alumnos', 'Satisfacción'])
+const PROFILE_NAV = new Set(['Mi perfil', 'Mis alumnos', 'Alumnos', 'Satisfacción', 'Inasistencias'])
 
 const roleKeyByCode = { student: 'student', instructor: 'instructor', tenant_admin: 'admin', super_admin: 'superAdmin' }
 
-const ADMIN_PANEL_BY_NAV = { Avance: ProgressPanel, Tenants: TenantsPanel, Usuarios: UsersPanel, Programas: ProgramsPanel, Inscripciones: PreEnrollmentsPanel, Calendario: HolidaysPanel, Alumnos: StudentDirectoryPanel, 'Satisfacción': SatisfactionPanel, Permisos: LeaveRequestsPanel, Alertas: AlertsPanel, Reportes: ReportsPanel, Configuracion: ChangePasswordPanel }
+const ADMIN_PANEL_BY_NAV = { Avance: ProgressPanel, Tenants: TenantsPanel, Usuarios: UsersPanel, Programas: ProgramsPanel, Inscripciones: PreEnrollmentsPanel, Calendario: HolidaysPanel, Alumnos: StudentDirectoryPanel, 'Satisfacción': SatisfactionPanel, Inasistencias: AbsencesPanel, Permisos: LeaveRequestsPanel, Alertas: AlertsPanel, Reportes: ReportsPanel, Configuracion: ChangePasswordPanel }
 const INSTRUCTOR_PANEL_BY_NAV = { Inicio: RealDashboard, Avance: ProgressPanel, 'Mis clases': InstructorClassesPanel, Temarios: InstructorClassesPanel, Asistencia: InstructorClassesPanel, 'Mis alumnos': StudentDirectoryPanel, Permisos: LeaveRequestsPanel, Alertas: AlertsPanel, 'Mi cuenta': ChangePasswordPanel }
 const STUDENT_PANEL_BY_NAV = { Inicio: RealDashboard, Avance: ProgressPanel, 'Mi horario': StudentSchedulePanel, 'Mis temas': StudentTopicsOverview, Permisos: LeaveRequestsPanel, Asistencia: StudentAttendanceView, Alertas: AlertsPanel, 'Mi perfil': StudentProfilePanel, 'Mi cuenta': ChangePasswordPanel }
 const SECTION_PANELS_BY_ROLE = { admin: ADMIN_PANEL_BY_NAV, superAdmin: ADMIN_PANEL_BY_NAV, instructor: INSTRUCTOR_PANEL_BY_NAV, student: STUDENT_PANEL_BY_NAV }
@@ -172,7 +173,7 @@ function App() {
   const brandMark = tenantLogoUrl
     ? <img src={tenantLogoUrl} alt="Logo" className="logo-mark logo-mark-image" />
     : <div className="logo-mark">F</div>
-  const baseNav = role === 'student' ? ['Inicio', 'Mi horario', 'Mis temas', 'Asistencia', 'Permisos', 'Alertas', 'Mi perfil', 'Mi cuenta'] : role === 'instructor' ? ['Inicio', 'Mis clases', 'Temarios', 'Asistencia', 'Mis alumnos', 'Permisos', 'Alertas', 'Reportes', 'Mi cuenta'] : role === 'superAdmin' ? ['Inicio', 'Tenants', 'Usuarios', 'Alumnos', 'Programas', 'Inscripciones', 'Satisfacción', 'Permisos', 'Alertas', 'Reportes', 'Configuracion'] : ['Inicio', 'Programas', 'Inscripciones', 'Usuarios', 'Alumnos', 'Calendario', 'Satisfacción', 'Permisos', 'Alertas', 'Reportes', 'Configuracion']
+  const baseNav = role === 'student' ? ['Inicio', 'Mi horario', 'Mis temas', 'Asistencia', 'Permisos', 'Alertas', 'Mi perfil', 'Mi cuenta'] : role === 'instructor' ? ['Inicio', 'Mis clases', 'Temarios', 'Asistencia', 'Mis alumnos', 'Permisos', 'Alertas', 'Reportes', 'Mi cuenta'] : role === 'superAdmin' ? ['Inicio', 'Tenants', 'Usuarios', 'Alumnos', 'Programas', 'Inscripciones', 'Satisfacción', 'Inasistencias', 'Permisos', 'Alertas', 'Reportes', 'Configuracion'] : ['Inicio', 'Programas', 'Inscripciones', 'Usuarios', 'Alumnos', 'Calendario', 'Satisfacción', 'Inasistencias', 'Permisos', 'Alertas', 'Reportes', 'Configuracion']
   // "Avance" (kanban) va segundo para todos los roles; el resto conserva
   // el icono de la posicion que tenia antes de agregarlo.
   const nav = [baseNav[0], 'Avance', ...baseNav.slice(1)]
@@ -181,6 +182,7 @@ function App() {
     if (item === 'Mi perfil') return <UserRound size={18} />
     if (item === 'Mis alumnos' || item === 'Alumnos') return <GraduationCap size={18} />
     if (item === 'Satisfacción') return <Smile size={18} />
+    if (item === 'Inasistencias') return <CalendarX2 size={18} />
     // Las secciones agregadas despues no corren el icono de las demas.
     const i = baseNav.filter((x) => !PROFILE_NAV.has(x)).indexOf(item)
     return i === 0 ? <LayoutDashboard size={18} /> : i === 1 ? <CalendarDays size={18} /> : i === 2 ? <ClipboardCheck size={18} /> : i === 3 ? <Users size={18} /> : i === 4 ? <Bell size={18} /> : <Settings2 size={18} />

@@ -2,7 +2,8 @@ import React, { useEffect, useState } from 'react'
 import { ArrowLeft, BookOpen, CalendarClock, CheckCircle2, ChevronRight, Clock, FileText, ListOrdered, SquareKanban, UserCheck, Users as UsersIcon } from 'lucide-react'
 import { apiRequest } from './api'
 import { ErrorNote, InstructorAttendancePanel, MaterialViewer, Modal } from './admin.jsx'
-import { ReactionBreakdown, ReactionChip, ReactionPicker, aggregate, useReactionSummary } from './satisfaction.jsx'
+import { ReactionBreakdown, ReactionChip, ReactionPicker, aggregate, canReact, useReactionSummary } from './satisfaction.jsx'
+import { InstructorAbsenceNotice, useMyInstructorAbsences } from './indicators.jsx'
 
 // Vista "Avance": kanban de componentes del programa y, al entrar a uno,
 // kanban de sus temas. Los datos y las columnas vienen armados por la API
@@ -147,7 +148,7 @@ function ComponentCard({ component, today, onOpen }) {
   )
 }
 
-function TopicCard({ topic, today, color, onOpen, reaction }) {
+function TopicCard({ topic, today, color, onOpen, reaction, absent }) {
   return (
     <button type="button" className="pg-card pg-topic" style={{ '--pg-color': color }} onClick={() => onOpen(topic)}>
       <span className="pg-card-top">
@@ -166,6 +167,7 @@ function TopicCard({ topic, today, color, onOpen, reaction }) {
         <span className="pg-chip danger">Fecha pasada · sin marcar</span>
       )}
       {topic.statusCode === 'rescheduled' && <span className="pg-chip warn">Reprogramado</span>}
+      {absent && <span className="pg-chip warn">Avisaste que no dictarás</span>}
       <ReactionChip summary={reaction} />
     </button>
   )
@@ -264,7 +266,7 @@ function SessionAttendance({ session, topic, isStudent, onRegister }) {
   )
 }
 
-function TopicDetail({ session, topic, component, group, today, isStudent, reaction, onClose, onOpenMaterial, onRegister }) {
+function TopicDetail({ session, topic, component, group, today, isStudent, reaction, absence, onAbsenceChanged, onClose, onOpenMaterial, onRegister }) {
   const rows = [
     ['Componente', component.name],
     ['Grupo', group.name],
@@ -283,7 +285,8 @@ function TopicDetail({ session, topic, component, group, today, isStudent, react
         </dl>
         {topic.description && <p className="muted">{topic.description}</p>}
         <SessionAttendance session={session} topic={topic} isStudent={isStudent} onRegister={isStudent ? null : onRegister} />
-        {isStudent ? <ReactionPicker token={session.token} topic={topic} today={today} /> : <ReactionBreakdown summary={reaction} />}
+        {isStudent ? <ReactionPicker token={session.token} topic={topic} today={today} /> : (reaction || canReact(topic, today)) && <ReactionBreakdown summary={reaction} />}
+        {session.role === 'instructor' && <InstructorAbsenceNotice token={session.token} topic={topic} today={today} absence={absence} onChanged={onAbsenceChanged} />}
         <div className="pg-detail-actions">
           {topic.hasMaterial
             ? <button type="button" className="primary" onClick={onOpenMaterial}><BookOpen size={16} aria-hidden="true" /> Abrir contenido del tema</button>
@@ -413,6 +416,8 @@ const DETAIL_TABS = [
 function ComponentDetail({ board, component, session, onBack, onChanged }) {
   const isStudent = session.role === 'student'
   const { byTopic: reactions } = useReactionSummary(session.token, !isStudent)
+  const { items: myAbsences, reload: reloadAbsences } = useMyInstructorAbsences(session.token, session.role === 'instructor')
+  const absenceFor = (topicId) => myAbsences.find((a) => a.topic_id === topicId) || null
   const [groupId, setGroupId] = useState(component.groups[0]?.id)
   const [tab, setTab] = useState('board')
   const [selectedId, setSelectedId] = useState(null)
@@ -491,7 +496,7 @@ function ComponentDetail({ board, component, session, onBack, onChanged }) {
             const items = group.topics.filter((t) => t.column === col.key)
             return (
               <Column key={col.key} column={col} count={items.length}>
-                {items.map((t) => <TopicCard key={t.id} topic={t} today={board.today} color={color} onOpen={openTopic} reaction={reactions.get(t.id)} />)}
+                {items.map((t) => <TopicCard key={t.id} topic={t} today={board.today} color={color} onOpen={openTopic} reaction={reactions.get(t.id)} absent={Boolean(absenceFor(t.id))} />)}
               </Column>
             )
           })}
@@ -504,6 +509,8 @@ function ComponentDetail({ board, component, session, onBack, onChanged }) {
           key={`${selected.id}-${reloadKey}`}
           session={session} topic={selected} component={component} group={group} today={board.today} isStudent={isStudent}
           reaction={reactions.get(selected.id)}
+          absence={absenceFor(selected.id)}
+          onAbsenceChanged={reloadAbsences}
           onClose={() => setSelectedId(null)}
           onOpenMaterial={() => { setMaterialTopic(selected); setSelectedId(null) }}
           onRegister={() => setRegisterTopic(selected)}

@@ -15,6 +15,7 @@ import { createInvitation, NO_PASSWORD, registerInvitationRoutes } from './invit
 import { registerProgressRoutes } from './progress.js'
 import { registerProfileRoutes } from './profiles.js'
 import { registerFeedbackRoutes } from './feedback.js'
+import { registerAbsenceRoutes } from './absences.js'
 import { HEX_COLOR, resolvePalette } from '../src/palette.js'
 import {
   uploadMaterialZip, extractMaterialZip, materialDir, removeMaterialDir, describeMaterial,
@@ -220,6 +221,7 @@ registerInvitationRoutes(app)
 registerProgressRoutes(app)
 registerProfileRoutes(app)
 registerFeedbackRoutes(app)
+registerAbsenceRoutes(app)
 
 app.get('/api/tenants', authenticate, async (req, res) => {
   try {

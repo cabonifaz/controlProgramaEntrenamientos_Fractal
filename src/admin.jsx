@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { AlertTriangle, ArrowRight, Calendar, ImagePlus, Paperclip, Users as UsersIcon } from 'lucide-react'
 import { apiBlob, apiDownload, apiRequest, apiUpload } from './api'
+import { CHANGE_REASONS, MyInstructorAbsences } from './indicators.jsx'
 import { buildMaterialPrompt, DEFAULT_PROMPT_OPTIONS, MATERIAL_LEVELS, SKILL_NAME, suggestedBatchSize } from './materialPrompt'
 import { BANNER_STYLES, buildBannerPrompt, DEFAULT_BANNER_OPTIONS } from './bannerPrompt'
 import { DEFAULT_ACCENT, PALETTE_PRESETS, readableTextOn, resolvePalette } from './palette'
@@ -86,6 +87,10 @@ const ERROR_MESSAGES = {
   feedback_daily_limit: 'Llegaste al máximo de 10 comentarios por día. Intenta mañana.',
   feedback_too_long: 'El comentario puede tener hasta 500 caracteres.',
   feedback_empty: 'Escribe tu comentario.',
+  class_already_passed: 'Esa clase ya pasó: el administrador debe registrar la inasistencia.',
+  absence_already_recorded: 'Ya hay una inasistencia registrada para esa clase.',
+  reason_required: 'Escribe el motivo.',
+  invalid_change_reason: 'Elige un motivo válido para el cambio.',
   image_too_large: 'La imagen supera los 5 MB.',
   title_required: 'El tema no puede quedar vacío.',
   contact_user_required: 'Elige el contacto del tenant buscándolo entre los usuarios.',
@@ -1474,13 +1479,22 @@ function GroupsPanel({ session, component, onBack }) {
     }
   }
 
-  async function updateInstructor(group, instructorId) {
+  const [change, setChange] = useState(null)
+
+  async function updateInstructor(group, instructorId, details = {}) {
+    const next = instructorId ? Number(instructorId) : null
+    if (group.instructor_id && next !== group.instructor_id && !details.changeReason) {
+      setChange({ group, instructorId: next })
+      return
+    }
     try {
       await apiRequest(`/api/groups/${group.id}`, {
-        method: 'PATCH', token, body: { name: group.name, instructorId: instructorId ? Number(instructorId) : null },
+        method: 'PATCH', token, body: { name: group.name, instructorId: next, ...details },
       })
+      setChange(null)
       reload()
     } catch (err) {
+      if (details.changeReason) throw err
       setFormError(err.message)
     }
   }
@@ -1543,6 +1557,15 @@ function GroupsPanel({ session, component, onBack }) {
           </table>
         )}
       </section>
+      {change && (
+        <InstructorChangeModal
+          group={change.group}
+          fromName={instructors.find((i) => i.id === change.group.instructor_id)?.full_name || 'el profesor actual'}
+          toName={change.instructorId ? instructors.find((i) => i.id === change.instructorId)?.full_name : null}
+          onClose={() => setChange(null)}
+          onConfirm={(details) => updateInstructor(change.group, change.instructorId, details)}
+        />
+      )}
       {enrollingGroup && (
         <EnrollStudentModal
           session={session}
@@ -1554,6 +1577,42 @@ function GroupsPanel({ session, component, onBack }) {
         />
       )}
     </div>
+  )
+}
+
+// Motivo del cambio de profesor de un grupo (queda en el historial y en
+// los indicadores: renuncias, reasignaciones...).
+function InstructorChangeModal({ group, fromName, toName, onClose, onConfirm }) {
+  const [form, setForm] = useState({ changeReason: '', effectiveOn: new Date().toISOString().slice(0, 10), changeNote: '' })
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+  async function submit(e) {
+    e.preventDefault()
+    setBusy(true)
+    setError('')
+    try {
+      await onConfirm(form)
+    } catch (err) {
+      setError(err.message)
+      setBusy(false)
+    }
+  }
+  return (
+    <Modal title={`Cambio de profesor — ${group.name}`} onClose={onClose}>
+      <p className="muted">Sale <b>{fromName}</b>{toName ? <> y entra <b>{toName}</b></> : ' y el grupo queda sin profesor'}. El cambio queda en el historial de Inasistencias.</p>
+      <form className="admin-form" onSubmit={submit}>
+        <label>Motivo
+          <select value={form.changeReason} onChange={(e) => setForm({ ...form, changeReason: e.target.value })} required>
+            <option value="">Elige el motivo</option>
+            {CHANGE_REASONS.map((r) => <option key={r.key} value={r.key}>{r.label}</option>)}
+          </select>
+        </label>
+        <label>Vigente desde<input type="date" value={form.effectiveOn} onChange={(e) => setForm({ ...form, effectiveOn: e.target.value })} required /></label>
+        <label className="full-field">Nota (opcional)<textarea value={form.changeNote} onChange={(e) => setForm({ ...form, changeNote: e.target.value })} maxLength={500} placeholder="Ej.: renunció dos semanas antes de terminar el componente" /></label>
+        <ErrorNote message={error} />
+        <button className="primary" disabled={busy}>{busy ? 'Guardando…' : 'Confirmar cambio'}</button>
+      </form>
+    </Modal>
   )
 }
 
@@ -2817,6 +2876,7 @@ export function LeaveRequestsPanel({ session }) {
 
   return (
     <div className="admin-wrap">
+      {isInstructor && <MyInstructorAbsences token={token} />}
       {isStudent && (
         <section className="panel admin-form-panel">
           <h3>Solicitar permiso</h3>
