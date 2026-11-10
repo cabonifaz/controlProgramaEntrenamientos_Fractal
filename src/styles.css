@@ -290,3 +290,21 @@
   .st-upcoming li{grid-template-columns:1fr;gap:6px}
 }
 @media(max-width:680px){.st-program-picker select{min-width:0;width:100%}.st-program-picker{width:100%}.st-att-summary{grid-template-columns:1fr 1fr}.st-range{width:100%;margin-left:0}.st-program-pct{min-width:0;flex:1 1 100%}.st-cell{padding:3px}}
+/* Evidencia (imagen) de un aviso de inasistencia */
+.admin-form .full-field{grid-column:1/-1}
+.evidence-picker{display:grid;gap:6px}
+.evidence-title{font-size:12px;font-weight:700;color:#4f616b}
+.admin-form .evidence-title{font-size:11px}
+.evidence-drop{position:relative;display:grid;justify-items:center;gap:3px;margin:0;padding:14px 12px;border:1.5px dashed #c9d5da;border-radius:9px;background:#fff;color:var(--blue);font-size:13px;font-weight:600;text-align:center;cursor:pointer}
+.evidence-drop:hover{background:var(--soft);border-color:var(--blue)}
+.evidence-drop:focus-within{border-color:var(--blue);box-shadow:0 0 0 3px #087fb829}
+.evidence-drop small{font-size:11px;font-weight:500;color:var(--muted)}
+.evidence-chosen{display:flex;align-items:center;gap:12px;padding:8px;border:1px solid var(--line);border-radius:9px;background:#fff}
+.evidence-chosen img{width:64px;height:64px;object-fit:cover;border-radius:6px;border:1px solid var(--line);flex:none}
+.evidence-chosen>div{display:grid;gap:3px;justify-items:start;min-width:0}
+.evidence-chosen strong{font-size:12px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.evidence-chosen .muted{font-size:11px}
+.evidence-cell{margin-top:6px}
+.evidence-btn{display:inline-flex;align-items:center;gap:5px}
+.evidence-view{display:grid;gap:12px;justify-items:center}
+.evidence-view img{max-width:100%;max-height:70vh;object-fit:contain;border-radius:8px;border:1px solid var(--line);background:var(--soft)}

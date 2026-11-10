@@ -92,3 +92,24 @@ export function uploadPublicImage(req, res) {
     })
   })
 }
+
+// Evidencia de un aviso de inasistencia (certificado medico, captura...).
+// Privada: vive en leave-evidence/, que NO se sirve como estatico; solo la
+// entrega GET /api/leave-requests/:id/evidence a quien puede ver el aviso.
+const uploadEvidenceImageMiddleware = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter(_req, file, cb) {
+    if (!PUBLIC_IMAGE_EXTENSIONS[file.mimetype]) return cb(new Error('invalid_file_type'))
+    cb(null, true)
+  },
+}).single('evidence')
+
+export function uploadEvidenceImage(req, res) {
+  return new Promise((resolve, reject) => {
+    uploadEvidenceImageMiddleware(req, res, (err) => {
+      if (!err) return resolve()
+      reject(new Error(err.code === 'LIMIT_FILE_SIZE' ? 'image_too_large' : err.message === 'invalid_file_type' ? 'invalid_file_type' : 'upload_failed'))
+    })
+  })
+}

@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import { BookOpen, CalendarClock, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Clock, UserCheck, UserX, Users as UsersIcon } from 'lucide-react'
 import { apiRequest } from './api'
-import { ErrorNote, MaterialViewer, Modal } from './admin.jsx'
+import { ErrorNote, EvidencePicker, MaterialViewer, Modal, postLeaveRequest } from './admin.jsx'
 import { AttendanceMark, ProgressBar, classWhen, formatDay, relativeDay } from './progress.jsx'
 
 // Vistas del alumno: "Mi horario" (calendario semana / mes / programa),
@@ -86,7 +86,7 @@ function ClassModal({ session, topic, today, startWithNotice = false, onClose, o
   const { token } = session
   const [noticeOpen, setNoticeOpen] = useState(startWithNotice)
   const [reason, setReason] = useState('')
-  const [evidenceUrl, setEvidenceUrl] = useState('')
+  const [evidence, setEvidence] = useState(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [done, setDone] = useState('')
@@ -98,7 +98,7 @@ function ClassModal({ session, topic, today, startWithNotice = false, onClose, o
     setBusy(true)
     setError('')
     try {
-      await apiRequest('/api/leave-requests', { method: 'POST', token, body: { topicId: topic.id, reason: reason.trim(), evidenceUrl: evidenceUrl.trim() || null } })
+      await postLeaveRequest(token, { topicId: topic.id, reason: reason.trim() }, evidence)
       setDone(`Listo. ${topic.instructorName || 'Tu instructor'} recibirá el aviso.`)
       setNoticeOpen(false)
       onChanged()
@@ -152,7 +152,7 @@ function ClassModal({ session, topic, today, startWithNotice = false, onClose, o
               <h4>Avisar que no asistiré</h4>
               <p className="muted">Le llega a {topic.instructorName || 'tu instructor'} como alerta, y el administrador puede aprobarlo como permiso.</p>
               <label>Motivo<textarea value={reason} onChange={(e) => setReason(e.target.value)} required maxLength={500} placeholder="Ej.: cita médica" /></label>
-              <label>Evidencia (link, opcional)<input value={evidenceUrl} onChange={(e) => setEvidenceUrl(e.target.value)} placeholder="https://…" /></label>
+              <EvidencePicker file={evidence} onChange={setEvidence} />
               <div className="st-form-actions">
                 <button type="submit" className="primary" disabled={busy || !reason.trim()}>{busy ? 'Enviando…' : 'Enviar aviso'}</button>
                 <button type="button" className="btn-mini" onClick={() => setNoticeOpen(false)}>Cancelar</button>

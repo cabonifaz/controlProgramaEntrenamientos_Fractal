@@ -9,7 +9,7 @@ import { callProcedure } from './db.js'
 import { hashPassword, signSessionToken, verifyPassword, signMaterialToken, verifyMaterialToken } from './auth.js'
 import { authenticate } from './middleware/authenticate.js'
 import { mapStoredProcedureError } from './errors.js'
-import { uploadLogo, uploadSpreadsheet, UPLOADS_DIR } from './uploads.js'
+import { uploadLogo, uploadSpreadsheet, uploadEvidenceImage, PUBLIC_IMAGE_EXTENSIONS, UPLOADS_DIR } from './uploads.js'
 import { registerPublicProgramRoutes, renderPublicProgramHtml } from './publicPrograms.js'
 import { createInvitation, NO_PASSWORD, registerInvitationRoutes } from './invitations.js'
 import { registerProgressRoutes } from './progress.js'
@@ -1413,22 +1413,69 @@ app.get('/api/leave-requests', authenticate, async (req, res) => {
   }
 })
 
+// La evidencia es una imagen adjunta: llega como multipart (campo
+// "evidence") y se guarda en el volumen; evidence_url guarda su ruta
+// relativa. Sin imagen, el formulario puede seguir mandando JSON.
+const EVIDENCE_PREFIX = 'leave-evidence/'
+
 app.post('/api/leave-requests', authenticate, async (req, res) => {
-  const { startsOn, endsOn, reason, leaveTypeCode, evidenceUrl, topicId } = req.body || {}
+  if (req.is('multipart/form-data')) {
+    try {
+      await uploadEvidenceImage(req, res)
+    } catch (err) {
+      return res.status(400).json({ message: err.message })
+    }
+  }
+  const { startsOn, endsOn, reason, leaveTypeCode } = req.body || {}
+  // En multipart todo llega como texto.
+  const topicId = req.body?.topicId === undefined || req.body?.topicId === null || req.body?.topicId === '' ? null : Number(req.body.topicId)
   // Con topicId (aviso para una clase) las fechas las toma el SP de la clase.
-  const hasTopic = topicId !== undefined && topicId !== null
+  const hasTopic = topicId !== null
   if ((hasTopic && !Number.isInteger(topicId)) || typeof reason !== 'string' || !reason.trim()
     || (!hasTopic && (typeof startsOn !== 'string' || !startsOn || typeof endsOn !== 'string' || !endsOn))) {
     return res.status(400).json({ message: 'Invalid request format' })
   }
 
+  let evidencePath = null
+  if (req.file) {
+    evidencePath = `${EVIDENCE_PREFIX}${req.user.id}/${crypto.randomUUID()}${PUBLIC_IMAGE_EXTENSIONS[req.file.mimetype]}`
+    const absolute = path.join(UPLOADS_DIR, evidencePath)
+    fs.mkdirSync(path.dirname(absolute), { recursive: true })
+    fs.writeFileSync(absolute, req.file.buffer)
+  }
+
   try {
     const [result] = await callProcedure('sp_leave_requests_create', {
       p_actor_user_id: req.user.id, p_actor_role: req.user.roleCode, p_starts_on: startsOn || null, p_ends_on: endsOn || null,
-      p_reason: reason, p_leave_type_code: leaveTypeCode || null, p_evidence_url: evidenceUrl || null,
+      p_reason: reason, p_leave_type_code: leaveTypeCode || null, p_evidence_url: evidencePath,
       p_topic_id: hasTopic ? topicId : null,
     })
     res.status(201).json({ data: result })
+  } catch (err) {
+    if (evidencePath) fs.unlink(path.join(UPLOADS_DIR, evidencePath), () => {})
+    const { status, message } = mapStoredProcedureError(err)
+    res.status(status).json({ message })
+  }
+})
+
+// Solo quien ve el aviso en su listado (el alumno, sus instructores, el
+// admin del tenant) puede abrir la imagen: se reutiliza el alcance del SP.
+app.get('/api/leave-requests/:id/evidence', authenticate, async (req, res) => {
+  const leaveRequestId = Number(req.params.id)
+  if (!Number.isInteger(leaveRequestId)) return res.status(400).json({ message: 'Invalid request format' })
+
+  try {
+    const rows = await callProcedure('sp_leave_requests_list', {
+      p_actor_user_id: req.user.id, p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId,
+    })
+    const row = rows.find((r) => Number(r.id) === leaveRequestId)
+    const relative = row?.evidence_url
+    if (!relative || !relative.startsWith(EVIDENCE_PREFIX)) return res.status(404).json({ message: 'Not found' })
+    const absolute = path.resolve(UPLOADS_DIR, relative)
+    if (!absolute.startsWith(path.resolve(UPLOADS_DIR, EVIDENCE_PREFIX)) || !fs.existsSync(absolute)) return res.status(404).json({ message: 'Not found' })
+    res.setHeader('X-Content-Type-Options', 'nosniff')
+    res.setHeader('Cache-Control', 'private, max-age=300')
+    res.sendFile(absolute)
   } catch (err) {
     const { status, message } = mapStoredProcedureError(err)
     res.status(status).json({ message })

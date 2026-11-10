@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { AlertTriangle, ArrowRight, Calendar, Users as UsersIcon } from 'lucide-react'
-import { apiDownload, apiRequest, apiUpload } from './api'
+import { AlertTriangle, ArrowRight, Calendar, ImagePlus, Paperclip, Users as UsersIcon } from 'lucide-react'
+import { apiBlob, apiDownload, apiRequest, apiUpload } from './api'
 import { buildMaterialPrompt, DEFAULT_PROMPT_OPTIONS, MATERIAL_LEVELS, SKILL_NAME, suggestedBatchSize } from './materialPrompt'
 import { BANNER_STYLES, buildBannerPrompt, DEFAULT_BANNER_OPTIONS } from './bannerPrompt'
 import { DEFAULT_ACCENT, PALETTE_PRESETS, readableTextOn, resolvePalette } from './palette'
@@ -2644,6 +2644,116 @@ export function ProgramsPanel({ session }) {
   )
 }
 
+// ===================================================================
+// Evidencia de un aviso de inasistencia: una imagen adjunta (foto del
+// certificado, captura...). Es privada: se ve con el token, nunca por URL.
+const EVIDENCE_TYPES = ['image/png', 'image/jpeg', 'image/webp']
+const EVIDENCE_MAX_BYTES = 5 * 1024 * 1024
+
+export function hasEvidenceImage(request) {
+  return typeof request?.evidence_url === 'string' && request.evidence_url.startsWith('leave-evidence/')
+}
+
+// Con imagen viaja como multipart; sin ella, JSON como siempre.
+export function postLeaveRequest(token, fields, file) {
+  if (!file) return apiRequest('/api/leave-requests', { method: 'POST', token, body: fields })
+  const formData = new FormData()
+  Object.entries(fields).forEach(([key, value]) => {
+    if (value !== null && value !== undefined && value !== '') formData.append(key, value)
+  })
+  formData.append('evidence', file)
+  return apiUpload('/api/leave-requests', { token, formData })
+}
+
+export function EvidencePicker({ file, onChange }) {
+  const [preview, setPreview] = useState('')
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    if (!file) { setPreview(''); return undefined }
+    const url = URL.createObjectURL(file)
+    setPreview(url)
+    return () => URL.revokeObjectURL(url)
+  }, [file])
+
+  function pick(e) {
+    const chosen = e.target.files?.[0]
+    e.target.value = ''
+    if (!chosen) return
+    if (!EVIDENCE_TYPES.includes(chosen.type)) { setError('invalid_file_type'); return }
+    if (chosen.size > EVIDENCE_MAX_BYTES) { setError('image_too_large'); return }
+    setError('')
+    onChange(chosen)
+  }
+
+  return (
+    <div className="evidence-picker">
+      <span className="evidence-title">Evidencia (imagen, opcional)</span>
+      {file ? (
+        <div className="evidence-chosen">
+          {preview && <img src={preview} alt="Vista previa de la evidencia" />}
+          <div>
+            <strong title={file.name}>{file.name}</strong>
+            <span className="muted">{Math.max(1, Math.round(file.size / 1024))} KB</span>
+            <button type="button" className="btn-mini" onClick={() => onChange(null)}>Quitar</button>
+          </div>
+        </div>
+      ) : (
+        <label className="evidence-drop">
+          <ImagePlus size={18} aria-hidden="true" />
+          <span>Adjuntar foto o captura</span>
+          <small>PNG, JPG o WEBP · máx. 5 MB</small>
+          <input type="file" accept="image/png,image/jpeg,image/webp" onChange={pick} className="sr-only" />
+        </label>
+      )}
+      <ErrorNote message={error} />
+    </div>
+  )
+}
+
+export function EvidenceButton({ token, requestId, label = 'Ver evidencia' }) {
+  const [open, setOpen] = useState(false)
+  const [url, setUrl] = useState('')
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    if (!open) return undefined
+    let objectUrl = ''
+    let cancelled = false
+    setError('')
+    apiBlob(`/api/leave-requests/${requestId}/evidence`, { token })
+      .then((blob) => {
+        if (cancelled) return
+        objectUrl = URL.createObjectURL(blob)
+        setUrl(objectUrl)
+      })
+      .catch((err) => { if (!cancelled) setError(err.message) })
+    return () => {
+      cancelled = true
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
+      setUrl('')
+    }
+  }, [open, requestId, token])
+
+  return (
+    <>
+      <button type="button" className="btn-mini evidence-btn" onClick={() => setOpen(true)}><Paperclip size={12} aria-hidden="true" /> {label}</button>
+      {open && (
+        <Modal title="Evidencia del aviso" onClose={() => setOpen(false)} wide>
+          <ErrorNote message={error} />
+          {!url && !error && <p className="muted">Cargando…</p>}
+          {url && (
+            <div className="evidence-view">
+              <img src={url} alt="Evidencia adjunta por el alumno" />
+              <a className="btn-mini" href={url} target="_blank" rel="noreferrer">Abrir en otra pestaña</a>
+            </div>
+          )}
+        </Modal>
+      )}
+    </>
+  )
+}
+
 export function LeaveRequestsPanel({ session }) {
   const { token, profile } = session
   const isStudent = profile.roleCode === 'student'
@@ -2654,7 +2764,8 @@ export function LeaveRequestsPanel({ session }) {
   const leaveTypes = useCatalog('LEAVE_TYPE', token)
   const [comments, setComments] = useState({})
   const [actionError, setActionError] = useState('')
-  const [form, setForm] = useState({ startsOn: '', endsOn: '', reason: '', leaveTypeCode: '', evidenceUrl: '' })
+  const [form, setForm] = useState({ startsOn: '', endsOn: '', reason: '', leaveTypeCode: '' })
+  const [evidence, setEvidence] = useState(null)
   const [formError, setFormError] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
@@ -2663,8 +2774,9 @@ export function LeaveRequestsPanel({ session }) {
     setFormError('')
     setSubmitting(true)
     try {
-      await apiRequest('/api/leave-requests', { method: 'POST', token, body: form })
-      setForm({ startsOn: '', endsOn: '', reason: '', leaveTypeCode: '', evidenceUrl: '' })
+      await postLeaveRequest(token, form, evidence)
+      setForm({ startsOn: '', endsOn: '', reason: '', leaveTypeCode: '' })
+      setEvidence(null)
       reload()
     } catch (err) {
       setFormError(err.message)
@@ -2709,8 +2821,8 @@ export function LeaveRequestsPanel({ session }) {
                 {leaveTypes.map((t) => <option key={t.code} value={t.code}>{t.label}</option>)}
               </select>
             </label>
-            <label>Evidencia (link, opcional)<input value={form.evidenceUrl} onChange={(e) => setForm({ ...form, evidenceUrl: e.target.value })} placeholder="https://…" /></label>
             <label>Motivo<input value={form.reason} onChange={(e) => setForm({ ...form, reason: e.target.value })} required /></label>
+            <div className="full-field"><EvidencePicker file={evidence} onChange={setEvidence} /></div>
             <ErrorNote message={formError} />
             <button className="primary" disabled={submitting}>{submitting ? 'Enviando…' : 'Enviar solicitud'}</button>
           </form>
@@ -2731,7 +2843,7 @@ export function LeaveRequestsPanel({ session }) {
                   {!isStudent && <td>{r.student_name}</td>}
                   <td>{r.topic_id ? <><strong>{r.topic_title}</strong><br /><span className="muted">{r.component_name}</span></> : <span className="muted">Permiso por fechas</span>}</td>
                   <td>{r.topic_id ? r.starts_on : <>{r.starts_on} → {r.ends_on}</>}</td>
-                  <td>{r.reason}</td>
+                  <td>{r.reason}{hasEvidenceImage(r) && <div className="evidence-cell"><EvidenceButton token={token} requestId={r.id} /></div>}</td>
                   <td><StatusPill label={r.status_label} /></td>
                   <td>
                     {canResolve && r.status_code === 'pending' ? (

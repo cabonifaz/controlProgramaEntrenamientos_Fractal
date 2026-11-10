@@ -59,3 +59,15 @@ export async function apiDownload(path, { token, filename } = {}) {
   link.remove()
   setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
+
+// Trae un archivo privado como blob (p. ej. una imagen de evidencia): un
+// <img src> normal no puede mandar el header Authorization.
+export async function apiBlob(path, { token } = {}) {
+  const response = await fetch(path, { headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) } })
+  if (!response.ok) {
+    notifyIfSessionRejected(response, token)
+    const data = await response.json().catch(() => ({}))
+    throw new Error(data.message || `Request failed (${response.status})`)
+  }
+  return response.blob()
+}
