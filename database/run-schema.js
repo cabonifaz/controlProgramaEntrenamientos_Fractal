@@ -70,6 +70,7 @@ async function main() {
     await connection.query('CALL sp_migrate_student_profile_v1()')
     await connection.query('CALL sp_migrate_onboarding_v1()')
     await connection.query('CALL sp_migrate_class_links_v1()')
+    await connection.query('CALL sp_migrate_program_type_v1()')
 
     console.log('Schema applied successfully.')
   } finally {

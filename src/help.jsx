@@ -284,6 +284,22 @@ const SCREEN_GUIDES = {
       { selector: '.help-toc', title: 'Contenido', text: 'Salta directo a cada sección del manual.' },
     ],
   },
+  'Mi inducción': {
+    default: [
+      { selector: '.ij-summary', title: 'Tu avance', text: 'Cuántos pasos obligatorios llevas. La inducción se cumple al terminarlos todos.' },
+      { selector: '.ij-stage.current, .ij-path', title: 'Tu camino', text: 'Cada etapa es un tramo del camino. Si van en orden, la siguiente se abre al completar los obligatorios de la anterior.' },
+      { selector: '.ij-step.todo, .ij-step', title: 'Cada paso', text: 'Toca un paso para ver el video, abrir la lectura, unirte a la sesión o responder el cuestionario. Los cuestionarios tienen nota mínima.' },
+    ],
+  },
+  'Inducción': {
+    default: [
+      { selector: '.ij-head', title: 'Tus inducciones', text: 'Elige la inducción o crea una nueva.' },
+      { selector: '.ind-kpis', title: 'Quién cumplió', text: 'Inscritos, cuántos completaron todo lo obligatorio, avance y nota promedio, y quiénes no empezaron.' },
+      { selector: '.ij-funnel', title: 'Dónde reforzar', text: 'Los pasos obligatorios con menos avance o con notas bajas aparecen primero.' },
+      { selector: '.ij-matrix', title: 'Cada persona', text: 'El camino de cada uno en puntos de color. Toca un nombre para ver su recorrido con notas y fechas.' },
+      { selector: '.wb-tabs, .ij-wrap .pg-tabs', title: 'Camino y alumnos', text: 'En “Camino y pasos” armas las etapas y pasos (videos, lecturas, cuestionarios, sesiones de Teams); en “Alumnos” inscribes a las personas.' },
+    ],
+  },
   Tenants: { default: [{ selector: '.admin-form-panel', title: 'Nuevo tenant', text: 'Crea la organización con su slug y contacto.' }, { selector: '.admin-table', title: 'Tenants', text: 'Logo, color, enlace de acceso propio y acceso a sus usuarios.' }] },
   Reportes: { default: [{ selector: PANEL, title: 'Reportes', text: 'Elige un reporte (asistencia, avance, cumplimiento…) y revisa sus datos.' }] },
   'Mi cuenta': { default: [{ selector: '.admin-form', title: 'Tu contraseña', text: 'Cámbiala cuando quieras con tu contraseña actual. Si la olvidaste, usa “¿Olvidaste tu contraseña?” en el login.' }] },

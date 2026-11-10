@@ -22,6 +22,7 @@ import { registerSupportRoutes } from './support.js'
 import { registerAiReportRoutes } from './aiReports.js'
 import { registerClassRoutes } from './classes.js'
 import { registerMaterialJobRoutes } from './materialJobs.js'
+import { registerInductionRoutes } from './induction.js'
 import { HEX_COLOR, resolvePalette } from '../src/palette.js'
 import {
   uploadMaterialZip, extractMaterialZip, materialDir, removeMaterialDir, describeMaterial,
@@ -233,6 +234,7 @@ registerSchedulePlannerRoutes(app)
 registerSupportRoutes(app)
 registerAiReportRoutes(app)
 registerClassRoutes(app)
+registerInductionRoutes(app)
 
 app.get('/api/tenants', authenticate, async (req, res) => {
   try {

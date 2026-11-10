@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { Bell, BookOpenText, PanelLeftClose, PanelLeftOpen, Pin, CalendarCog, LifeBuoy, CalendarDays, CalendarX2, Clock, ClipboardCheck, GraduationCap, LayoutDashboard, Smile, LogOut, Menu, Settings2, ShieldCheck, SquareKanban, UserRound, Users, X } from 'lucide-react'
+import { Bell, BookOpenText, Route, PanelLeftClose, PanelLeftOpen, Pin, CalendarCog, LifeBuoy, CalendarDays, CalendarX2, Clock, ClipboardCheck, GraduationCap, LayoutDashboard, Smile, LogOut, Menu, Settings2, ShieldCheck, SquareKanban, UserRound, Users, X } from 'lucide-react'
 import { AlertsPanel, ChangePasswordPanel, HolidaysPanel, InstructorClassesPanel, LeaveRequestsPanel, PreEnrollmentsPanel, ProgramsPanel, RealDashboard, ReportsPanel, TenantsPanel, UsersPanel } from './admin.jsx'
 import { ProgressPanel } from './progress.jsx'
 import { StudentAttendanceView, StudentSchedulePanel, StudentTopicsOverview } from './student.jsx'
@@ -13,6 +13,7 @@ import { GuideTour, HelpPanel, ScreenGuideButton, screenGuideSteps, useFirstUseG
 import { InstructorAttendanceOverview, InstructorSyllabusPanel } from './instructor.jsx'
 import { NextClassBar } from './classroom.jsx'
 import { MaterialJobsIndicator } from './aiMaterial.jsx'
+import { InductionAdminPanel, MyInductionPanel } from './induction.jsx'
 import { getPublicProgramRoute, PublicProgramApp } from './public.jsx'
 import { getInvitationRoute, InvitationApp } from './invitation.jsx'
 import { apiRequest } from './api'
@@ -34,7 +35,7 @@ const data = {
 }
 
 const SIDEBAR_KEY = 'fractal-sidebar-mode'
-const PROFILE_NAV = new Set(['Mi perfil', 'Mis alumnos', 'Alumnos', 'Satisfacción', 'Inasistencias', 'Horarios', 'Mi disponibilidad', 'Soporte', 'Ayuda'])
+const PROFILE_NAV = new Set(['Mi perfil', 'Mis alumnos', 'Alumnos', 'Satisfacción', 'Inasistencias', 'Horarios', 'Mi disponibilidad', 'Soporte', 'Ayuda', 'Inducción', 'Mi inducción'])
 const SUPER_ADMIN_EXTRA_NAV = new Set(['Calendario'])
 
 // Acciones rapidas del Inicio: [texto, seccion a la que lleva, icono].
@@ -47,9 +48,9 @@ const QUICK_ACTIONS = {
 
 const roleKeyByCode = { student: 'student', instructor: 'instructor', tenant_admin: 'admin', super_admin: 'superAdmin' }
 
-const ADMIN_PANEL_BY_NAV = { Avance: ProgressPanel, Tenants: TenantsPanel, Usuarios: UsersPanel, Programas: ProgramsPanel, Inscripciones: PreEnrollmentsPanel, Calendario: HolidaysPanel, Horarios: SchedulePlannerPanel, Alumnos: StudentDirectoryPanel, 'Satisfacción': SatisfactionPanel, Inasistencias: AbsencesPanel, Permisos: LeaveRequestsPanel, Alertas: AlertsPanel, Ayuda: HelpPanel, Soporte: SupportPanel, Reportes: ReportsPanel, Configuracion: ChangePasswordPanel }
+const ADMIN_PANEL_BY_NAV = { Avance: ProgressPanel, Tenants: TenantsPanel, Usuarios: UsersPanel, Programas: ProgramsPanel, Inscripciones: PreEnrollmentsPanel, Calendario: HolidaysPanel, Horarios: SchedulePlannerPanel, 'Inducción': InductionAdminPanel, Alumnos: StudentDirectoryPanel, 'Satisfacción': SatisfactionPanel, Inasistencias: AbsencesPanel, Permisos: LeaveRequestsPanel, Alertas: AlertsPanel, Ayuda: HelpPanel, Soporte: SupportPanel, Reportes: ReportsPanel, Configuracion: ChangePasswordPanel }
 const INSTRUCTOR_PANEL_BY_NAV = { Inicio: RealDashboard, Avance: ProgressPanel, 'Mis clases': InstructorClassesPanel, Temarios: InstructorSyllabusPanel, Asistencia: InstructorAttendanceOverview, 'Mis alumnos': StudentDirectoryPanel, 'Mi disponibilidad': MyAvailabilityPanel, Permisos: LeaveRequestsPanel, Alertas: AlertsPanel, Ayuda: HelpPanel, Soporte: SupportPanel, 'Mi cuenta': ChangePasswordPanel }
-const STUDENT_PANEL_BY_NAV = { Inicio: RealDashboard, Avance: ProgressPanel, 'Mi horario': StudentSchedulePanel, 'Mis temas': StudentTopicsOverview, Permisos: LeaveRequestsPanel, Asistencia: StudentAttendanceView, Alertas: AlertsPanel, 'Mi perfil': StudentProfilePanel, Ayuda: HelpPanel, Soporte: SupportPanel, 'Mi cuenta': ChangePasswordPanel }
+const STUDENT_PANEL_BY_NAV = { Inicio: RealDashboard, Avance: ProgressPanel, 'Mi horario': StudentSchedulePanel, 'Mis temas': StudentTopicsOverview, 'Mi inducción': MyInductionPanel, Permisos: LeaveRequestsPanel, Asistencia: StudentAttendanceView, Alertas: AlertsPanel, 'Mi perfil': StudentProfilePanel, Ayuda: HelpPanel, Soporte: SupportPanel, 'Mi cuenta': ChangePasswordPanel }
 const SECTION_PANELS_BY_ROLE = { admin: ADMIN_PANEL_BY_NAV, superAdmin: ADMIN_PANEL_BY_NAV, instructor: INSTRUCTOR_PANEL_BY_NAV, student: STUDENT_PANEL_BY_NAV }
 
 function getTenantSlugFromPath() {
@@ -240,7 +241,7 @@ function App() {
   const brandMark = tenantLogoUrl
     ? <img src={tenantLogoUrl} alt="Logo" className="logo-mark logo-mark-image" />
     : <div className="logo-mark">F</div>
-  const baseNav = role === 'student' ? ['Inicio', 'Mi horario', 'Mis temas', 'Asistencia', 'Permisos', 'Alertas', 'Mi perfil', 'Ayuda', 'Soporte', 'Mi cuenta'] : role === 'instructor' ? ['Inicio', 'Mis clases', 'Temarios', 'Asistencia', 'Mis alumnos', 'Mi disponibilidad', 'Permisos', 'Alertas', 'Ayuda', 'Soporte', 'Reportes', 'Mi cuenta'] : role === 'superAdmin' ? ['Inicio', 'Tenants', 'Usuarios', 'Alumnos', 'Programas', 'Calendario', 'Horarios', 'Inscripciones', 'Satisfacción', 'Inasistencias', 'Permisos', 'Alertas', 'Ayuda', 'Soporte', 'Reportes', 'Configuracion'] : ['Inicio', 'Programas', 'Inscripciones', 'Usuarios', 'Alumnos', 'Calendario', 'Horarios', 'Satisfacción', 'Inasistencias', 'Permisos', 'Alertas', 'Ayuda', 'Soporte', 'Reportes', 'Configuracion']
+  const baseNav = role === 'student' ? ['Inicio', 'Mi horario', 'Mis temas', 'Mi inducción', 'Asistencia', 'Permisos', 'Alertas', 'Mi perfil', 'Ayuda', 'Soporte', 'Mi cuenta'] : role === 'instructor' ? ['Inicio', 'Mis clases', 'Temarios', 'Asistencia', 'Mis alumnos', 'Mi disponibilidad', 'Permisos', 'Alertas', 'Ayuda', 'Soporte', 'Reportes', 'Mi cuenta'] : role === 'superAdmin' ? ['Inicio', 'Tenants', 'Usuarios', 'Alumnos', 'Programas', 'Inducción', 'Calendario', 'Horarios', 'Inscripciones', 'Satisfacción', 'Inasistencias', 'Permisos', 'Alertas', 'Ayuda', 'Soporte', 'Reportes', 'Configuracion'] : ['Inicio', 'Programas', 'Inducción', 'Inscripciones', 'Usuarios', 'Alumnos', 'Calendario', 'Horarios', 'Satisfacción', 'Inasistencias', 'Permisos', 'Alertas', 'Ayuda', 'Soporte', 'Reportes', 'Configuracion']
   // "Avance" (kanban) va segundo para todos los roles; el resto conserva
   // el icono de la posicion que tenia antes de agregarlo.
   const nav = [baseNav[0], 'Avance', ...baseNav.slice(1)]
@@ -254,6 +255,7 @@ function App() {
     if (item === 'Mi disponibilidad') return <Clock size={18} />
     if (item === 'Soporte') return <LifeBuoy size={18} />
     if (item === 'Ayuda') return <BookOpenText size={18} />
+    if (item === 'Inducción' || item === 'Mi inducción') return <Route size={18} />
     // Las secciones agregadas despues no corren el icono de las demas.
     if (role === 'superAdmin' && SUPER_ADMIN_EXTRA_NAV.has(item)) return <CalendarDays size={18} />
     const i = baseNav.filter((x) => !PROFILE_NAV.has(x) && !(role === 'superAdmin' && SUPER_ADMIN_EXTRA_NAV.has(x))).indexOf(item)

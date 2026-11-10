@@ -39,6 +39,8 @@ const STATUS_BY_SP_MESSAGE = {
   too_many_resources: 409,
   invalid_url: 400,
   material_job_running: 409,
+  quiz_empty: 400,
+  stage_locked: 409,
   tenant_not_found: 404,
   target_not_found: 404,
   program_not_found: 404,

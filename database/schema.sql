@@ -620,6 +620,56 @@ CREATE TABLE IF NOT EXISTS material_jobs (
   INDEX idx_material_job_component (component_id, created_at)
 );
 
+-- Programas de induccion (a ritmo propio): cada componente es una etapa con
+-- pasos (video, lectura, cuestionario calificado, tarea, sesion en vivo por
+-- Teams/Meet con scheduled_at). Los obligatorios
+-- definen si la persona cumplio su induccion.
+CREATE TABLE IF NOT EXISTS induction_steps (
+  id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+  component_id BIGINT UNSIGNED NOT NULL,
+  position INT NOT NULL DEFAULT 0,
+  step_type VARCHAR(20) NOT NULL,
+  title VARCHAR(200) NOT NULL,
+  description VARCHAR(2000) NULL,
+  url VARCHAR(500) NULL,
+  required BOOLEAN NOT NULL DEFAULT TRUE,
+  min_score TINYINT UNSIGNED NOT NULL DEFAULT 70,
+  quiz JSON NULL,
+  est_minutes SMALLINT UNSIGNED NULL,
+  scheduled_at DATETIME NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  created_by BIGINT UNSIGNED NULL,
+  updated_at DATETIME NULL,
+  updated_by BIGINT UNSIGNED NULL,
+  deleted_at DATETIME NULL,
+  deleted_by BIGINT UNSIGNED NULL,
+  is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+  CONSTRAINT fk_istep_component FOREIGN KEY (component_id) REFERENCES components(id),
+  CONSTRAINT chk_istep_type CHECK (step_type IN ('video', 'reading', 'quiz', 'task', 'meeting')),
+  CONSTRAINT chk_istep_score CHECK (min_score BETWEEN 0 AND 100),
+  INDEX idx_istep_component (component_id, position)
+);
+
+-- Avance de cada alumno en cada paso. score = mejor nota (0-100) de los
+-- cuestionarios; last_score, la del ultimo intento.
+CREATE TABLE IF NOT EXISTS induction_progress (
+  id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+  step_id BIGINT UNSIGNED NOT NULL,
+  student_id BIGINT UNSIGNED NOT NULL,
+  status VARCHAR(20) NOT NULL,
+  score DECIMAL(5,2) NULL,
+  last_score DECIMAL(5,2) NULL,
+  attempts INT NOT NULL DEFAULT 0,
+  answers JSON NULL,
+  started_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  completed_at DATETIME NULL,
+  updated_at DATETIME NULL,
+  UNIQUE KEY uq_iprogress (step_id, student_id),
+  CONSTRAINT fk_iprogress_step FOREIGN KEY (step_id) REFERENCES induction_steps(id),
+  CONSTRAINT fk_iprogress_student FOREIGN KEY (student_id) REFERENCES users(id),
+  CONSTRAINT chk_iprogress_status CHECK (status IN ('started', 'completed', 'failed'))
+);
+
 -- ===================================================================
 -- Maestro de maestros: catalogos y valores iniciales (idempotente)
 -- ===================================================================
@@ -788,6 +838,7 @@ DROP PROCEDURE IF EXISTS sp_migrate_leave_topic_v1;
 DROP PROCEDURE IF EXISTS sp_migrate_student_profile_v1;
 DROP PROCEDURE IF EXISTS sp_migrate_onboarding_v1;
 DROP PROCEDURE IF EXISTS sp_migrate_class_links_v1;
+DROP PROCEDURE IF EXISTS sp_migrate_program_type_v1;
 DROP PROCEDURE IF EXISTS sp_programs_set_colors;
 DROP PROCEDURE IF EXISTS sp_components_set_colors;
 DROP PROCEDURE IF EXISTS sp_user_invitations_create;
@@ -937,6 +988,16 @@ DROP PROCEDURE IF EXISTS sp_material_jobs_finish;
 DROP PROCEDURE IF EXISTS sp_material_jobs_list;
 DROP PROCEDURE IF EXISTS sp_material_jobs_get;
 DROP PROCEDURE IF EXISTS sp_material_jobs_interrupt;
+DROP PROCEDURE IF EXISTS sp_programs_set_type;
+DROP PROCEDURE IF EXISTS sp_induction_access;
+DROP PROCEDURE IF EXISTS sp_induction_programs;
+DROP PROCEDURE IF EXISTS sp_induction_steps_list;
+DROP PROCEDURE IF EXISTS sp_induction_step_save;
+DROP PROCEDURE IF EXISTS sp_induction_step_remove;
+DROP PROCEDURE IF EXISTS sp_induction_step_get;
+DROP PROCEDURE IF EXISTS sp_induction_progress_list;
+DROP PROCEDURE IF EXISTS sp_induction_progress_set;
+DROP PROCEDURE IF EXISTS sp_induction_students;
 DROP PROCEDURE IF EXISTS sp_pre_enrollments_create;
 DROP PROCEDURE IF EXISTS sp_pre_enrollments_list;
 DROP PROCEDURE IF EXISTS sp_pre_enrollments_resolve;
@@ -1134,6 +1195,18 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM information_schema.columns
     WHERE table_schema = DATABASE() AND table_name = 'component_groups' AND column_name = 'meeting_url') THEN
     ALTER TABLE component_groups ADD COLUMN meeting_url VARCHAR(500) NULL AFTER instructor_id;
+  END IF;
+END$$
+
+-- Tipo de programa: 'training' (clases con horario) o 'induction' (pasos a
+-- ritmo propio). sequential: en induccion, las etapas se abren en orden.
+CREATE PROCEDURE sp_migrate_program_type_v1()
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+    WHERE table_schema = DATABASE() AND table_name = 'training_programs' AND column_name = 'program_type') THEN
+    ALTER TABLE training_programs
+      ADD COLUMN program_type VARCHAR(20) NOT NULL DEFAULT 'training' AFTER cohort,
+      ADD COLUMN sequential BOOLEAN NOT NULL DEFAULT TRUE AFTER program_type;
   END IF;
 END$$
 
@@ -1599,7 +1672,7 @@ BEGIN
          ps.code AS status_code, ps.label AS status_label,
          pm.code AS modality_code, pm.label AS modality_label, p.created_at,
          p.public_slug, p.is_public, p.enrollment_open, p.public_tagline, p.public_audience, p.banner_path,
-         p.color_primary, p.color_accent,
+         p.color_primary, p.color_accent, p.program_type, p.sequential,
          tn.slug AS tenant_slug, tn.name AS tenant_name, tn.logo_path AS tenant_logo_path, tn.brand_color AS tenant_brand_color,
          (SELECT COUNT(*) FROM pre_enrollments pe JOIN master_catalog_values pes ON pes.id = pe.status_id
           WHERE pe.program_id = p.id AND pe.is_deleted = FALSE AND pes.code = 'pending') AS pending_pre_enrollments
@@ -5759,6 +5832,147 @@ CREATE PROCEDURE sp_material_jobs_interrupt()
 BEGIN
   UPDATE material_jobs SET status = 'interrupted', finished_at = NOW(), error = 'El servidor se reinició durante la generación'
   WHERE status IN ('queued', 'running') AND COALESCE(updated_at, created_at) < DATE_SUB(NOW(), INTERVAL 15 MINUTE);
+END$$
+
+-- ===================================================================
+-- Induccion: pasos a ritmo propio y su avance por alumno.
+CREATE PROCEDURE sp_programs_set_type(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED,
+  IN p_program_id BIGINT UNSIGNED, IN p_program_type VARCHAR(20), IN p_sequential BOOLEAN
+)
+BEGIN
+  DECLARE v_tenant_id BIGINT UNSIGNED;
+  SELECT tenant_id INTO v_tenant_id FROM training_programs WHERE id = p_program_id AND is_deleted = FALSE;
+  IF v_tenant_id IS NULL THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'program_not_found';
+  END IF;
+  IF p_actor_role = 'tenant_admin' AND v_tenant_id <> p_actor_tenant_id THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
+  ELSEIF p_actor_role NOT IN ('super_admin', 'tenant_admin') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+  IF p_program_type NOT IN ('training', 'induction') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'invalid_status';
+  END IF;
+  UPDATE training_programs SET program_type = p_program_type, sequential = COALESCE(p_sequential, TRUE), updated_at = NOW(), updated_by = p_actor_user_id
+  WHERE id = p_program_id;
+END$$
+
+-- 'edit' admin del tenant (o super admin), 'view' alumno inscrito, 'none'.
+CREATE PROCEDURE sp_induction_access(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED, IN p_program_id BIGINT UNSIGNED
+)
+BEGIN
+  SELECT p.id AS program_id, p.name, p.description, p.cohort, p.sequential, p.program_type, p.tenant_id,
+         p.color_primary, p.color_accent, tn.brand_color AS tenant_brand_color,
+         CASE
+           WHEN p_actor_role = 'super_admin' THEN 'edit'
+           WHEN p_actor_role = 'tenant_admin' AND p.tenant_id <=> p_actor_tenant_id THEN 'edit'
+           WHEN p_actor_role = 'student' AND EXISTS (SELECT 1 FROM program_enrollments pe WHERE pe.program_id = p.id AND pe.student_id = p_actor_user_id AND pe.is_deleted = FALSE) THEN 'view'
+           ELSE 'none'
+         END AS access
+  FROM training_programs p JOIN tenants tn ON tn.id = p.tenant_id
+  WHERE p.id = p_program_id AND p.is_deleted = FALSE;
+END$$
+
+-- Programas de induccion visibles: los del tenant (admin) o en los que el
+-- alumno esta inscrito.
+CREATE PROCEDURE sp_induction_programs(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED
+)
+BEGIN
+  SELECT p.id, p.name, p.cohort, p.description, p.sequential, p.starts_on, p.ends_on, tn.name AS tenant_name,
+         (SELECT COUNT(*) FROM program_enrollments pe WHERE pe.program_id = p.id AND pe.is_deleted = FALSE) AS enrolled
+  FROM training_programs p JOIN tenants tn ON tn.id = p.tenant_id
+  WHERE p.is_deleted = FALSE AND p.program_type = 'induction'
+    AND (p_actor_role = 'super_admin'
+      OR (p_actor_role = 'tenant_admin' AND p.tenant_id <=> p_actor_tenant_id)
+      OR (p_actor_role = 'student' AND EXISTS (SELECT 1 FROM program_enrollments pe WHERE pe.program_id = p.id AND pe.student_id = p_actor_user_id AND pe.is_deleted = FALSE)))
+  ORDER BY p.starts_on DESC, p.name;
+END$$
+
+-- Etapas (componentes) y sus pasos, en orden. Etapas sin pasos tambien.
+CREATE PROCEDURE sp_induction_steps_list(IN p_program_id BIGINT UNSIGNED)
+BEGIN
+  SELECT c.id AS component_id, c.name AS component_name, c.description AS component_description, c.sort_order,
+         s.id AS step_id, s.position, s.step_type, s.title, s.description, s.url, s.required, s.min_score, s.quiz, s.est_minutes, s.scheduled_at
+  FROM components c
+  LEFT JOIN induction_steps s ON s.component_id = c.id AND s.is_deleted = FALSE
+  WHERE c.program_id = p_program_id AND c.is_deleted = FALSE
+  ORDER BY c.sort_order, c.id, s.position, s.id;
+END$$
+
+-- Crea (p_step_id NULL) o actualiza un paso. Permisos los valida el servidor
+-- con sp_induction_access sobre el programa del componente.
+CREATE PROCEDURE sp_induction_step_save(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_step_id BIGINT UNSIGNED, IN p_component_id BIGINT UNSIGNED,
+  IN p_step_type VARCHAR(20), IN p_title VARCHAR(200), IN p_description VARCHAR(2000), IN p_url VARCHAR(500),
+  IN p_required BOOLEAN, IN p_min_score TINYINT UNSIGNED, IN p_quiz JSON, IN p_est_minutes SMALLINT UNSIGNED, IN p_position INT,
+  IN p_scheduled_at DATETIME
+)
+BEGIN
+  IF p_step_id IS NULL THEN
+    INSERT INTO induction_steps (component_id, position, step_type, title, description, url, required, min_score, quiz, est_minutes, scheduled_at, created_by)
+    VALUES (p_component_id,
+            COALESCE(p_position, (SELECT COALESCE(MAX(s.position), 0) + 1 FROM induction_steps s WHERE s.component_id = p_component_id AND s.is_deleted = FALSE)),
+            p_step_type, TRIM(p_title), NULLIF(TRIM(p_description), ''), NULLIF(TRIM(p_url), ''), p_required, p_min_score, p_quiz, p_est_minutes, p_scheduled_at, p_actor_user_id);
+    SELECT LAST_INSERT_ID() AS step_id;
+  ELSE
+    UPDATE induction_steps
+    SET step_type = p_step_type, title = TRIM(p_title), description = NULLIF(TRIM(p_description), ''), url = NULLIF(TRIM(p_url), ''),
+        required = p_required, min_score = p_min_score, quiz = p_quiz, est_minutes = p_est_minutes, scheduled_at = p_scheduled_at,
+        position = COALESCE(p_position, position), updated_at = NOW(), updated_by = p_actor_user_id
+    WHERE id = p_step_id;
+    SELECT p_step_id AS step_id;
+  END IF;
+END$$
+
+CREATE PROCEDURE sp_induction_step_get(IN p_step_id BIGINT UNSIGNED)
+BEGIN
+  SELECT s.*, c.program_id FROM induction_steps s JOIN components c ON c.id = s.component_id
+  WHERE s.id = p_step_id AND s.is_deleted = FALSE;
+END$$
+
+CREATE PROCEDURE sp_induction_step_remove(IN p_actor_user_id BIGINT UNSIGNED, IN p_step_id BIGINT UNSIGNED)
+BEGIN
+  UPDATE induction_steps SET is_deleted = TRUE, deleted_at = NOW(), deleted_by = p_actor_user_id WHERE id = p_step_id;
+END$$
+
+-- Avance: de un alumno (p_student_id) o de todos los inscritos (NULL).
+CREATE PROCEDURE sp_induction_progress_list(IN p_program_id BIGINT UNSIGNED, IN p_student_id BIGINT UNSIGNED)
+BEGIN
+  SELECT ip.step_id, ip.student_id, ip.status, ip.score, ip.last_score, ip.attempts, ip.answers, ip.started_at, ip.completed_at, ip.updated_at
+  FROM induction_progress ip
+  JOIN induction_steps s ON s.id = ip.step_id AND s.is_deleted = FALSE
+  JOIN components c ON c.id = s.component_id AND c.program_id = p_program_id
+  WHERE p_student_id IS NULL OR ip.student_id = p_student_id;
+END$$
+
+-- Registra un avance. Para cuestionarios guarda la mejor nota; un paso ya
+-- completado no vuelve atras.
+CREATE PROCEDURE sp_induction_progress_set(
+  IN p_step_id BIGINT UNSIGNED, IN p_student_id BIGINT UNSIGNED, IN p_status VARCHAR(20), IN p_score DECIMAL(5,2), IN p_answers JSON
+)
+BEGIN
+  INSERT INTO induction_progress (step_id, student_id, status, score, last_score, attempts, answers, completed_at, updated_at)
+  VALUES (p_step_id, p_student_id, p_status, p_score, p_score, IF(p_score IS NULL, 0, 1), p_answers, IF(p_status = 'completed', NOW(), NULL), NOW())
+  ON DUPLICATE KEY UPDATE
+    status = IF(status = 'completed', 'completed', VALUES(status)),
+    score = IF(VALUES(score) IS NULL, score, GREATEST(COALESCE(score, 0), VALUES(score))),
+    last_score = COALESCE(VALUES(last_score), last_score),
+    attempts = attempts + IF(VALUES(score) IS NULL, 0, 1),
+    answers = COALESCE(VALUES(answers), answers),
+    completed_at = IF(completed_at IS NULL AND VALUES(status) = 'completed', NOW(), completed_at),
+    updated_at = NOW();
+END$$
+
+-- Inscritos de un programa (para el tablero de induccion).
+CREATE PROCEDURE sp_induction_students(IN p_program_id BIGINT UNSIGNED)
+BEGIN
+  SELECT u.id, u.full_name, u.email, u.photo_path, u.is_active, pe.created_at AS enrolled_at
+  FROM program_enrollments pe JOIN users u ON u.id = pe.student_id AND u.is_deleted = FALSE
+  WHERE pe.program_id = p_program_id AND pe.is_deleted = FALSE
+  ORDER BY u.full_name;
 END$$
 
 CREATE PROCEDURE sp_dashboard_get(IN p_user_id BIGINT, IN p_role VARCHAR(80), IN p_tenant_id BIGINT)
