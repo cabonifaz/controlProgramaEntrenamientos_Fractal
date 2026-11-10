@@ -481,6 +481,25 @@ CREATE TABLE IF NOT EXISTS instructor_changes (
   CONSTRAINT chk_ichg_reason CHECK (reason_code IN ('resignation', 'absences', 'reassignment', 'performance', 'personal', 'other'))
 );
 
+-- "Olvide mi clave": sin servicio de correo, la solicitud le llega al
+-- admin, que genera un enlace de un solo uso (user_invitations). user_id
+-- NULL = el correo no existe (se guarda igual para limitar abuso por IP).
+CREATE TABLE IF NOT EXISTS password_reset_requests (
+  id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+  user_id BIGINT UNSIGNED NULL,
+  tenant_id BIGINT UNSIGNED NULL,
+  email VARCHAR(190) NOT NULL,
+  ip_address VARCHAR(64) NULL,
+  status VARCHAR(20) NOT NULL DEFAULT 'pending',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  resolved_at DATETIME NULL,
+  resolved_by BIGINT UNSIGNED NULL,
+  CONSTRAINT fk_pwreset_user FOREIGN KEY (user_id) REFERENCES users(id),
+  CONSTRAINT fk_pwreset_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(id),
+  CONSTRAINT chk_pwreset_status CHECK (status IN ('pending', 'resolved', 'dismissed')),
+  INDEX idx_pwreset_ip (ip_address, created_at)
+);
+
 -- ===================================================================
 -- Maestro de maestros: catalogos y valores iniciales (idempotente)
 -- ===================================================================
@@ -578,6 +597,7 @@ INSERT IGNORE INTO master_catalog_values (catalog_id, code, label, sort_order) V
   ((SELECT id FROM master_catalogs WHERE code = 'ALERT_TYPE'), 'configuration_error', 'Error de configuracion', 15),
   ((SELECT id FROM master_catalogs WHERE code = 'ALERT_TYPE'), 'absence_notice', 'Aviso de inasistencia del alumno', 16),
   ((SELECT id FROM master_catalogs WHERE code = 'ALERT_TYPE'), 'instructor_absence_notice', 'Aviso de inasistencia del profesor', 17),
+  ((SELECT id FROM master_catalogs WHERE code = 'ALERT_TYPE'), 'password_reset_request', 'Solicitud de recuperación de clave', 18),
 
   ((SELECT id FROM master_catalogs WHERE code = 'ALERT_PRIORITY'), 'low', 'Baja', 1),
   ((SELECT id FROM master_catalogs WHERE code = 'ALERT_PRIORITY'), 'medium', 'Media', 2),
@@ -760,6 +780,9 @@ DROP PROCEDURE IF EXISTS sp_instructor_indicators;
 DROP PROCEDURE IF EXISTS sp_instructor_absence_classes;
 DROP PROCEDURE IF EXISTS sp_student_absence_events;
 DROP PROCEDURE IF EXISTS sp_student_attendance_totals;
+DROP PROCEDURE IF EXISTS sp_password_reset_request;
+DROP PROCEDURE IF EXISTS sp_password_reset_requests_list;
+DROP PROCEDURE IF EXISTS sp_password_reset_requests_resolve;
 DROP PROCEDURE IF EXISTS sp_pre_enrollments_create;
 DROP PROCEDURE IF EXISTS sp_pre_enrollments_list;
 DROP PROCEDURE IF EXISTS sp_pre_enrollments_resolve;
@@ -4898,6 +4921,111 @@ BEGIN
   WHERE su.is_deleted = FALSE AND (p_actor_role = 'super_admin' OR su.tenant_id <=> p_actor_tenant_id)
   GROUP BY su.id, su.full_name
   ORDER BY su.full_name;
+END$$
+
+-- ===================================================================
+-- Recuperacion de clave por solicitud al admin. Nunca revela si el correo
+-- existe. Maximo 5 solicitudes por IP por hora y una pendiente por usuario
+-- cada 30 minutos. Avisa a los admins del tenant (si quien pide es admin de
+-- tenant o no tiene tenant, al super admin).
+CREATE PROCEDURE sp_password_reset_request(IN p_email VARCHAR(190), IN p_ip_address VARCHAR(64))
+BEGIN
+  DECLARE v_user_id BIGINT UNSIGNED;
+  DECLARE v_tenant_id BIGINT UNSIGNED;
+  DECLARE v_role VARCHAR(80);
+  DECLARE v_name VARCHAR(160);
+  DECLARE v_recent INT;
+  DECLARE v_id BIGINT UNSIGNED;
+
+  SELECT COUNT(*) INTO v_recent FROM password_reset_requests
+  WHERE ip_address <=> p_ip_address AND created_at >= DATE_SUB(NOW(), INTERVAL 1 HOUR);
+  IF v_recent >= 5 THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'too_many_requests';
+  END IF;
+
+  SELECT u.id, u.tenant_id, r.code, u.full_name INTO v_user_id, v_tenant_id, v_role, v_name
+  FROM users u JOIN master_catalog_values r ON r.id = u.role_id
+  WHERE u.email = TRIM(p_email) AND u.is_deleted = FALSE AND u.is_active = TRUE
+  LIMIT 1;
+
+  IF v_user_id IS NOT NULL AND EXISTS (
+    SELECT 1 FROM password_reset_requests WHERE user_id = v_user_id AND status = 'pending' AND created_at >= DATE_SUB(NOW(), INTERVAL 30 MINUTE)
+  ) THEN
+    SET v_user_id = NULL;
+  END IF;
+
+  INSERT INTO password_reset_requests (user_id, tenant_id, email, ip_address)
+  VALUES (v_user_id, v_tenant_id, LEFT(TRIM(p_email), 190), p_ip_address);
+  SET v_id = LAST_INSERT_ID();
+
+  IF v_user_id IS NOT NULL THEN
+    INSERT INTO alerts (tenant_id, type_id, priority_id, recipient_user_id, title, description, status_id, source_type, source_id, created_by)
+    SELECT v_tenant_id,
+           (SELECT v.id FROM master_catalog_values v JOIN master_catalogs c ON c.id = v.catalog_id WHERE c.code = 'ALERT_TYPE' AND v.code = 'password_reset_request'),
+           (SELECT v.id FROM master_catalog_values v JOIN master_catalogs c ON c.id = v.catalog_id WHERE c.code = 'ALERT_PRIORITY' AND v.code = 'medium'),
+           au.id,
+           LEFT(CONCAT(v_name, ' pidió recuperar su clave'), 200),
+           'Genera un enlace para que cree una nueva clave desde Usuarios → Solicitudes de recuperación.',
+           (SELECT v.id FROM master_catalog_values v JOIN master_catalogs c ON c.id = v.catalog_id WHERE c.code = 'ALERT_STATUS' AND v.code = 'open'),
+           'password_reset', v_id, v_user_id
+    FROM users au
+    JOIN master_catalog_values ar ON ar.id = au.role_id
+    WHERE au.is_deleted = FALSE AND au.is_active = TRUE AND au.id <> v_user_id
+      AND ((v_role IN ('student', 'instructor') AND v_tenant_id IS NOT NULL AND ar.code = 'tenant_admin' AND au.tenant_id = v_tenant_id)
+        OR ((v_role IN ('tenant_admin', 'super_admin') OR v_tenant_id IS NULL) AND ar.code = 'super_admin'));
+  END IF;
+END$$
+
+CREATE PROCEDURE sp_password_reset_requests_list(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED
+)
+BEGIN
+  IF p_actor_role NOT IN ('tenant_admin', 'super_admin') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+  SELECT MAX(pr.id) AS id, pr.user_id, u.full_name, u.email, r.code AS role_code, r.label AS role_label, t.name AS tenant_name,
+         MAX(pr.created_at) AS created_at, COUNT(*) AS requests
+  FROM password_reset_requests pr
+  JOIN users u ON u.id = pr.user_id AND u.is_deleted = FALSE
+  JOIN master_catalog_values r ON r.id = u.role_id
+  LEFT JOIN tenants t ON t.id = u.tenant_id
+  WHERE pr.status = 'pending'
+    AND (p_actor_role = 'super_admin' OR (u.tenant_id <=> p_actor_tenant_id AND r.code IN ('student', 'instructor')))
+  GROUP BY pr.user_id, u.full_name, u.email, r.code, r.label, t.name
+  ORDER BY created_at DESC;
+END$$
+
+-- Cierra las solicitudes pendientes de un usuario (resolved al generar el
+-- enlace; dismissed si el admin la descarta).
+CREATE PROCEDURE sp_password_reset_requests_resolve(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED,
+  IN p_request_id BIGINT UNSIGNED, IN p_status VARCHAR(20)
+)
+BEGIN
+  DECLARE v_user_id BIGINT UNSIGNED;
+  DECLARE v_tenant_id BIGINT UNSIGNED;
+  DECLARE v_role VARCHAR(80);
+  IF p_actor_role NOT IN ('tenant_admin', 'super_admin') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+  IF p_status NOT IN ('resolved', 'dismissed') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'invalid_status';
+  END IF;
+  SELECT pr.user_id, u.tenant_id, r.code INTO v_user_id, v_tenant_id, v_role
+  FROM password_reset_requests pr JOIN users u ON u.id = pr.user_id JOIN master_catalog_values r ON r.id = u.role_id
+  WHERE pr.id = p_request_id;
+  IF v_user_id IS NULL THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'target_not_found';
+  END IF;
+  IF p_actor_role = 'tenant_admin' AND (NOT (v_tenant_id <=> p_actor_tenant_id) OR v_role NOT IN ('student', 'instructor')) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+  UPDATE password_reset_requests SET status = p_status, resolved_at = NOW(), resolved_by = p_actor_user_id
+  WHERE user_id = v_user_id AND status = 'pending';
+  UPDATE alerts SET read_at = NOW(), read_by = p_actor_user_id,
+         status_id = (SELECT v.id FROM master_catalog_values v JOIN master_catalogs c ON c.id = v.catalog_id WHERE c.code = 'ALERT_STATUS' AND v.code = 'read')
+  WHERE source_type = 'password_reset' AND created_by = v_user_id AND read_at IS NULL AND is_deleted = FALSE;
+  SELECT v_user_id AS user_id;
 END$$
 
 CREATE PROCEDURE sp_dashboard_get(IN p_user_id BIGINT, IN p_role VARCHAR(80), IN p_tenant_id BIGINT)

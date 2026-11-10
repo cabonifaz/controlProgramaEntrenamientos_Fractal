@@ -490,3 +490,16 @@
 .ind-grid{grid-template-columns:1fr}
 .ind-recent{grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:10px 18px}
 .ind-block,.ind-table small.muted{font-size:11.5px;line-height:1.4}
+/* Recuperar clave */
+.password-toggle{position:absolute;right:8px;bottom:9px;border:0;background:transparent;color:var(--blue);font-size:11px;font-weight:600;padding:4px 6px;border-radius:5px}
+.password-toggle:focus-visible,.forgot-link:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+.forgot-link{font-size:11px;font-weight:600;padding:0}
+.login-back{display:block;margin:16px auto 0;font-size:12px}
+.pwreset-panel{border-color:#f4d98a;background:#fffcf3}
+.pwreset-panel h3{display:flex;align-items:center;gap:8px}
+.pwreset-panel .nav-badge{margin-left:0}
+.pwreset-list{list-style:none;margin:12px 0 0;padding:0;display:grid;gap:8px}
+.pwreset-list li{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;background:#fff;border:1px solid var(--line);border-radius:9px;padding:10px 12px}
+.pwreset-list li>div:first-child{display:grid;gap:2px;min-width:0}
+.pwreset-list .muted{font-size:12px}
+.btn-compact{padding:8px 13px;font-size:12px}

@@ -54,6 +54,32 @@ function Login({ onLogin, tenantSlug, branding }) {
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const [remember, setRemember] = useState(true)
+  const [showPassword, setShowPassword] = useState(false)
+  // "Olvide mi clave": la solicitud le llega al administrador.
+  const [forgot, setForgot] = useState(false)
+  const [forgotSent, setForgotSent] = useState(false)
+
+  async function handleForgot(e) {
+    e.preventDefault()
+    if (loading) return
+    setError('')
+    setLoading(true)
+    try {
+      const response = await fetch('/api/public/password-reset', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email }),
+      })
+      const body = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        setError(body.message === 'too_many_requests' ? 'Demasiadas solicitudes desde esta red. Inténtalo en una hora.' : 'Revisa el correo ingresado.')
+        return
+      }
+      setForgotSent(true)
+    } catch {
+      setError('No se pudo conectar con el servidor')
+    } finally {
+      setLoading(false)
+    }
+  }
 
   async function handleSubmit(e) {
     e.preventDefault()
@@ -91,7 +117,7 @@ function Login({ onLogin, tenantSlug, branding }) {
     ? <img src={branding.logoUrl} alt={brandName || 'Logo'} className="logo-mark logo-mark-image" />
     : <div className="logo-mark">F</div>
 
-  return <main className="login-shell" style={brandStyle}><section className="login-art"><div className="logo-mark">{branding?.logoUrl ? <img src={branding.logoUrl} alt={brandName || 'Logo'} className="logo-mark-image" /> : 'F'}</div><p className="kicker">{brandName ? brandName.toUpperCase() : 'FRACTAL'} · TRAINING OS</p><h1>Aprender. Aplicar.<br /><em>Transformar.</em></h1><p className="art-copy">El espacio operativo donde cada talento convierte conocimiento en resultados visibles.</p><div className="art-foot"><span>01</span><span className="line" /><span>Control de entrenamiento</span></div></section><section className="login-panel"><form className="login-form" onSubmit={handleSubmit}><div className="mobile-logo logo-mark">{logoMark}</div><p className="kicker">Bienvenido de nuevo</p><h2>Ingresa a tu espacio{brandName ? ` · ${brandName}` : ''}</h2><p className="muted">Tu rol se determina automáticamente al autenticarte.</p><label>Correo corporativo<input type="email" placeholder="tu@fractal.com" value={email} onChange={(e) => setEmail(e.target.value)} required /></label><label>Contraseña<div className="password"><input type="password" placeholder="••••••••" value={password} onChange={(e) => setPassword(e.target.value)} required /><span>Mostrar</span></div></label><div className="form-row"><label className="check"><input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} /> Recordarme</label><a href="#forgot">¿Olvidaste tu contraseña?</a></div>{error && <p className="form-error">{error}</p>}<button type="submit" className="primary full" disabled={loading}>{loading ? 'Ingresando…' : <>Entrar <span>→</span></>}</button><p className="login-note">Acceso seguro · Tu información está protegida</p></form></section></main>
+  return <main className="login-shell" style={brandStyle}><section className="login-art"><div className="logo-mark">{branding?.logoUrl ? <img src={branding.logoUrl} alt={brandName || 'Logo'} className="logo-mark-image" /> : 'F'}</div><p className="kicker">{brandName ? brandName.toUpperCase() : 'FRACTAL'} · TRAINING OS</p><h1>Aprender. Aplicar.<br /><em>Transformar.</em></h1><p className="art-copy">El espacio operativo donde cada talento convierte conocimiento en resultados visibles.</p><div className="art-foot"><span>01</span><span className="line" /><span>Control de entrenamiento</span></div></section><section className="login-panel">{forgot ? <form className="login-form" onSubmit={handleForgot}><div className="mobile-logo logo-mark">{logoMark}</div><p className="kicker">Recuperar acceso</p><h2>¿Olvidaste tu contraseña?</h2>{forgotSent ? <><p className="temp-password-box" role="status">Listo. Si <b>{email}</b> está registrado, tu administrador recibió la solicitud y te compartirá un enlace personal para crear una nueva contraseña.</p><button type="button" className="primary full" onClick={() => { setForgot(false); setForgotSent(false) }}>Volver a ingresar</button></> : <><p className="muted">Escribe tu correo. Tu administrador recibirá la solicitud y te enviará un enlace de un solo uso para crear una nueva contraseña.</p><label>Correo corporativo<input type="email" placeholder="tu@fractal.com" value={email} onChange={(e) => setEmail(e.target.value)} required autoFocus /></label>{error && <p className="form-error">{error}</p>}<button type="submit" className="primary full" disabled={loading}>{loading ? 'Enviando…' : 'Enviar solicitud'}</button><button type="button" className="text-button login-back" onClick={() => { setForgot(false); setError('') }}>← Volver a ingresar</button></>}</form> : <form className="login-form" onSubmit={handleSubmit}><div className="mobile-logo logo-mark">{logoMark}</div><p className="kicker">Bienvenido de nuevo</p><h2>Ingresa a tu espacio{brandName ? ` · ${brandName}` : ''}</h2><p className="muted">Tu rol se determina automáticamente al autenticarte.</p><label>Correo corporativo<input type="email" placeholder="tu@fractal.com" value={email} onChange={(e) => setEmail(e.target.value)} required /></label><label>Contraseña<div className="password"><input type={showPassword ? 'text' : 'password'} placeholder="••••••••" value={password} onChange={(e) => setPassword(e.target.value)} required /><button type="button" className="password-toggle" onClick={() => setShowPassword((v) => !v)} aria-pressed={showPassword}>{showPassword ? 'Ocultar' : 'Mostrar'}</button></div></label><div className="form-row"><label className="check"><input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} /> Recordarme</label><button type="button" className="text-button forgot-link" onClick={() => { setForgot(true); setError('') }}>¿Olvidaste tu contraseña?</button></div>{error && <p className="form-error">{error}</p>}<button type="submit" className="primary full" disabled={loading}>{loading ? 'Ingresando…' : <>Entrar <span>→</span></>}</button><p className="login-note">Acceso seguro · Tu información está protegida</p></form>}</section></main>
 }
 
 function LoginGate({ onLogin }) {

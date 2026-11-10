@@ -626,6 +626,46 @@ function InstructorProfileModal({ session, user, onClose, onSaved }) {
 // Valor del filtro de tenant para los super admins (no pertenecen a ninguno).
 const NO_TENANT = 'none'
 
+// "Olvide mi clave": solicitudes pendientes. Generar el enlace lo muestra
+// para copiarlo y compartirlo, y cierra la solicitud.
+function PasswordResetRequests({ token, onLink }) {
+  const { items, reload } = useList('/api/password-reset-requests', token)
+  const [error, setError] = useState('')
+  if (!items.length) return null
+  async function act(request, action) {
+    setError('')
+    try {
+      const res = await apiRequest(`/api/password-reset-requests/${request.id}/${action}`, { method: 'POST', token })
+      if (action === 'link') onLink({ ...res.data, email: request.email, fullName: request.full_name, isReset: true, fromResetRequest: true })
+      reload()
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+  return (
+    <section className="panel pwreset-panel">
+      <h3>Solicitudes de recuperación de clave <span className="nav-badge">{items.length}</span></h3>
+      <p className="muted">Estas personas olvidaron su contraseña. Genera un enlace de un solo uso y compártelo por un canal en el que confíes (WhatsApp, chat interno…).</p>
+      <ErrorNote message={error} />
+      <ul className="pwreset-list">
+        {items.map((r) => (
+          <li key={r.id}>
+            <div>
+              <strong>{r.full_name}</strong>
+              <span className="muted">{r.email} · {r.role_label}{r.tenant_name ? ` · ${r.tenant_name}` : ''}</span>
+              <small className="muted">Pidió el {formatDateTime(r.created_at)}{r.requests > 1 ? ` · ${r.requests} veces` : ''}</small>
+            </div>
+            <div className="row-actions">
+              <button type="button" className="primary btn-compact" onClick={() => act(r, 'link')}>Generar enlace</button>
+              <button type="button" className="btn-mini" onClick={() => act(r, 'dismiss')}>Descartar</button>
+            </div>
+          </li>
+        ))}
+      </ul>
+    </section>
+  )
+}
+
 export function UsersPanel({ session, navParams }) {
   const { token, profile } = session
   const isSuperAdmin = profile.roleCode === 'super_admin'
@@ -698,6 +738,8 @@ export function UsersPanel({ session, navParams }) {
 
   return (
     <div className="admin-wrap">
+      <PasswordResetRequests token={token} onLink={setInvitation} />
+      {invitation?.fromResetRequest && <InvitationLinkBox invitation={invitation} onClose={() => setInvitation(null)} />}
       <section className="panel admin-form-panel">
         <h3>Nuevo usuario</h3>
         <form className="admin-form" onSubmit={handleCreate}>
@@ -720,7 +762,7 @@ export function UsersPanel({ session, navParams }) {
           <button className="primary" disabled={submitting}>{submitting ? 'Creando…' : 'Crear e invitar'}</button>
         </form>
         <p className="muted small-note">No hace falta definir contraseña: se genera un enlace de invitación para que la persona cree la suya.</p>
-        {invitation && <InvitationLinkBox invitation={invitation} onClose={() => setInvitation(null)} />}
+        {invitation && !invitation.fromResetRequest && <InvitationLinkBox invitation={invitation} onClose={() => setInvitation(null)} />}
       </section>
       <section className="panel admin-form-panel">
         <h3>Carga masiva</h3>

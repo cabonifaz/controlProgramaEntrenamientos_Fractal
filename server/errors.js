@@ -31,6 +31,7 @@ const STATUS_BY_SP_MESSAGE = {
   reason_required: 400,
   class_already_passed: 409,
   absence_already_recorded: 409,
+  too_many_requests: 429,
   tenant_not_found: 404,
   target_not_found: 404,
   program_not_found: 404,

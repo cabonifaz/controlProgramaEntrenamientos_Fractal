@@ -40,6 +40,46 @@ export function passwordProblem(password) {
 }
 
 export function registerInvitationRoutes(app) {
+  // "Olvide mi clave": siempre responde lo mismo, exista o no el correo.
+  app.post('/api/public/password-reset', async (req, res) => {
+    const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : ''
+    if (!email || email.length > 190 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ message: 'Invalid request format' })
+    try {
+      await callProcedure('sp_password_reset_request', { p_email: email, p_ip_address: req.ip || null })
+      res.json({ ok: true })
+    } catch (err) {
+      sendError(res, err)
+    }
+  })
+
+  app.get('/api/password-reset-requests', authenticate, async (req, res) => {
+    try {
+      res.json({ data: await callProcedure('sp_password_reset_requests_list', {
+        p_actor_user_id: req.user.id, p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId,
+      }) })
+    } catch (err) {
+      sendError(res, err)
+    }
+  })
+
+  // Genera el enlace de nueva clave y cierra la solicitud.
+  app.post('/api/password-reset-requests/:id/:action', authenticate, async (req, res) => {
+    const requestId = Number(req.params.id)
+    const action = req.params.action
+    if (!Number.isInteger(requestId) || !['link', 'dismiss'].includes(action)) return res.status(400).json({ message: 'Invalid request format' })
+    const actor = { p_actor_user_id: req.user.id, p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId }
+    try {
+      if (action === 'dismiss') {
+        await callProcedure('sp_password_reset_requests_resolve', { ...actor, p_request_id: requestId, p_status: 'dismissed' })
+        return res.json({ ok: true })
+      }
+      const [{ user_id: userId }] = await callProcedure('sp_password_reset_requests_resolve', { ...actor, p_request_id: requestId, p_status: 'resolved' })
+      res.json({ data: await createInvitation(req, userId) })
+    } catch (err) {
+      sendError(res, err)
+    }
+  })
+
   // Enlace nuevo para un usuario: invitacion pendiente/vencida, o para que
   // alguien que perdio el acceso cree una contrasena nueva (reemplaza a las
   // contrasenas temporales).
