@@ -33,6 +33,9 @@ const STATUS_BY_SP_MESSAGE = {
   absence_already_recorded: 409,
   too_many_requests: 429,
   invalid_ticket_type: 400,
+  ai_not_configured: 503,
+  ai_failed: 502,
+  no_comments: 400,
   tenant_not_found: 404,
   target_not_found: 404,
   program_not_found: 404,
@@ -52,6 +55,9 @@ const STATUS_BY_SP_MESSAGE = {
   pre_enrollment_not_pending: 409,
   too_many_requests: 429,
   invalid_ticket_type: 400,
+  ai_not_configured: 503,
+  ai_failed: 502,
+  no_comments: 400,
 }
 
 // Los procedimientos almacenados comunican decisiones de negocio con

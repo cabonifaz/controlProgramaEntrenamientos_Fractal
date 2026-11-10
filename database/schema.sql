@@ -554,6 +554,22 @@ CREATE TABLE IF NOT EXISTS support_ticket_messages (
   CONSTRAINT fk_ticket_msg_author FOREIGN KEY (author_id) REFERENCES users(id)
 );
 
+-- Reportes generados con IA a partir de los comentarios de los alumnos.
+-- filters y content son JSON; content guarda la respuesta estructurada.
+CREATE TABLE IF NOT EXISTS ai_reports (
+  id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+  tenant_id BIGINT UNSIGNED NULL,
+  title VARCHAR(200) NOT NULL,
+  filters JSON NULL,
+  model VARCHAR(80) NOT NULL,
+  comments_count INT NOT NULL DEFAULT 0,
+  content JSON NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  created_by BIGINT UNSIGNED NULL,
+  CONSTRAINT fk_ai_report_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(id),
+  CONSTRAINT fk_ai_report_author FOREIGN KEY (created_by) REFERENCES users(id)
+);
+
 -- ===================================================================
 -- Maestro de maestros: catalogos y valores iniciales (idempotente)
 -- ===================================================================
@@ -849,6 +865,9 @@ DROP PROCEDURE IF EXISTS sp_support_ticket_get;
 DROP PROCEDURE IF EXISTS sp_support_ticket_messages;
 DROP PROCEDURE IF EXISTS sp_support_ticket_reply;
 DROP PROCEDURE IF EXISTS sp_support_ticket_set_status;
+DROP PROCEDURE IF EXISTS sp_ai_reports_create;
+DROP PROCEDURE IF EXISTS sp_ai_reports_list;
+DROP PROCEDURE IF EXISTS sp_ai_reports_get;
 DROP PROCEDURE IF EXISTS sp_pre_enrollments_create;
 DROP PROCEDURE IF EXISTS sp_pre_enrollments_list;
 DROP PROCEDURE IF EXISTS sp_pre_enrollments_resolve;
@@ -5399,6 +5418,47 @@ BEGIN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
   END IF;
   UPDATE support_tickets SET status = p_status, updated_at = NOW(), updated_by = p_actor_user_id WHERE id = p_ticket_id;
+END$$
+
+-- ===================================================================
+-- Reportes con IA (solo admins).
+CREATE PROCEDURE sp_ai_reports_create(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED,
+  IN p_title VARCHAR(200), IN p_filters JSON, IN p_model VARCHAR(80), IN p_comments_count INT, IN p_content JSON
+)
+BEGIN
+  IF p_actor_role NOT IN ('tenant_admin', 'super_admin') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+  INSERT INTO ai_reports (tenant_id, title, filters, model, comments_count, content, created_by)
+  VALUES (p_actor_tenant_id, LEFT(p_title, 200), p_filters, p_model, p_comments_count, p_content, p_actor_user_id);
+  SELECT LAST_INSERT_ID() AS report_id;
+END$$
+
+CREATE PROCEDURE sp_ai_reports_list(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED
+)
+BEGIN
+  IF p_actor_role NOT IN ('tenant_admin', 'super_admin') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+  SELECT r.id, r.title, r.filters, r.model, r.comments_count, r.created_at, u.full_name AS created_by_name
+  FROM ai_reports r LEFT JOIN users u ON u.id = r.created_by
+  WHERE p_actor_role = 'super_admin' OR r.tenant_id <=> p_actor_tenant_id
+  ORDER BY r.created_at DESC
+  LIMIT 100;
+END$$
+
+CREATE PROCEDURE sp_ai_reports_get(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED, IN p_report_id BIGINT UNSIGNED
+)
+BEGIN
+  IF p_actor_role NOT IN ('tenant_admin', 'super_admin') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+  SELECT r.*, u.full_name AS created_by_name
+  FROM ai_reports r LEFT JOIN users u ON u.id = r.created_by
+  WHERE r.id = p_report_id AND (p_actor_role = 'super_admin' OR r.tenant_id <=> p_actor_tenant_id);
 END$$
 
 CREATE PROCEDURE sp_dashboard_get(IN p_user_id BIGINT, IN p_role VARCHAR(80), IN p_tenant_id BIGINT)

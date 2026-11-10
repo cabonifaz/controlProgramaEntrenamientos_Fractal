@@ -19,6 +19,7 @@ import { registerAbsenceRoutes } from './absences.js'
 import { registerPeruHolidayRoutes } from './holidaysPeru.js'
 import { registerSchedulePlannerRoutes } from './schedulePlanner.js'
 import { registerSupportRoutes } from './support.js'
+import { registerAiReportRoutes } from './aiReports.js'
 import { HEX_COLOR, resolvePalette } from '../src/palette.js'
 import {
   uploadMaterialZip, extractMaterialZip, materialDir, removeMaterialDir, describeMaterial,
@@ -228,6 +229,7 @@ registerAbsenceRoutes(app)
 registerPeruHolidayRoutes(app)
 registerSchedulePlannerRoutes(app)
 registerSupportRoutes(app)
+registerAiReportRoutes(app)
 
 app.get('/api/tenants', authenticate, async (req, res) => {
   try {

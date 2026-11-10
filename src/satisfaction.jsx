@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useState, useSyncExternalStore } from 'react'
-import { MessageSquareText, Repeat2, Search } from 'lucide-react'
+import { MessageSquareText, Repeat2, Search, Sparkles } from 'lucide-react'
 import { apiRequest } from './api'
 import { ErrorNote } from './admin.jsx'
+import { AiReportTab } from './aiReport.jsx'
 
 // Satisfaccion de las clases: el alumno reacciona a cada tema ya dictado
 // (1..5 y "que se repita") y deja comentarios cortos sobre un tema, un
@@ -278,7 +279,7 @@ function StatsTable({ title, rows, labelHeader }) {
   )
 }
 
-const SF_TABS = [['summary', 'Resumen'], ['repeat', 'Pedidos de repetir'], ['feedback', 'Comentarios']]
+const SF_TABS = [['summary', 'Resumen'], ['repeat', 'Pedidos de repetir'], ['feedback', 'Comentarios'], ['ai', 'Reporte con IA']]
 
 export function SatisfactionPanel({ session }) {
   const { token } = session
@@ -347,7 +348,7 @@ export function SatisfactionPanel({ session }) {
         <div className="pg-tabs" role="tablist" aria-label="Vista de satisfacción">
           {SF_TABS.map(([key, label]) => (
             <button key={key} type="button" role="tab" aria-selected={tab === key} className={tab === key ? 'pg-tab active' : 'pg-tab'} onClick={() => setTab(key)}>
-              {key === 'repeat' && <Repeat2 size={15} aria-hidden="true" />}{key === 'feedback' && <MessageSquareText size={15} aria-hidden="true" />}{label}
+              {key === 'repeat' && <Repeat2 size={15} aria-hidden="true" />}{key === 'feedback' && <MessageSquareText size={15} aria-hidden="true" />}{key === 'ai' && <Sparkles size={15} aria-hidden="true" />}{label}
             </button>
           ))}
         </div>
@@ -393,6 +394,8 @@ export function SatisfactionPanel({ session }) {
             )}
           </div>
         )}
+
+        {tab === 'ai' && <AiReportTab token={token} programId={programId} feedback={feedback} />}
 
         {tab === 'feedback' && (
           <div className="sf-comments">
