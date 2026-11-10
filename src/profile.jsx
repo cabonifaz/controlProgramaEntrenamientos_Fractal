@@ -63,9 +63,15 @@ function ContactLinks({ profile, showPhone }) {
   )
 }
 
-function StudentCard({ profile, showPhone, onOpen }) {
+function StudentCard({ profile, showPhone, onOpen, showTenant = false }) {
   return (
     <article className="pf-card">
+      {(showTenant || profile.programList?.length > 0) && (
+        <div className="pf-tags">
+          {showTenant && <span className="pf-tag tenant">{profile.tenantName || 'Sin tenant'}</span>}
+          {(profile.programList || []).map((p) => <span key={p.id} className="pf-tag">{p.name}</span>)}
+        </div>
+      )}
       <div className="pf-card-head">
         <Avatar name={profile.fullName} photoUrl={profile.photoUrl} size={52} />
         <div className="pf-card-id">
@@ -94,6 +100,7 @@ function ProfileDetail({ profile, showPhone }) {
       </div>
       {profile.bio ? <p className="pf-bio">{profile.bio}</p> : <p className="muted">Sin descripción.</p>}
       <dl className="pf-dl">
+        {profile.tenantName && <div><dt>Tenant</dt><dd>{profile.tenantName}</dd></div>}
         {profile.programs && <div><dt>Programa</dt><dd>{profile.programs}</dd></div>}
         {profile.components && <div><dt>Componentes</dt><dd>{profile.components}</dd></div>}
         <div><dt>Correo de acceso</dt><dd>{profile.email}</dd></div>
@@ -244,17 +251,34 @@ export function StudentProfilePanel({ session }) {
 export function StudentDirectoryPanel({ session }) {
   const { token, profile: me } = session
   const isInstructor = me.roleCode === 'instructor'
+  const isSuperAdmin = me.roleCode === 'super_admin'
   const showPhone = !isInstructor
   const [items, setItems] = useState(null)
   const [error, setError] = useState('')
   const [query, setQuery] = useState('')
+  const [tenantId, setTenantId] = useState('')
+  const [programId, setProgramId] = useState('')
   const [component, setComponent] = useState('')
+  // Super admin: separados por tenant; admin de tenant: por programa.
+  const [groupBy, setGroupBy] = useState(isSuperAdmin ? 'tenant' : isInstructor ? 'none' : 'program')
   const [open, setOpen] = useState(null)
 
   useEffect(() => {
     apiRequest('/api/students/profiles', { token }).then(({ data }) => setItems(data)).catch((err) => setError(err.message))
   }, [token])
 
+  const tenants = useMemo(() => [...new Map((items || []).map((p) => [p.tenantId ?? 0, p.tenantName || 'Sin tenant'])).entries()]
+    .map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name, 'es')), [items])
+  // Programas con su tenant: dos tenants pueden tener programas con el mismo nombre.
+  const programs = useMemo(() => {
+    const map = new Map()
+    for (const p of items || []) {
+      if (tenantId && String(p.tenantId ?? 0) !== tenantId) continue
+      for (const pr of p.programList || []) map.set(pr.id, { id: pr.id, name: pr.name, tenantName: p.tenantName || 'Sin tenant' })
+    }
+    return [...map.values()].sort((a, b) => a.name.localeCompare(b.name, 'es') || a.tenantName.localeCompare(b.tenantName, 'es'))
+  }, [items, tenantId])
+  const programLabel = (p) => (isSuperAdmin ? `${p.name} · ${p.tenantName}` : p.name)
   const components = useMemo(() => {
     const set = new Set()
     for (const p of items || []) for (const c of (p.components || '').split(' · ').filter(Boolean)) set.add(c)
@@ -264,16 +288,38 @@ export function StudentDirectoryPanel({ session }) {
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
     return (items || []).filter((p) => {
+      if (tenantId && String(p.tenantId ?? 0) !== tenantId) return false
+      if (programId && !(p.programList || []).some((x) => String(x.id) === programId)) return false
       if (component && !(p.components || '').split(' · ').includes(component)) return false
       if (!q) return true
-      return [p.fullName, p.headline, p.city, p.components, p.email].some((v) => (v || '').toLowerCase().includes(q))
+      return [p.fullName, p.email, p.contactEmail, p.headline, p.city, p.components, p.programs, p.tenantName].some((v) => (v || '').toLowerCase().includes(q))
     })
-  }, [items, query, component])
+  }, [items, query, tenantId, programId, component])
 
-  const stats = useMemo(() => {
-    const list = items || []
-    return { total: list.length, github: list.filter((p) => p.githubUrl).length, linkedin: list.filter((p) => p.linkedinUrl).length }
-  }, [items])
+  // Secciones segun la agrupacion (un alumno en dos programas sale en ambos).
+  const sections = useMemo(() => {
+    if (groupBy === 'none') return [{ key: 'all', title: null, items: filtered }]
+    const map = new Map()
+    const add = (key, title, subtitle, p) => {
+      if (!map.has(key)) map.set(key, { key, title, subtitle, items: [] })
+      map.get(key).items.push(p)
+    }
+    for (const p of filtered) {
+      if (groupBy === 'tenant') add(`t${p.tenantId ?? 0}`, p.tenantName || 'Sin tenant', null, p)
+      else {
+        const list = (p.programList || []).filter((x) => !programId || String(x.id) === programId)
+        if (!list.length) add('p0', 'Sin programa', null, p)
+        for (const x of list) add(`p${x.id}`, x.name, isSuperAdmin ? p.tenantName : null, p)
+      }
+    }
+    return [...map.values()].sort((a, b) => (a.key === 'p0') - (b.key === 'p0') || a.title.localeCompare(b.title, 'es'))
+  }, [filtered, groupBy, programId, isSuperAdmin])
+
+  const stats = useMemo(() => ({
+    total: filtered.length, github: filtered.filter((p) => p.githubUrl).length, linkedin: filtered.filter((p) => p.linkedinUrl).length,
+  }), [filtered])
+  const clear = () => { setQuery(''); setTenantId(''); setProgramId(''); setComponent('') }
+  const filtering = query || tenantId || programId || component
 
   return (
     <div className="admin-wrap">
@@ -282,8 +328,8 @@ export function StudentDirectoryPanel({ session }) {
           <div>
             <h3>{isInstructor ? 'Mis alumnos' : 'Alumnos'}</h3>
             <p className="muted">
-              {isInstructor ? 'Alumnos de tus grupos, con sus links para conectar con el talento.' : 'Perfiles de los alumnos del tenant, con sus datos de contacto.'}
-              {items && ` ${stats.total} ${stats.total === 1 ? 'alumno' : 'alumnos'} ·${stats.github} con GitHub · ${stats.linkedin} con LinkedIn.`}
+              {isInstructor ? 'Alumnos de tus grupos, con sus links para conectar con el talento.' : isSuperAdmin ? 'Alumnos de todos los tenants. Fíltralos por tenant y programa, o busca en todos a la vez.' : 'Perfiles de los alumnos del tenant, con sus datos de contacto.'}
+              {items && ` ${stats.total} ${stats.total === 1 ? 'alumno' : 'alumnos'} · ${stats.github} con GitHub · ${stats.linkedin} con LinkedIn.`}
             </p>
           </div>
         </div>
@@ -291,24 +337,59 @@ export function StudentDirectoryPanel({ session }) {
           <label className="pf-search">
             <Search size={15} aria-hidden="true" />
             <span className="sr-only">Buscar alumno</span>
-            <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Buscar por nombre, ciudad, titular…" />
+            <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder={isSuperAdmin ? 'Buscar en todos los tenants: nombre, correo, ciudad, programa…' : 'Buscar por nombre, ciudad, titular…'} />
           </label>
-          {components.length > 1 && (
-            <label className="pf-select">
-              <span className="sr-only">Componente</span>
+          {isSuperAdmin && tenants.length > 1 && (
+            <label className="pf-select"><span className="sr-only">Tenant</span>
+              <select value={tenantId} onChange={(e) => { setTenantId(e.target.value); setProgramId('') }}>
+                <option value="">Todos los tenants</option>
+                {tenants.map((t) => <option key={t.id} value={String(t.id)}>{t.name}</option>)}
+              </select>
+            </label>
+          )}
+          {!isInstructor && programs.length > 0 && (
+            <label className="pf-select"><span className="sr-only">Programa</span>
+              <select value={programId} onChange={(e) => setProgramId(e.target.value)}>
+                <option value="">Todos los programas</option>
+                {programs.map((p) => <option key={p.id} value={String(p.id)}>{programLabel(p)}</option>)}
+              </select>
+            </label>
+          )}
+          {isInstructor && components.length > 1 && (
+            <label className="pf-select"><span className="sr-only">Componente</span>
               <select value={component} onChange={(e) => setComponent(e.target.value)}>
                 <option value="">Todos los componentes</option>
                 {components.map((c) => <option key={c} value={c}>{c}</option>)}
               </select>
             </label>
           )}
+          {!isInstructor && (
+            <label className="pf-select pf-group"><span>Agrupar</span>
+              <select value={groupBy} onChange={(e) => setGroupBy(e.target.value)}>
+                {isSuperAdmin && <option value="tenant">Por tenant</option>}
+                <option value="program">Por programa</option>
+                <option value="none">Sin agrupar</option>
+              </select>
+            </label>
+          )}
+          {filtering && <button type="button" className="btn-mini" onClick={clear}>Limpiar filtros</button>}
         </div>
         <ErrorNote message={error} />
         {!items && !error && <p className="muted">Cargando…</p>}
         {items && !filtered.length && <p className="muted">{items.length ? 'Ningún alumno coincide con la búsqueda.' : 'Todavía no hay alumnos.'}</p>}
-        <div className="pf-cards">
-          {filtered.map((p) => <StudentCard key={p.id} profile={p} showPhone={showPhone} onOpen={setOpen} />)}
-        </div>
+        {sections.map((sec) => (
+          <section key={sec.key} className="pf-section">
+            {sec.title && (
+              <h4 className="pf-section-title">
+                {sec.title}{sec.subtitle && <small> · {sec.subtitle}</small>}
+                <span className="pf-section-count">{sec.items.length}</span>
+              </h4>
+            )}
+            <div className="pf-cards">
+              {sec.items.map((p) => <StudentCard key={`${sec.key}-${p.id}`} profile={p} showPhone={showPhone} showTenant={isSuperAdmin && groupBy !== 'tenant'} onOpen={setOpen} />)}
+            </div>
+          </section>
+        ))}
       </section>
       {open && (
         <Modal title="Perfil del alumno" onClose={() => setOpen(null)} wide>

@@ -48,29 +48,52 @@ const GUIDES = {
   ],
 }
 
-function useNavRect(nav) {
+// Elemento que resalta un paso: un item del menu (nav) o una parte de la
+// pantalla (selector CSS; si hay varios separados por coma, el primero que
+// exista). Sin elemento visible, la tarjeta va centrada.
+function useTargetRect(step) {
   const [rect, setRect] = useState(null)
+  const key = step.nav ? `nav:${step.nav}` : step.selector ? `sel:${step.selector}` : ''
   useLayoutEffect(() => {
-    if (!nav) { setRect(null); return undefined }
+    if (!key) { setRect(null); return undefined }
+    let scrolled = false
     const find = () => {
-      const el = document.querySelector(`[data-nav="${CSS.escape(nav)}"]`)
-      const r = el?.getBoundingClientRect()
-      setRect(r && r.width > 0 && window.innerWidth > 900 ? { top: r.top, left: r.left, width: r.width, height: r.height } : null)
+      const el = step.nav ? document.querySelector(`[data-nav="${CSS.escape(step.nav)}"]`) : document.querySelector(step.selector)
+      if (!el) { setRect(null); return }
+      if (step.selector && !scrolled) { scrolled = true; el.scrollIntoView({ block: 'center', behavior: 'instant' }) }
+      const r = el.getBoundingClientRect()
+      const visible = r.width > 0 && r.height > 0 && (!step.nav || window.innerWidth > 900)
+      setRect(visible ? { top: r.top, left: r.left, width: r.width, height: Math.min(r.height, window.innerHeight - 40), isNav: Boolean(step.nav) } : null)
     }
     find()
-    const t = setTimeout(find, 120)
+    // La pantalla puede estar cargando datos: se reintenta un momento.
+    const timers = [150, 450, 900].map((ms) => setTimeout(find, ms))
     window.addEventListener('resize', find)
-    return () => { clearTimeout(t); window.removeEventListener('resize', find) }
-  }, [nav])
+    return () => { timers.forEach(clearTimeout); window.removeEventListener('resize', find) }
+  }, [key])
   return rect
 }
 
-export function GuideTour({ role, onNavigate, onClose }) {
-  const steps = GUIDES[role] || GUIDES.student
+const CARD_W = 400
+function cardPosition(rect) {
+  if (!rect) return undefined
+  const vw = window.innerWidth
+  const vh = window.innerHeight
+  if (vw < 640) return { left: 16, right: 16, width: 'auto', ...(rect.top + rect.height / 2 > vh / 2 ? { top: 16, bottom: 'auto' } : { bottom: 16, top: 'auto' }) }
+  if (rect.isNav) return { top: Math.min(Math.max(rect.top - 20, 16), vh - 300), left: rect.left + rect.width + 18 }
+  const left = Math.min(Math.max(rect.left, 16), vw - CARD_W - 16)
+  const below = rect.top + rect.height + 14
+  if (below + 260 < vh) return { top: below, left }
+  if (rect.top - 274 > 0) return { top: rect.top - 274, left }
+  return { top: Math.max(16, vh - 290), left: Math.max(16, vw - CARD_W - 24) }
+}
+
+export function GuideTour({ role, steps: customSteps, onNavigate, onClose }) {
+  const steps = customSteps || GUIDES[role] || GUIDES.student
   const [index, setIndex] = useState(0)
   const step = steps[index]
-  const rect = useNavRect(step.nav)
-  useEffect(() => { if (step.nav) onNavigate(step.nav) }, [step.nav, onNavigate])
+  const rect = useTargetRect(step)
+  useEffect(() => { if (step.nav && onNavigate) onNavigate(step.nav) }, [step.nav, onNavigate])
   useEffect(() => {
     const onKey = (e) => {
       if (e.key === 'Escape') onClose()
@@ -82,27 +105,193 @@ export function GuideTour({ role, onNavigate, onClose }) {
   }, [index, steps.length, onClose])
 
   const last = index === steps.length - 1
-  const cardStyle = rect ? { top: Math.min(Math.max(rect.top - 20, 16), window.innerHeight - 280), left: rect.left + rect.width + 18 } : undefined
   return (
-    <div className={rect ? "gd-overlay spotlit" : "gd-overlay"} role="dialog" aria-modal="true" aria-labelledby="gd-title" data-no-capture>
+    <div className={rect ? 'gd-overlay spotlit' : 'gd-overlay'} role="dialog" aria-modal="true" aria-labelledby="gd-title" data-no-capture>
       {rect && <div className="gd-spot" style={{ top: rect.top - 4, left: rect.left - 4, width: rect.width + 8, height: rect.height + 8 }} />}
-      <div className={rect ? 'gd-card anchored' : 'gd-card'} style={cardStyle}>
+      <div className={rect ? 'gd-card anchored' : 'gd-card'} style={cardPosition(rect)}>
         <div className="gd-top">
-          <span className="gd-kicker"><Compass size={13} aria-hidden="true" /> Guía · {index + 1} de {steps.length}</span>
+          <span className="gd-kicker"><Compass size={13} aria-hidden="true" /> {customSteps ? 'Guía de esta pantalla' : 'Guía'} · {index + 1} de {steps.length}</span>
           <button type="button" className="gd-close" onClick={onClose} aria-label="Cerrar guía"><X size={16} aria-hidden="true" /></button>
         </div>
         <h3 id="gd-title">{step.title}</h3>
         <p>{step.text}</p>
         <div className="gd-dots" aria-hidden="true">{steps.map((_, i) => <span key={i} className={i === index ? 'on' : ''} />)}</div>
         <div className="gd-actions">
-          <button type="button" className="text-button" onClick={onClose}>Saltar guía</button>
+          <button type="button" className="text-button" onClick={onClose}>{customSteps ? 'Cerrar' : 'Saltar guía'}</button>
           <div>
             {index > 0 && <button type="button" className="btn-mini" onClick={() => setIndex(index - 1)}><ArrowLeft size={13} aria-hidden="true" /> Anterior</button>}
-            <button type="button" className="primary gd-next" onClick={() => (last ? onClose() : setIndex(index + 1))} autoFocus>{last ? 'Empezar' : <>Siguiente <ArrowRight size={14} aria-hidden="true" /></>}</button>
+            <button type="button" className="primary gd-next" onClick={() => (last ? onClose() : setIndex(index + 1))} autoFocus>{last ? (customSteps ? 'Entendido' : 'Empezar') : <>Siguiente <ArrowRight size={14} aria-hidden="true" /></>}</button>
           </div>
         </div>
       </div>
     </div>
+  )
+}
+
+// ===================================================================
+// Guia paso a paso de cada pantalla (boton "Guía" de la barra superior).
+// Cada paso resalta una parte de la pantalla por su selector.
+const PANEL = '.content .panel, .content .admin-wrap > *'
+const SCREEN_GUIDES = {
+  Inicio: {
+    default: [
+      { selector: '.content .metrics, .content .panel', title: 'Tu resumen', text: 'Aquí ves de un vistazo lo más importante de tu día: indicadores y próximas clases.' },
+      { selector: '.content .action-row, .content .next-class-banner, .content .panel + .panel', title: 'Atajos', text: 'Usa estos accesos para ir directo a lo que más haces. Todo lo demás está en el menú de la izquierda.' },
+      { selector: '.sp-report-btn', title: 'Reportar y guía', text: '“Reportar” envía una incidencia o mejora con captura de la pantalla. “Guía” abre esta ayuda en cualquier pantalla.' },
+    ],
+  },
+  Avance: {
+    default: [
+      { selector: '.pg-title', title: 'Programa', text: 'Si tienes varios programas, elige aquí cuál ver: se abre el más actual.' },
+      { selector: '.pg-board, .pg-summary, ' + PANEL, title: 'Tablero', text: 'Cada componente está en la columna de su estado: pendiente, programado, en curso, atrasado o completado. Toca una tarjeta para entrar.' },
+      { selector: '.pg-card', title: 'Detalle', text: 'Dentro de un componente verás sus temas, el temario y la asistencia. Abre un tema para ver o registrar lo que necesites.' },
+    ],
+  },
+  'Mi horario': {
+    default: [
+      { selector: '.st-next, .st-next-card', title: 'Próximas clases', text: 'Tus 3 clases más cercanas, con fecha y hora.' },
+      { selector: '.st-calendar [role=tablist], .st-calendar', title: 'Vistas', text: 'Cambia entre Semana, Mes y Todo el programa. Usa ← Hoy → para moverte.' },
+      { selector: '.st-event, .st-calendar', title: 'Una clase', text: 'Toca una clase para ver el detalle, abrir el contenido, calificarla o avisar que no asistirás.' },
+    ],
+  },
+  'Mis temas': {
+    default: [
+      { selector: '.st-program-pct', title: 'Avance del programa', text: 'El % de clases ya dictadas en todo el programa.' },
+      { selector: '.st-comp', title: 'Componentes', text: 'Toca un componente para ver sus temas, tu asistencia y tu opinión.' },
+      { selector: '.st-topics', title: 'Calificar', text: 'En “Tu opinión” toca Calificar: elige de 😞 a 🤩 y marca si quieres que se repita.' },
+      { selector: '.st-comp-foot', title: 'Comentar', text: 'Deja un comentario breve sobre el curso o el profesor (lo lee el administrador).' },
+    ],
+  },
+  Asistencia: {
+    student: [
+      { selector: '.st-att-summary', title: 'Tu récord', text: 'Tu % de asistencia, inasistencias, tardanzas y avisos.' },
+      { selector: '.st-upcoming', title: 'Avisar una inasistencia', text: 'Si no podrás ir, toca “Avisar que no asistiré”, escribe el motivo y adjunta una imagen si tienes. Le llega a tu profesor.' },
+      { selector: '.st-record', title: 'Por componente', text: 'Tu asistencia en cada componente del programa.' },
+    ],
+    default: [
+      { selector: '.week-grid, ' + PANEL, title: 'Tus clases', text: 'Elige una clase del calendario o un grupo para abrir su registro de asistencia.' },
+      { selector: '.admin-table', title: 'Registrar', text: 'Todos empiezan como Presente: marca solo ausentes, tardanzas o retiros y guarda.' },
+    ],
+  },
+  'Mis clases': {
+    default: [
+      { selector: '.week-nav, .week-grid', title: 'Calendario semanal', text: 'Tus clases de la semana. Toca una para registrar asistencia.' },
+      { selector: '.admin-table', title: 'Mis grupos', text: 'Abre el temario o el material de cada grupo.' },
+    ],
+  },
+  Temarios: { default: [{ selector: '.admin-table, ' + PANEL, title: 'Temarios', text: 'Elige un grupo para ver su temario con fechas y estados, y abrir el material de cada tema.' }] },
+  Permisos: {
+    student: [
+      { selector: '.admin-form-panel', title: 'Permiso por fechas', text: 'Para ausencias de varios días: fechas, tipo, motivo e imagen opcional.' },
+      { selector: '.admin-table', title: 'Tus solicitudes', text: 'Aquí ves si tu permiso fue aprobado o rechazado. Para una sola clase, avísalo desde Asistencia.' },
+    ],
+    instructor: [
+      { selector: '.content .panel', title: 'Tus avisos', text: 'Tus propios avisos de inasistencia. Para avisar, abre la clase desde Avance.' },
+      { selector: '.admin-table', title: 'Avisos de tus alumnos', text: 'Los avisos de tus alumnos para tus clases, con su evidencia.' },
+    ],
+    default: [{ selector: '.admin-table, ' + PANEL, title: 'Solicitudes', text: 'Aprueba o rechaza permisos y avisos de inasistencia. “Ver evidencia” abre la imagen adjunta.' }],
+  },
+  Alertas: { default: [{ selector: PANEL, title: 'Alertas', text: 'Avisos del sistema para ti: inasistencias, solicitudes, reportes y respuestas. Márcalas como leídas al atenderlas. La campana de arriba tiene un punto rojo cuando hay nuevas.' }] },
+  'Mi perfil': {
+    default: [
+      { selector: '.pf-photo-panel', title: 'Tu foto', text: 'Sube una foto o una imagen que te identifique.' },
+      { selector: '.pf-form', title: 'Tus datos', text: 'GitHub, LinkedIn, portafolio, ciudad y contacto. Tu teléfono solo lo ve el administrador.' },
+      { selector: '.pf-preview', title: 'Vista previa', text: 'Así te ven tus profesores.' },
+    ],
+  },
+  'Mis alumnos': {
+    default: [
+      { selector: '.pf-filters', title: 'Buscar', text: 'Busca por nombre, ciudad o titular y filtra por componente.' },
+      { selector: '.pf-card', title: 'Perfil', text: 'Sus links para conectar con el talento. “Ver perfil” muestra su descripción.' },
+    ],
+  },
+  Alumnos: {
+    default: [
+      { selector: '.pf-filters', title: 'Buscar y filtrar', text: 'Busca en todos los alumnos o filtra por tenant y programa. “Agrupar” los separa por tenant o por programa.' },
+      { selector: '.pf-section-title, .pf-card', title: 'Grupos', text: 'Cada sección muestra cuántos alumnos tiene. Las etiquetas de cada tarjeta indican su tenant y programas.' },
+      { selector: '.pf-card', title: 'Contacto', text: 'Links, correo y teléfono (solo para administradores). “Ver perfil” abre todo el detalle.' },
+    ],
+  },
+  'Mi disponibilidad': {
+    default: [
+      { selector: '.av-presets', title: 'Agregar rápido', text: 'Carga franjas típicas (mañanas, tardes, noches, sábados) en un clic.' },
+      { selector: '.av-days', title: 'Por día', text: 'Ajusta las horas de cada día, agrega o quita franjas.' },
+      { selector: '.av-foot', title: 'Guardar', text: 'Guarda: el administrador generará tus horarios con esta disponibilidad.' },
+    ],
+  },
+  Programas: {
+    default: [
+      { selector: '.admin-form-panel', title: 'Nuevo programa', text: 'Crea el programa con su nombre, cohorte, fechas y colores.' },
+      { selector: '.admin-table', title: 'Estructura', text: '“Ver componentes” → grupos (con su profesor) → temario. Puedes cargar los temas por Excel.' },
+    ],
+  },
+  Usuarios: {
+    default: [
+      { selector: '.pwreset-panel', title: 'Recuperación de clave', text: 'Si alguien olvidó su contraseña, genera aquí su enlace de un solo uso.' },
+      { selector: '.admin-form-panel', title: 'Nuevo usuario', text: 'Crea el usuario: recibirá un enlace para crear su contraseña. También hay carga masiva por Excel.' },
+      { selector: '.admin-table', title: 'Usuarios', text: 'Filtra por tenant y rol, reenvía invitaciones o desactiva cuentas.' },
+    ],
+  },
+  Calendario: {
+    default: [
+      { selector: '.holiday-loader', title: 'Feriados de Perú', text: 'Elige el año y toca “Recargar feriados”. Las clases nunca se programan en feriado.' },
+      { selector: '.holiday-loader + .admin-form-panel', title: 'Otros días', text: 'Agrega a mano los días no laborables que decrete el gobierno.' },
+    ],
+  },
+  Horarios: {
+    default: [
+      { selector: '.sch-head', title: 'Programa', text: 'Elige el programa (se abre el actual).' },
+      { selector: '.sch-instructors', title: '1. Disponibilidad', text: 'Cada profesor debe tener su disponibilidad. Puedes registrarla tú con “Editar disponibilidad”.' },
+      { selector: '.sch-options', title: '2. Reglas', text: 'Fecha de inicio, clases por semana, duración y si los componentes van uno tras otro.' },
+      { selector: '.sch-actions', title: '3. Generar', text: '“Ver vista previa” muestra el resultado; “Generar horarios y fechas” lo guarda y fecha todos los temas.' },
+    ],
+  },
+  Inscripciones: { default: [{ selector: PANEL, title: 'Preinscripciones', text: 'Las personas que se preinscribieron desde la web pública del programa. Confírmalas o recházalas.' }] },
+  'Satisfacción': {
+    default: [
+      { selector: '.sf-kpis', title: 'Indicadores', text: 'Satisfacción promedio, votos, pedidos de repetir y comentarios.' },
+      { selector: '.sf-wrap .pg-tabs', title: 'Pestañas', text: 'Resumen por programa, curso y profesor; pedidos de repetir; comentarios; y el reporte con IA.' },
+    ],
+  },
+  Inasistencias: {
+    default: [
+      { selector: '.ind-wrap .pg-tabs', title: 'Alumnos, profesores y cambios', text: 'Cambia entre las inasistencias de alumnos, las de profesores y el historial de cambios de profesor.' },
+      { selector: '.ind-kpis', title: 'Indicadores', text: 'Cuántos avisaron con anticipación, justificaron después o no justificaron.' },
+      { selector: '.ind-table', title: 'Por persona', text: 'El detalle por alumno o profesor. “Historial” muestra cada inasistencia.' },
+    ],
+  },
+  Soporte: {
+    default: [
+      { selector: '.sp-head', title: 'Soporte', text: 'Incidencias, observaciones y mejoras. Para reportar desde cualquier pantalla usa “Reportar” arriba: se adjunta una captura.' },
+      { selector: '.pf-filters', title: 'Filtrar', text: 'Busca y filtra por estado y tipo.' },
+      { selector: '.sp-item', title: 'Conversación', text: 'Abre un reporte para ver la captura y responder.' },
+    ],
+  },
+  Ayuda: {
+    default: [
+      { selector: '.help-guide', title: 'Guía completa', text: 'Vuelve a ver el recorrido general de la plataforma.' },
+      { selector: '.help-search', title: 'Buscar', text: 'Busca cualquier tema en el manual de tu rol.' },
+      { selector: '.help-toc', title: 'Contenido', text: 'Salta directo a cada sección del manual.' },
+    ],
+  },
+  Tenants: { default: [{ selector: '.admin-form-panel', title: 'Nuevo tenant', text: 'Crea la organización con su slug y contacto.' }, { selector: '.admin-table', title: 'Tenants', text: 'Logo, color, enlace de acceso propio y acceso a sus usuarios.' }] },
+  Reportes: { default: [{ selector: PANEL, title: 'Reportes', text: 'Elige un reporte (asistencia, avance, cumplimiento…) y revisa sus datos.' }] },
+  'Mi cuenta': { default: [{ selector: '.admin-form', title: 'Tu contraseña', text: 'Cámbiala cuando quieras con tu contraseña actual. Si la olvidaste, usa “¿Olvidaste tu contraseña?” en el login.' }] },
+  Configuracion: { default: [{ selector: PANEL, title: 'Configuración', text: 'Marca de tu organización (logo, color, enlace de acceso) y tu contraseña.' }] },
+}
+const ROLE_KEY = { student: 'student', instructor: 'instructor', admin: 'admin', superAdmin: 'admin' }
+
+export function screenGuideSteps(section, role) {
+  const guide = SCREEN_GUIDES[section]
+  return guide ? guide[ROLE_KEY[role]] || guide.default : null
+}
+
+// Boton "Guía" de la barra superior: abre la guia de la pantalla actual.
+export function ScreenGuideButton({ onOpen }) {
+  return (
+    <button type="button" className="icon-button sp-report-btn gd-btn" onClick={onOpen} title="Guía paso a paso de esta pantalla" data-no-capture>
+      <Compass size={18} aria-hidden="true" /><span className="sp-report-label">Guía</span>
+    </button>
   )
 }
 

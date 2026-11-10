@@ -4557,9 +4557,13 @@ BEGIN
   SELECT u.id, u.full_name, u.email, u.is_active, u.public_headline AS headline, u.public_bio AS bio, u.photo_path,
          u.linkedin_url, u.github_url, u.portfolio_url, u.contact_email, u.city,
          CASE WHEN p_actor_role IN ('tenant_admin', 'super_admin') THEN u.phone END AS phone,
-         t.name AS tenant_name,
+         u.tenant_id, t.name AS tenant_name,
          GROUP_CONCAT(DISTINCT p.name ORDER BY p.name SEPARATOR ' · ') AS programs,
-         GROUP_CONCAT(DISTINCT c.name ORDER BY c.name SEPARATOR ' · ') AS components
+         GROUP_CONCAT(DISTINCT c.name ORDER BY c.name SEPARATOR ' · ') AS components,
+         -- Programas como 'id|nombre' (por grupo o por inscripcion al programa;
+         -- para el instructor, solo los de sus grupos) para filtrar por id.
+         GROUP_CONCAT(DISTINCT CONCAT(p.id, '|', p.name) SEPARATOR ';;') AS program_list,
+         GROUP_CONCAT(DISTINCT CONCAT(ep.id, '|', ep.name) SEPARATOR ';;') AS enrolled_program_list
   FROM users u
   JOIN master_catalog_values r ON r.id = u.role_id AND r.code = 'student'
   LEFT JOIN tenants t ON t.id = u.tenant_id
@@ -4568,11 +4572,13 @@ BEGIN
     AND (p_actor_role <> 'instructor' OR g.instructor_id = p_actor_user_id)
   LEFT JOIN components c ON c.id = g.component_id AND c.is_deleted = FALSE
   LEFT JOIN training_programs p ON p.id = c.program_id AND p.is_deleted = FALSE
+  LEFT JOIN program_enrollments pe ON pe.student_id = u.id AND pe.is_deleted = FALSE AND p_actor_role <> 'instructor'
+  LEFT JOIN training_programs ep ON ep.id = pe.program_id AND ep.is_deleted = FALSE
   WHERE u.is_deleted = FALSE
     AND (p_actor_role = 'super_admin' OR u.tenant_id <=> p_actor_tenant_id)
     AND (p_actor_role <> 'instructor' OR u.is_active = TRUE)
   GROUP BY u.id, u.full_name, u.email, u.is_active, u.public_headline, u.public_bio, u.photo_path,
-           u.linkedin_url, u.github_url, u.portfolio_url, u.contact_email, u.city, u.phone, t.name
+           u.linkedin_url, u.github_url, u.portfolio_url, u.contact_email, u.city, u.phone, u.tenant_id, t.name
   HAVING p_actor_role <> 'instructor' OR COUNT(c.id) > 0
   ORDER BY u.full_name;
 END$$

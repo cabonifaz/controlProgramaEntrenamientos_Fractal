@@ -139,7 +139,16 @@ export function registerProfileRoutes(app) {
         data: rows.map((row) => {
           const profile = toProfile(row)
           if (!showPhone) delete profile.phone
-          return { ...profile, isActive: !!row.is_active, tenantName: row.tenant_name, programs: row.programs, components: row.components }
+          const programList = new Map()
+          for (const item of [row.program_list, row.enrolled_program_list].filter(Boolean).join(';;').split(';;').filter(Boolean)) {
+            const [id, ...name] = item.split('|')
+            programList.set(Number(id), name.join('|'))
+          }
+          return {
+            ...profile, isActive: !!row.is_active, tenantId: row.tenant_id, tenantName: row.tenant_name,
+            programs: row.programs, components: row.components,
+            programList: [...programList].map(([id, name]) => ({ id, name })),
+          }
         }),
       })
     } catch (err) {

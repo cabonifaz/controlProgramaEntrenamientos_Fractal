@@ -697,3 +697,18 @@
 @media (max-width:900px){.help-layout{grid-template-columns:1fr}.help-toc{position:static}}
 .gd-overlay.spotlit{background:transparent}
 .gd-overlay.spotlit .gd-spot{box-shadow:0 0 0 3px var(--orange),0 0 0 9999px rgba(6,33,48,.55);background:transparent}
+/* Directorio de alumnos por tenant y programa */
+.pf-tags{display:flex;flex-wrap:wrap;gap:5px}
+.pf-tag{font-size:10.5px;font-weight:700;border-radius:999px;padding:3px 8px;background:#eef1f3;color:#4f616b;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pf-tag.tenant{background:var(--deep);color:#fff}
+.pf-group{display:flex;align-items:center;gap:6px;font-size:11px;font-weight:700;color:#4f616b}
+.pf-group select{min-width:150px}
+.pf-section{margin-top:18px}
+.pf-section-title{display:flex;align-items:center;gap:8px;font:600 16px 'Space Grotesk';margin:0;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.pf-section-title small{font:500 12px 'DM Sans';color:var(--muted)}
+.pf-section-count{margin-left:auto;background:var(--soft);color:var(--deep);border-radius:999px;padding:2px 9px;font-size:11px}
+.pf-section .pf-cards{margin-top:12px}
+@media (max-width:560px){.pf-group,.pf-group select{width:100%}.pf-filters .btn-mini{width:100%}}
+.gd-btn{color:var(--blue) !important}
+.gd-card.anchored{width:min(400px,calc(100vw - 32px))}
+@media (max-width:640px){.gd-card.anchored{width:auto}.top-actions{gap:10px}}
