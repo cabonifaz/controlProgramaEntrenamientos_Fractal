@@ -4,6 +4,7 @@ import { apiBlob, apiDownload, apiRequest, apiUpload } from './api'
 import { CHANGE_REASONS, MyInstructorAbsences } from './indicators.jsx'
 import { formatDay } from './progress.jsx'
 import { ClassroomPanel, JoinButton } from './classroom.jsx'
+import { AiMaterialGenerator } from './aiMaterial.jsx'
 import { buildMaterialPrompt, DEFAULT_PROMPT_OPTIONS, MATERIAL_LEVELS, SKILL_NAME, suggestedBatchSize } from './materialPrompt'
 import { BANNER_STYLES, buildBannerPrompt, DEFAULT_BANNER_OPTIONS } from './bannerPrompt'
 import { DEFAULT_ACCENT, PALETTE_PRESETS, readableTextOn, resolvePalette } from './palette'
@@ -2030,10 +2031,11 @@ function ComponentMaterialBox({ session, componentId }) {
         Un solo ZIP por componente, con un HTML por tema (<code>tema-01.html</code>, <code>tema-02.html</code>…) y las respuestas en <code>soluciones/</code>.
         La clase N del temario de cada grupo abre <code>tema-N</code>. Los alumnos nunca reciben las soluciones.
       </p>
+      {info?.canManage && <AiMaterialGenerator session={session} componentId={componentId} material={material} onPublished={() => setReloadKey((k) => k + 1)} />}
       <div className="excel-import-actions">
         {info?.canManage && (
           <button type="button" className={showPrompt ? 'btn-mini active' : 'btn-mini'} onClick={() => setShowPrompt((v) => !v)}>
-            {showPrompt ? 'Ocultar' : 'Generar material con IA'}
+            {showPrompt ? 'Ocultar' : 'Copiar prompt para otra IA'}
           </button>
         )}
         <a className="btn-mini" href="/api/templates/material">Descargar ZIP de ejemplo</a>

@@ -21,6 +21,7 @@ import { registerSchedulePlannerRoutes } from './schedulePlanner.js'
 import { registerSupportRoutes } from './support.js'
 import { registerAiReportRoutes } from './aiReports.js'
 import { registerClassRoutes } from './classes.js'
+import { registerMaterialJobRoutes } from './materialJobs.js'
 import { HEX_COLOR, resolvePalette } from '../src/palette.js'
 import {
   uploadMaterialZip, extractMaterialZip, materialDir, removeMaterialDir, describeMaterial,
@@ -874,6 +875,8 @@ async function loadMaterialCourse(req, componentId) {
   }
 }
 
+registerMaterialJobRoutes(app, { loadMaterialCourse, importMaterialTemas })
+
 app.get('/api/components/:id/material-prompt', authenticate, async (req, res) => {
   const componentId = Number(req.params.id)
   if (!Number.isInteger(componentId)) return res.status(400).json({ message: 'Invalid request format' })
@@ -938,45 +941,55 @@ app.post('/api/components/:id/material', authenticate, async (req, res) => {
 // acumula por lotes: cada envio agrega/reemplaza temas sobre el contenido
 // ya importado (si el material vigente es un ZIP subido, se empieza de cero).
 // Limite de 25 MB para esta ruta (ver MATERIAL_CONTENT_ROUTE).
+// Agrega (o reemplaza) temas al contenido ya importado del componente, arma
+// las paginas y publica la nueva version. La usan el pegado manual y la
+// generacion automatica con IA (server/materialJobs.js). req solo necesita
+// req.user. Devuelve el reporte; report.imported vacio = no se publico nada.
+export async function importMaterialTemas(req, componentId, temas, originalName = 'Contenido generado con IA') {
+  const actor = { p_actor_user_id: req.user.id, p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId }
+  const course = await loadMaterialCourse(req, componentId)
+  if (course.topics.length === 0) return { report: null, error: 'temario_empty' }
+
+  const [current] = await callProcedure('sp_component_materials_get', { ...actor, p_component_id: componentId })
+  const previousContent = await readMaterialContent(componentId, current?.folder)
+  const { files, content, report } = buildMaterialFromContent({
+    componentName: course.componentName, componentDescription: course.componentDescription,
+    programName: course.programName, tenantName: course.tenant.name,
+    brandColor: course.palette.primary, accentColor: course.palette.accent,
+    logoUrl: course.tenant.logoUrl, classMinutes: course.topics[0].durationMinutes,
+    topics: courseTopics(course.topics),
+  }, previousContent, temas)
+  if (report.imported.length === 0) return { report }
+
+  const folder = `${Date.now()}-${crypto.randomBytes(6).toString('hex')}`
+  try {
+    const bytes = await writeMaterialFiles(componentId, folder, files, content)
+    const [result] = await callProcedure('sp_component_materials_set', {
+      ...actor, p_component_id: componentId, p_folder: folder, p_original_name: originalName,
+      p_size_bytes: bytes, p_topic_file_count: report.available.length, p_solution_file_count: report.available.length,
+    })
+    if (result?.previous_folder) await removeMaterialDir(componentId, result.previous_folder)
+  } catch (err) {
+    await removeMaterialDir(componentId, folder)
+    throw err
+  }
+  return { report }
+}
+
 app.post('/api/components/:id/material/content', authenticate, async (req, res) => {
   const componentId = Number(req.params.id)
   const text = req.body?.content
   if (!Number.isInteger(componentId) || typeof text !== 'string' || !text.trim()) {
     return res.status(400).json({ message: 'Invalid request format' })
   }
-  const actor = { p_actor_user_id: req.user.id, p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId }
 
   try {
-    const course = await loadMaterialCourse(req, componentId)
-    if (course.topics.length === 0) return res.status(409).json({ message: 'temario_empty' })
-
     const { temas, failures } = parsePastedContent(text)
     if (temas.length === 0) return res.status(400).json({ message: 'content_empty', details: failures })
-
-    const [current] = await callProcedure('sp_component_materials_get', { ...actor, p_component_id: componentId })
-    const previousContent = await readMaterialContent(componentId, current?.folder)
-    const { files, content, report } = buildMaterialFromContent({
-      componentName: course.componentName, componentDescription: course.componentDescription,
-      programName: course.programName, tenantName: course.tenant.name,
-      brandColor: course.palette.primary, accentColor: course.palette.accent,
-      logoUrl: course.tenant.logoUrl, classMinutes: course.topics[0].durationMinutes,
-      topics: courseTopics(course.topics),
-    }, previousContent, temas)
+    const { report, error } = await importMaterialTemas(req, componentId, temas)
+    if (error) return res.status(409).json({ message: error })
     report.parseErrors = failures
     if (report.imported.length === 0) return res.status(400).json({ message: 'content_rejected', report })
-
-    const folder = `${Date.now()}-${crypto.randomBytes(6).toString('hex')}`
-    try {
-      const bytes = await writeMaterialFiles(componentId, folder, files, content)
-      const [result] = await callProcedure('sp_component_materials_set', {
-        ...actor, p_component_id: componentId, p_folder: folder, p_original_name: 'Contenido generado con IA',
-        p_size_bytes: bytes, p_topic_file_count: report.available.length, p_solution_file_count: report.available.length,
-      })
-      if (result?.previous_folder) await removeMaterialDir(componentId, result.previous_folder)
-    } catch (err) {
-      await removeMaterialDir(componentId, folder)
-      throw err
-    }
     res.status(201).json({ data: report })
   } catch (err) {
     const { status, message } = mapStoredProcedureError(err)

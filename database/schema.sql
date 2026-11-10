@@ -593,6 +593,33 @@ CREATE TABLE IF NOT EXISTS topic_resources (
   INDEX idx_topic_resource_topic (topic_id)
 );
 
+-- Generacion automatica de material con IA: un trabajo asincrono por
+-- componente (todos sus temas o algunos). topics guarda el estado de cada
+-- tema [{numero, titulo, status, errors}] y options lo que eligio el admin.
+CREATE TABLE IF NOT EXISTS material_jobs (
+  id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+  tenant_id BIGINT UNSIGNED NULL,
+  component_id BIGINT UNSIGNED NOT NULL,
+  status VARCHAR(20) NOT NULL DEFAULT 'queued',
+  topics JSON NOT NULL,
+  options JSON NULL,
+  total INT NOT NULL DEFAULT 0,
+  done_count INT NOT NULL DEFAULT 0,
+  failed_count INT NOT NULL DEFAULT 0,
+  model VARCHAR(80) NULL,
+  error VARCHAR(500) NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  created_by BIGINT UNSIGNED NULL,
+  started_at DATETIME NULL,
+  updated_at DATETIME NULL,
+  finished_at DATETIME NULL,
+  CONSTRAINT fk_material_job_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(id),
+  CONSTRAINT fk_material_job_component FOREIGN KEY (component_id) REFERENCES components(id),
+  CONSTRAINT fk_material_job_author FOREIGN KEY (created_by) REFERENCES users(id),
+  CONSTRAINT chk_material_job_status CHECK (status IN ('queued', 'running', 'done', 'partial', 'failed', 'interrupted')),
+  INDEX idx_material_job_component (component_id, created_at)
+);
+
 -- ===================================================================
 -- Maestro de maestros: catalogos y valores iniciales (idempotente)
 -- ===================================================================
@@ -692,6 +719,7 @@ INSERT IGNORE INTO master_catalog_values (catalog_id, code, label, sort_order) V
   ((SELECT id FROM master_catalogs WHERE code = 'ALERT_TYPE'), 'instructor_absence_notice', 'Aviso de inasistencia del profesor', 17),
   ((SELECT id FROM master_catalogs WHERE code = 'ALERT_TYPE'), 'password_reset_request', 'Solicitud de recuperación de clave', 18),
   ((SELECT id FROM master_catalogs WHERE code = 'ALERT_TYPE'), 'support_ticket', 'Reporte de soporte', 19),
+  ((SELECT id FROM master_catalogs WHERE code = 'ALERT_TYPE'), 'material_ready', 'Material generado con IA', 20),
 
   ((SELECT id FROM master_catalogs WHERE code = 'ALERT_PRIORITY'), 'low', 'Baja', 1),
   ((SELECT id FROM master_catalogs WHERE code = 'ALERT_PRIORITY'), 'medium', 'Media', 2),
@@ -903,6 +931,12 @@ DROP PROCEDURE IF EXISTS sp_topic_resources_list;
 DROP PROCEDURE IF EXISTS sp_topic_resources_add;
 DROP PROCEDURE IF EXISTS sp_topic_resources_remove;
 DROP PROCEDURE IF EXISTS sp_topic_resource_get;
+DROP PROCEDURE IF EXISTS sp_material_jobs_create;
+DROP PROCEDURE IF EXISTS sp_material_jobs_progress;
+DROP PROCEDURE IF EXISTS sp_material_jobs_finish;
+DROP PROCEDURE IF EXISTS sp_material_jobs_list;
+DROP PROCEDURE IF EXISTS sp_material_jobs_get;
+DROP PROCEDURE IF EXISTS sp_material_jobs_interrupt;
 DROP PROCEDURE IF EXISTS sp_pre_enrollments_create;
 DROP PROCEDURE IF EXISTS sp_pre_enrollments_list;
 DROP PROCEDURE IF EXISTS sp_pre_enrollments_resolve;
@@ -5631,6 +5665,100 @@ END$$
 CREATE PROCEDURE sp_topic_resources_remove(IN p_actor_user_id BIGINT UNSIGNED, IN p_resource_id BIGINT UNSIGNED)
 BEGIN
   UPDATE topic_resources SET is_deleted = TRUE, deleted_at = NOW(), deleted_by = p_actor_user_id WHERE id = p_resource_id;
+END$$
+
+-- ===================================================================
+-- Trabajos de generacion de material con IA (los ejecuta el servidor en
+-- segundo plano; ver server/materialJobs.js).
+CREATE PROCEDURE sp_material_jobs_create(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED,
+  IN p_component_id BIGINT UNSIGNED, IN p_topics JSON, IN p_options JSON, IN p_total INT, IN p_model VARCHAR(80)
+)
+BEGIN
+  DECLARE v_tenant_id BIGINT UNSIGNED;
+  SELECT p.tenant_id INTO v_tenant_id FROM components c JOIN training_programs p ON p.id = c.program_id
+  WHERE c.id = p_component_id AND c.is_deleted = FALSE;
+  IF v_tenant_id IS NULL THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'target_not_found';
+  END IF;
+  IF p_actor_role = 'tenant_admin' AND NOT (v_tenant_id <=> p_actor_tenant_id) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
+  ELSEIF p_actor_role NOT IN ('tenant_admin', 'super_admin') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+  IF EXISTS (SELECT 1 FROM material_jobs WHERE component_id = p_component_id AND status IN ('queued', 'running')) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'material_job_running';
+  END IF;
+  INSERT INTO material_jobs (tenant_id, component_id, status, topics, options, total, model, created_by)
+  VALUES (v_tenant_id, p_component_id, 'queued', p_topics, p_options, p_total, p_model, p_actor_user_id);
+  SELECT LAST_INSERT_ID() AS job_id;
+END$$
+
+CREATE PROCEDURE sp_material_jobs_progress(
+  IN p_job_id BIGINT UNSIGNED, IN p_status VARCHAR(20), IN p_topics JSON, IN p_done INT, IN p_failed INT
+)
+BEGIN
+  UPDATE material_jobs
+  SET status = p_status, topics = p_topics, done_count = p_done, failed_count = p_failed,
+      started_at = COALESCE(started_at, NOW()), updated_at = NOW()
+  WHERE id = p_job_id;
+END$$
+
+-- Cierra el trabajo y avisa a quien lo pidio (alerta con el resultado).
+CREATE PROCEDURE sp_material_jobs_finish(
+  IN p_job_id BIGINT UNSIGNED, IN p_status VARCHAR(20), IN p_topics JSON, IN p_done INT, IN p_failed INT, IN p_error VARCHAR(500)
+)
+BEGIN
+  UPDATE material_jobs
+  SET status = p_status, topics = p_topics, done_count = p_done, failed_count = p_failed,
+      error = p_error, finished_at = NOW()
+  WHERE id = p_job_id;
+  INSERT INTO alerts (tenant_id, type_id, priority_id, recipient_user_id, title, description, status_id, source_type, source_id, created_by)
+  SELECT j.tenant_id,
+         (SELECT v.id FROM master_catalog_values v JOIN master_catalogs c ON c.id = v.catalog_id WHERE c.code = 'ALERT_TYPE' AND v.code = 'material_ready'),
+         (SELECT v.id FROM master_catalog_values v JOIN master_catalogs c ON c.id = v.catalog_id WHERE c.code = 'ALERT_PRIORITY' AND v.code = IF(p_status = 'done', 'low', 'medium')),
+         j.created_by,
+         LEFT(CONCAT(IF(p_status = 'done', '✓ Material listo: ', IF(p_status = 'partial', 'Material generado en parte: ', 'No se pudo generar el material: ')), co.name), 200),
+         LEFT(CONCAT(p_done, ' de ', j.total, ' tema(s) generados con IA', IF(p_failed > 0, CONCAT(' · ', p_failed, ' con error (puedes reintentarlos)'), ''), IF(p_error IS NULL, '', CONCAT(' — ', p_error))), 1000),
+         (SELECT v.id FROM master_catalog_values v JOIN master_catalogs c ON c.id = v.catalog_id WHERE c.code = 'ALERT_STATUS' AND v.code = 'open'),
+         'material_job', j.id, j.created_by
+  FROM material_jobs j JOIN components co ON co.id = j.component_id
+  WHERE j.id = p_job_id AND j.created_by IS NOT NULL;
+END$$
+
+CREATE PROCEDURE sp_material_jobs_list(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED, IN p_component_id BIGINT UNSIGNED
+)
+BEGIN
+  IF p_actor_role NOT IN ('tenant_admin', 'super_admin') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+  SELECT j.id, j.component_id, co.name AS component_name, p.name AS program_name, j.status, j.topics, j.total,
+         j.done_count, j.failed_count, j.model, j.error, j.created_at, j.started_at, j.finished_at, u.full_name AS created_by_name
+  FROM material_jobs j
+  JOIN components co ON co.id = j.component_id
+  JOIN training_programs p ON p.id = co.program_id
+  LEFT JOIN users u ON u.id = j.created_by
+  WHERE (p_component_id IS NULL OR j.component_id = p_component_id)
+    AND (p_actor_role = 'super_admin' OR j.tenant_id <=> p_actor_tenant_id)
+  ORDER BY j.created_at DESC, j.id DESC
+  LIMIT 30;
+END$$
+
+CREATE PROCEDURE sp_material_jobs_get(IN p_job_id BIGINT UNSIGNED)
+BEGIN
+  SELECT j.*, u.role_id, r.code AS created_by_role, u.tenant_id AS created_by_tenant
+  FROM material_jobs j LEFT JOIN users u ON u.id = j.created_by LEFT JOIN master_catalog_values r ON r.id = u.role_id
+  WHERE j.id = p_job_id;
+END$$
+
+-- Trabajos sin avance hace 15 minutos (el servidor que los ejecutaba se
+-- reinicio) quedan como interrumpidos; se pueden reintentar. Por tiempo y no
+-- al arrancar: staging y local pueden compartir la base.
+CREATE PROCEDURE sp_material_jobs_interrupt()
+BEGIN
+  UPDATE material_jobs SET status = 'interrupted', finished_at = NOW(), error = 'El servidor se reinició durante la generación'
+  WHERE status IN ('queued', 'running') AND COALESCE(updated_at, created_at) < DATE_SUB(NOW(), INTERVAL 15 MINUTE);
 END$$
 
 CREATE PROCEDURE sp_dashboard_get(IN p_user_id BIGINT, IN p_role VARCHAR(80), IN p_tenant_id BIGINT)
