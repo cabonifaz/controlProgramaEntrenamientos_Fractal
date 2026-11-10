@@ -428,6 +428,59 @@ CREATE TABLE IF NOT EXISTS student_feedback (
   INDEX idx_feedback_student_day (student_id, created_at)
 );
 
+-- Inasistencia de un profesor a una clase. notified_at = cuando aviso (el
+-- propio profesor desde la app, o la fecha que anota el admin); NULL = no
+-- aviso. La justificacion la resuelve el admin. Con esto se mide si avisa
+-- con anticipacion o falta sin avisar y justifica despues.
+CREATE TABLE IF NOT EXISTS instructor_absences (
+  id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+  tenant_id BIGINT UNSIGNED NULL,
+  instructor_id BIGINT UNSIGNED NOT NULL,
+  topic_id BIGINT UNSIGNED NOT NULL,
+  group_id BIGINT UNSIGNED NOT NULL,
+  absence_on DATE NOT NULL,
+  reason VARCHAR(500) NOT NULL,
+  notified_at DATETIME NULL,
+  source VARCHAR(20) NOT NULL,
+  justification VARCHAR(20) NOT NULL DEFAULT 'pending',
+  justification_note VARCHAR(500) NULL,
+  resolved_at DATETIME NULL,
+  resolved_by BIGINT UNSIGNED NULL,
+  substitute_id BIGINT UNSIGNED NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  created_by BIGINT UNSIGNED NULL,
+  deleted_at DATETIME NULL,
+  deleted_by BIGINT UNSIGNED NULL,
+  is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+  CONSTRAINT fk_iabs_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(id),
+  CONSTRAINT fk_iabs_instructor FOREIGN KEY (instructor_id) REFERENCES users(id),
+  CONSTRAINT fk_iabs_topic FOREIGN KEY (topic_id) REFERENCES topics(id),
+  CONSTRAINT fk_iabs_group FOREIGN KEY (group_id) REFERENCES component_groups(id),
+  CONSTRAINT fk_iabs_substitute FOREIGN KEY (substitute_id) REFERENCES users(id),
+  CONSTRAINT chk_iabs_source CHECK (source IN ('instructor', 'admin')),
+  CONSTRAINT chk_iabs_justification CHECK (justification IN ('pending', 'justified', 'unjustified'))
+);
+
+-- Historial de cambios de profesor de un grupo (renuncia, reasignacion...).
+-- Lo registra sp_component_groups_update cuando el grupo ya tenia profesor.
+CREATE TABLE IF NOT EXISTS instructor_changes (
+  id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+  tenant_id BIGINT UNSIGNED NULL,
+  group_id BIGINT UNSIGNED NOT NULL,
+  previous_instructor_id BIGINT UNSIGNED NOT NULL,
+  new_instructor_id BIGINT UNSIGNED NULL,
+  reason_code VARCHAR(30) NOT NULL,
+  note VARCHAR(500) NULL,
+  effective_on DATE NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  created_by BIGINT UNSIGNED NULL,
+  CONSTRAINT fk_ichg_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(id),
+  CONSTRAINT fk_ichg_group FOREIGN KEY (group_id) REFERENCES component_groups(id),
+  CONSTRAINT fk_ichg_previous FOREIGN KEY (previous_instructor_id) REFERENCES users(id),
+  CONSTRAINT fk_ichg_new FOREIGN KEY (new_instructor_id) REFERENCES users(id),
+  CONSTRAINT chk_ichg_reason CHECK (reason_code IN ('resignation', 'absences', 'reassignment', 'performance', 'personal', 'other'))
+);
+
 -- ===================================================================
 -- Maestro de maestros: catalogos y valores iniciales (idempotente)
 -- ===================================================================
@@ -524,6 +577,7 @@ INSERT IGNORE INTO master_catalog_values (catalog_id, code, label, sort_order) V
   ((SELECT id FROM master_catalogs WHERE code = 'ALERT_TYPE'), 'tenant_inactive', 'Tenant inactivo', 14),
   ((SELECT id FROM master_catalogs WHERE code = 'ALERT_TYPE'), 'configuration_error', 'Error de configuracion', 15),
   ((SELECT id FROM master_catalogs WHERE code = 'ALERT_TYPE'), 'absence_notice', 'Aviso de inasistencia del alumno', 16),
+  ((SELECT id FROM master_catalogs WHERE code = 'ALERT_TYPE'), 'instructor_absence_notice', 'Aviso de inasistencia del profesor', 17),
 
   ((SELECT id FROM master_catalogs WHERE code = 'ALERT_PRIORITY'), 'low', 'Baja', 1),
   ((SELECT id FROM master_catalogs WHERE code = 'ALERT_PRIORITY'), 'medium', 'Media', 2),
@@ -697,6 +751,15 @@ DROP PROCEDURE IF EXISTS sp_reactions_list_mine;
 DROP PROCEDURE IF EXISTS sp_reactions_summary;
 DROP PROCEDURE IF EXISTS sp_feedback_create;
 DROP PROCEDURE IF EXISTS sp_feedback_list;
+DROP PROCEDURE IF EXISTS sp_instructor_absences_create;
+DROP PROCEDURE IF EXISTS sp_instructor_absences_resolve;
+DROP PROCEDURE IF EXISTS sp_instructor_absences_cancel;
+DROP PROCEDURE IF EXISTS sp_instructor_absences_list;
+DROP PROCEDURE IF EXISTS sp_instructor_changes_list;
+DROP PROCEDURE IF EXISTS sp_instructor_indicators;
+DROP PROCEDURE IF EXISTS sp_instructor_absence_classes;
+DROP PROCEDURE IF EXISTS sp_student_absence_events;
+DROP PROCEDURE IF EXISTS sp_student_attendance_totals;
 DROP PROCEDURE IF EXISTS sp_pre_enrollments_create;
 DROP PROCEDURE IF EXISTS sp_pre_enrollments_list;
 DROP PROCEDURE IF EXISTS sp_pre_enrollments_resolve;
@@ -1697,12 +1760,14 @@ END$$
 -- otro grupo suyo (misma regla que sp_group_schedule_days_add).
 CREATE PROCEDURE sp_component_groups_update(
   IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED,
-  IN p_group_id BIGINT UNSIGNED, IN p_name VARCHAR(120), IN p_instructor_id BIGINT UNSIGNED
+  IN p_group_id BIGINT UNSIGNED, IN p_name VARCHAR(120), IN p_instructor_id BIGINT UNSIGNED,
+  IN p_change_reason VARCHAR(30), IN p_change_note VARCHAR(500), IN p_effective_on DATE
 )
 BEGIN
   DECLARE v_program_tenant_id BIGINT UNSIGNED;
   DECLARE v_instructor_tenant_id BIGINT UNSIGNED;
   DECLARE v_instructor_role VARCHAR(80);
+  DECLARE v_previous_instructor_id BIGINT UNSIGNED;
 
   SELECT p.tenant_id INTO v_program_tenant_id
   FROM component_groups g JOIN components c ON c.id = g.component_id JOIN training_programs p ON p.id = c.program_id
@@ -1736,6 +1801,16 @@ BEGIN
     ) THEN
       SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'instructor_schedule_conflict';
     END IF;
+  END IF;
+
+  SELECT instructor_id INTO v_previous_instructor_id FROM component_groups WHERE id = p_group_id;
+  IF v_previous_instructor_id IS NOT NULL AND NOT (v_previous_instructor_id <=> p_instructor_id) THEN
+    IF COALESCE(p_change_reason, 'reassignment') NOT IN ('resignation', 'absences', 'reassignment', 'performance', 'personal', 'other') THEN
+      SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'invalid_change_reason';
+    END IF;
+    INSERT INTO instructor_changes (tenant_id, group_id, previous_instructor_id, new_instructor_id, reason_code, note, effective_on, created_by)
+    VALUES (v_program_tenant_id, p_group_id, v_previous_instructor_id, p_instructor_id, COALESCE(p_change_reason, 'reassignment'),
+            NULLIF(TRIM(p_change_note), ''), COALESCE(p_effective_on, CURDATE()), p_actor_user_id);
   END IF;
 
   UPDATE component_groups
@@ -4522,6 +4597,307 @@ BEGIN
   WHERE f.is_deleted = FALSE AND (p_actor_role = 'super_admin' OR f.tenant_id <=> p_actor_tenant_id)
   ORDER BY f.created_at DESC, f.id DESC
   LIMIT 500;
+END$$
+
+-- ===================================================================
+-- Inasistencias y cambios de profesores; inasistencias de alumnos para
+-- los indicadores. "Puntualidad del aviso" (timeliness), igual para ambos:
+--   advance        aviso antes del dia de la clase
+--   same_day       aviso el mismo dia
+--   late_justified sin aviso previo, justificada despues
+--   unjustified    sin aviso ni justificacion (o rechazada)
+CREATE PROCEDURE sp_instructor_absences_create(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED,
+  IN p_topic_id BIGINT UNSIGNED, IN p_reason VARCHAR(500), IN p_notified_at DATETIME,
+  IN p_justification VARCHAR(20), IN p_substitute_id BIGINT UNSIGNED
+)
+BEGIN
+  DECLARE v_group_id BIGINT UNSIGNED;
+  DECLARE v_instructor_id BIGINT UNSIGNED;
+  DECLARE v_tenant_id BIGINT UNSIGNED;
+  DECLARE v_date DATE;
+  DECLARE v_title VARCHAR(180);
+  DECLARE v_component VARCHAR(160);
+  DECLARE v_id BIGINT UNSIGNED;
+
+  IF p_actor_role NOT IN ('instructor', 'tenant_admin', 'super_admin') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+  IF p_reason IS NULL OR CHAR_LENGTH(TRIM(p_reason)) = 0 THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'reason_required';
+  END IF;
+  SELECT g.id, g.instructor_id, p.tenant_id, t.scheduled_on, t.title, c.name
+    INTO v_group_id, v_instructor_id, v_tenant_id, v_date, v_title, v_component
+  FROM topics t
+  JOIN component_groups g ON g.id = t.group_id AND g.is_deleted = FALSE
+  JOIN components c ON c.id = g.component_id
+  JOIN training_programs p ON p.id = c.program_id
+  WHERE t.id = p_topic_id AND t.is_deleted = FALSE;
+  IF v_group_id IS NULL OR v_date IS NULL THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'target_not_found';
+  END IF;
+  IF v_instructor_id IS NULL THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'instructor_invalid';
+  END IF;
+  IF p_actor_role = 'instructor' AND v_instructor_id <> p_actor_user_id THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+  IF p_actor_role = 'instructor' AND v_date < CURDATE() THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'class_already_passed';
+  END IF;
+  IF p_actor_role = 'tenant_admin' AND NOT (v_tenant_id <=> p_actor_tenant_id) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
+  END IF;
+  IF EXISTS (SELECT 1 FROM instructor_absences WHERE topic_id = p_topic_id AND instructor_id = v_instructor_id AND is_deleted = FALSE) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'absence_already_recorded';
+  END IF;
+  IF p_actor_role <> 'instructor' AND p_justification IS NOT NULL AND p_justification NOT IN ('pending', 'justified', 'unjustified') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'invalid_status';
+  END IF;
+
+  INSERT INTO instructor_absences (tenant_id, instructor_id, topic_id, group_id, absence_on, reason, notified_at, source,
+                                   justification, resolved_at, resolved_by, substitute_id, created_by)
+  VALUES (v_tenant_id, v_instructor_id, p_topic_id, v_group_id, v_date, TRIM(p_reason),
+          IF(p_actor_role = 'instructor', NOW(), p_notified_at),
+          IF(p_actor_role = 'instructor', 'instructor', 'admin'),
+          IF(p_actor_role = 'instructor', 'pending', COALESCE(p_justification, 'pending')),
+          IF(p_actor_role <> 'instructor' AND COALESCE(p_justification, 'pending') <> 'pending', NOW(), NULL),
+          IF(p_actor_role <> 'instructor' AND COALESCE(p_justification, 'pending') <> 'pending', p_actor_user_id, NULL),
+          p_substitute_id, p_actor_user_id);
+  SET v_id = LAST_INSERT_ID();
+
+  -- El aviso del propio profesor les llega a los admins del tenant.
+  IF p_actor_role = 'instructor' THEN
+    INSERT INTO alerts (tenant_id, type_id, priority_id, recipient_user_id, title, description, status_id, source_type, source_id, created_by)
+    SELECT v_tenant_id,
+           (SELECT v.id FROM master_catalog_values v JOIN master_catalogs c ON c.id = v.catalog_id WHERE c.code = 'ALERT_TYPE' AND v.code = 'instructor_absence_notice'),
+           (SELECT v.id FROM master_catalog_values v JOIN master_catalogs c ON c.id = v.catalog_id WHERE c.code = 'ALERT_PRIORITY' AND v.code = 'high'),
+           au.id,
+           LEFT(CONCAT(iu.full_name, ' avisó que no dictará su clase'), 200),
+           LEFT(CONCAT(DATE_FORMAT(v_date, '%d/%m'), ' · ', v_component, ': ', v_title, ' — Motivo: ', TRIM(p_reason)), 1000),
+           (SELECT v.id FROM master_catalog_values v JOIN master_catalogs c ON c.id = v.catalog_id WHERE c.code = 'ALERT_STATUS' AND v.code = 'open'),
+           'instructor_absence', v_id, p_actor_user_id
+    FROM users au
+    JOIN master_catalog_values r ON r.id = au.role_id AND r.code = 'tenant_admin'
+    JOIN users iu ON iu.id = v_instructor_id
+    WHERE au.tenant_id <=> v_tenant_id AND au.is_deleted = FALSE AND au.is_active = TRUE;
+  END IF;
+  SELECT v_id AS absence_id;
+END$$
+
+CREATE PROCEDURE sp_instructor_absences_resolve(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED,
+  IN p_absence_id BIGINT UNSIGNED, IN p_justification VARCHAR(20), IN p_note VARCHAR(500)
+)
+BEGIN
+  DECLARE v_tenant_id BIGINT UNSIGNED;
+  DECLARE v_found INT DEFAULT 0;
+  IF p_actor_role NOT IN ('tenant_admin', 'super_admin') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+  IF p_justification NOT IN ('pending', 'justified', 'unjustified') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'invalid_status';
+  END IF;
+  SELECT COUNT(*), MAX(tenant_id) INTO v_found, v_tenant_id FROM instructor_absences WHERE id = p_absence_id AND is_deleted = FALSE;
+  IF v_found = 0 THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'target_not_found';
+  END IF;
+  IF p_actor_role = 'tenant_admin' AND NOT (v_tenant_id <=> p_actor_tenant_id) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
+  END IF;
+  UPDATE instructor_absences
+  SET justification = p_justification, justification_note = NULLIF(TRIM(p_note), ''),
+      resolved_at = IF(p_justification = 'pending', NULL, NOW()), resolved_by = IF(p_justification = 'pending', NULL, p_actor_user_id)
+  WHERE id = p_absence_id;
+END$$
+
+-- El profesor retira su aviso (si la clase no paso); el admin puede
+-- anular cualquier registro de su tenant.
+CREATE PROCEDURE sp_instructor_absences_cancel(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED, IN p_absence_id BIGINT UNSIGNED
+)
+BEGIN
+  DECLARE v_instructor_id BIGINT UNSIGNED;
+  DECLARE v_tenant_id BIGINT UNSIGNED;
+  DECLARE v_date DATE;
+  SELECT instructor_id, tenant_id, absence_on INTO v_instructor_id, v_tenant_id, v_date
+  FROM instructor_absences WHERE id = p_absence_id AND is_deleted = FALSE;
+  IF v_instructor_id IS NULL THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'target_not_found';
+  END IF;
+  IF p_actor_role = 'instructor' AND (v_instructor_id <> p_actor_user_id OR v_date < CURDATE()) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  ELSEIF p_actor_role = 'tenant_admin' AND NOT (v_tenant_id <=> p_actor_tenant_id) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
+  ELSEIF p_actor_role NOT IN ('instructor', 'tenant_admin', 'super_admin') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+  UPDATE instructor_absences SET is_deleted = TRUE, deleted_at = NOW(), deleted_by = p_actor_user_id WHERE id = p_absence_id;
+  UPDATE alerts SET is_deleted = TRUE, deleted_at = NOW(), deleted_by = p_actor_user_id
+  WHERE source_type = 'instructor_absence' AND source_id = p_absence_id AND read_at IS NULL AND is_deleted = FALSE;
+END$$
+
+CREATE PROCEDURE sp_instructor_absences_list(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED
+)
+BEGIN
+  IF p_actor_role NOT IN ('instructor', 'tenant_admin', 'super_admin') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+  SELECT a.id, a.instructor_id, iu.full_name AS instructor_name, a.topic_id, t.title AS topic_title,
+         a.group_id, g.name AS group_name, c.id AS component_id, c.name AS component_name, p.id AS program_id, p.name AS program_name,
+         a.absence_on, a.reason, a.notified_at, a.source, a.justification, a.justification_note, a.resolved_at,
+         a.substitute_id, su.full_name AS substitute_name, a.created_at,
+         CASE
+           WHEN a.notified_at IS NOT NULL AND DATE(a.notified_at) < a.absence_on THEN 'advance'
+           WHEN a.notified_at IS NOT NULL AND DATE(a.notified_at) = a.absence_on THEN 'same_day'
+           WHEN a.justification = 'justified' THEN 'late_justified'
+           ELSE 'unjustified'
+         END AS timeliness
+  FROM instructor_absences a
+  JOIN users iu ON iu.id = a.instructor_id
+  JOIN topics t ON t.id = a.topic_id
+  JOIN component_groups g ON g.id = a.group_id
+  JOIN components c ON c.id = g.component_id
+  JOIN training_programs p ON p.id = c.program_id
+  LEFT JOIN users su ON su.id = a.substitute_id
+  WHERE a.is_deleted = FALSE
+    AND (p_actor_role = 'super_admin' OR a.tenant_id <=> p_actor_tenant_id)
+    AND (p_actor_role <> 'instructor' OR a.instructor_id = p_actor_user_id)
+  ORDER BY a.absence_on DESC, a.id DESC;
+END$$
+
+CREATE PROCEDURE sp_instructor_changes_list(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED
+)
+BEGIN
+  IF p_actor_role NOT IN ('tenant_admin', 'super_admin') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+  SELECT ch.id, ch.group_id, g.name AS group_name, c.name AS component_name, p.id AS program_id, p.name AS program_name,
+         ch.previous_instructor_id, pu.full_name AS previous_instructor_name, ch.new_instructor_id, nu.full_name AS new_instructor_name,
+         ch.reason_code, ch.note, ch.effective_on, ch.created_at, cu.full_name AS created_by_name
+  FROM instructor_changes ch
+  JOIN component_groups g ON g.id = ch.group_id
+  JOIN components c ON c.id = g.component_id
+  JOIN training_programs p ON p.id = c.program_id
+  JOIN users pu ON pu.id = ch.previous_instructor_id
+  LEFT JOIN users nu ON nu.id = ch.new_instructor_id
+  LEFT JOIN users cu ON cu.id = ch.created_by
+  WHERE p_actor_role = 'super_admin' OR ch.tenant_id <=> p_actor_tenant_id
+  ORDER BY ch.effective_on DESC, ch.id DESC;
+END$$
+
+-- Carga de cada profesor (grupos y clases) para relativizar sus faltas.
+CREATE PROCEDURE sp_instructor_indicators(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED
+)
+BEGIN
+  IF p_actor_role NOT IN ('tenant_admin', 'super_admin') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+  SELECT u.id AS instructor_id, u.full_name AS instructor_name, u.is_active,
+         COUNT(DISTINCT g.id) AS groups_count,
+         COUNT(DISTINCT t.id) AS topics_total,
+         COUNT(DISTINCT CASE WHEN t.scheduled_on < CURDATE() THEN t.id END) AS topics_past,
+         COUNT(DISTINCT CASE WHEN sv.code = 'completed' THEN t.id END) AS topics_completed
+  FROM users u
+  JOIN master_catalog_values r ON r.id = u.role_id AND r.code = 'instructor'
+  LEFT JOIN component_groups g ON g.instructor_id = u.id AND g.is_deleted = FALSE
+  LEFT JOIN topics t ON t.group_id = g.id AND t.is_deleted = FALSE
+  LEFT JOIN master_catalog_values sv ON sv.id = t.status_id
+  WHERE u.is_deleted = FALSE AND (p_actor_role = 'super_admin' OR u.tenant_id <=> p_actor_tenant_id)
+  GROUP BY u.id, u.full_name, u.is_active
+  ORDER BY u.full_name;
+END$$
+
+-- Clases (con fecha) sobre las que el admin puede registrar una falta.
+CREATE PROCEDURE sp_instructor_absence_classes(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED
+)
+BEGIN
+  IF p_actor_role NOT IN ('tenant_admin', 'super_admin') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+  SELECT t.id AS topic_id, t.title AS topic_title, t.scheduled_on, g.id AS group_id, g.name AS group_name,
+         c.name AS component_name, p.name AS program_name, g.instructor_id, iu.full_name AS instructor_name
+  FROM topics t
+  JOIN component_groups g ON g.id = t.group_id AND g.is_deleted = FALSE AND g.instructor_id IS NOT NULL
+  JOIN components c ON c.id = g.component_id AND c.is_deleted = FALSE
+  JOIN training_programs p ON p.id = c.program_id AND p.is_deleted = FALSE
+  JOIN users iu ON iu.id = g.instructor_id
+  WHERE t.is_deleted = FALSE AND t.scheduled_on IS NOT NULL
+    AND t.scheduled_on BETWEEN DATE_SUB(CURDATE(), INTERVAL 120 DAY) AND DATE_ADD(CURDATE(), INTERVAL 60 DAY)
+    AND (p_actor_role = 'super_admin' OR p.tenant_id <=> p_actor_tenant_id)
+  ORDER BY iu.full_name, t.scheduled_on;
+END$$
+
+-- Cada inasistencia de alumno (registro de asistencia ausente, ausente
+-- justificado o con permiso) con su aviso, para medir la puntualidad.
+CREATE PROCEDURE sp_student_absence_events(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED
+)
+BEGIN
+  IF p_actor_role NOT IN ('tenant_admin', 'super_admin') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+  SELECT x.*, CASE
+           WHEN x.leave_status IN ('pending', 'approved') AND DATE(x.leave_created_at) < x.class_on THEN 'advance'
+           WHEN x.leave_status IN ('pending', 'approved') AND DATE(x.leave_created_at) = x.class_on THEN 'same_day'
+           WHEN x.attendance_code IN ('justified_absent', 'approved_leave') OR x.leave_status = 'approved' THEN 'late_justified'
+           ELSE 'unjustified'
+         END AS timeliness
+  FROM (
+    SELECT a.id AS attendance_id, a.student_id, su.full_name AS student_name, t.id AS topic_id, t.title AS topic_title,
+           t.scheduled_on AS class_on, c.id AS component_id, c.name AS component_name, p.id AS program_id, p.name AS program_name,
+           iu.full_name AS instructor_name, av.code AS attendance_code, av.label AS attendance_label, a.observations,
+           (SELECT l.id FROM leave_requests l JOIN master_catalog_values ls ON ls.id = l.status_id
+            WHERE l.student_id = a.student_id AND l.is_deleted = FALSE AND ls.code <> 'cancelled'
+              AND (l.topic_id = t.id OR (l.topic_id IS NULL AND t.scheduled_on BETWEEN l.starts_on AND l.ends_on))
+            ORDER BY (ls.code = 'approved') DESC, l.created_at LIMIT 1) AS leave_id,
+           (SELECT ls.code FROM leave_requests l JOIN master_catalog_values ls ON ls.id = l.status_id
+            WHERE l.student_id = a.student_id AND l.is_deleted = FALSE AND ls.code <> 'cancelled'
+              AND (l.topic_id = t.id OR (l.topic_id IS NULL AND t.scheduled_on BETWEEN l.starts_on AND l.ends_on))
+            ORDER BY (ls.code = 'approved') DESC, l.created_at LIMIT 1) AS leave_status,
+           (SELECT l.created_at FROM leave_requests l JOIN master_catalog_values ls ON ls.id = l.status_id
+            WHERE l.student_id = a.student_id AND l.is_deleted = FALSE AND ls.code <> 'cancelled'
+              AND (l.topic_id = t.id OR (l.topic_id IS NULL AND t.scheduled_on BETWEEN l.starts_on AND l.ends_on))
+            ORDER BY (ls.code = 'approved') DESC, l.created_at LIMIT 1) AS leave_created_at,
+           (SELECT l.reason FROM leave_requests l JOIN master_catalog_values ls ON ls.id = l.status_id
+            WHERE l.student_id = a.student_id AND l.is_deleted = FALSE AND ls.code <> 'cancelled'
+              AND (l.topic_id = t.id OR (l.topic_id IS NULL AND t.scheduled_on BETWEEN l.starts_on AND l.ends_on))
+            ORDER BY (ls.code = 'approved') DESC, l.created_at LIMIT 1) AS leave_reason
+    FROM attendance a
+    JOIN master_catalog_values av ON av.id = a.attendance_status_id AND av.code IN ('absent', 'justified_absent', 'approved_leave')
+    JOIN topics t ON t.id = a.topic_id AND t.is_deleted = FALSE AND t.scheduled_on IS NOT NULL
+    JOIN component_groups g ON g.id = t.group_id
+    JOIN components c ON c.id = g.component_id
+    JOIN training_programs p ON p.id = c.program_id
+    JOIN users su ON su.id = a.student_id
+    LEFT JOIN users iu ON iu.id = g.instructor_id
+    WHERE a.is_deleted = FALSE AND (p_actor_role = 'super_admin' OR p.tenant_id <=> p_actor_tenant_id)
+  ) x
+  ORDER BY x.class_on DESC, x.student_name;
+END$$
+
+-- Sesiones registradas y asistidas por alumno (para el % de asistencia).
+CREATE PROCEDURE sp_student_attendance_totals(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED
+)
+BEGIN
+  IF p_actor_role NOT IN ('tenant_admin', 'super_admin') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+  SELECT su.id AS student_id, su.full_name AS student_name,
+         COUNT(a.id) AS sessions, SUM(av.code IN ('present', 'late')) AS attended,
+         SUM(av.code IN ('late', 'left_early')) AS late_or_left
+  FROM users su
+  JOIN master_catalog_values r ON r.id = su.role_id AND r.code = 'student'
+  LEFT JOIN attendance a ON a.student_id = su.id AND a.is_deleted = FALSE
+  LEFT JOIN master_catalog_values av ON av.id = a.attendance_status_id
+  WHERE su.is_deleted = FALSE AND (p_actor_role = 'super_admin' OR su.tenant_id <=> p_actor_tenant_id)
+  GROUP BY su.id, su.full_name
+  ORDER BY su.full_name;
 END$$
 
 CREATE PROCEDURE sp_dashboard_get(IN p_user_id BIGINT, IN p_role VARCHAR(80), IN p_tenant_id BIGINT)

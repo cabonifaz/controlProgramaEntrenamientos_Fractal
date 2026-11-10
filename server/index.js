@@ -678,13 +678,15 @@ app.post('/api/components/:id/groups', authenticate, async (req, res) => {
 
 app.patch('/api/groups/:id', authenticate, async (req, res) => {
   const groupId = Number(req.params.id)
-  const { name, instructorId } = req.body || {}
-  if (!Number.isInteger(groupId)) return res.status(400).json({ message: 'Invalid request format' })
+  const { name, instructorId, changeReason, changeNote, effectiveOn } = req.body || {}
+  if (!Number.isInteger(groupId) || (effectiveOn && !/^\d{4}-\d{2}-\d{2}$/.test(effectiveOn))) return res.status(400).json({ message: 'Invalid request format' })
 
   try {
     await callProcedure('sp_component_groups_update', {
       p_actor_user_id: req.user.id, p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId,
       p_group_id: groupId, p_name: name || '', p_instructor_id: instructorId ?? null,
+      p_change_reason: changeReason || null, p_change_note: typeof changeNote === 'string' ? changeNote.slice(0, 500) : null,
+      p_effective_on: effectiveOn || null,
     })
     res.json({ ok: true })
   } catch (err) {
@@ -2035,6 +2037,7 @@ app.post('/api/programs/:id/full-import', authenticate, async (req, res) => {
           await callProcedure('sp_component_groups_update', {
             p_actor_user_id: req.user.id, p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId,
             p_group_id: groups[0].id, p_name: groups[0].name, p_instructor_id: instructorId,
+            p_change_reason: null, p_change_note: null, p_effective_on: null,
           })
         }
         componentResults.push({ row: row.__row, ok: true, componentId: component.id, name })
