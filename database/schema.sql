@@ -735,6 +735,7 @@ DROP PROCEDURE IF EXISTS sp_tenants_set_contact;
 DROP PROCEDURE IF EXISTS sp_migrate_program_colors_v1;
 DROP PROCEDURE IF EXISTS sp_migrate_leave_topic_v1;
 DROP PROCEDURE IF EXISTS sp_migrate_student_profile_v1;
+DROP PROCEDURE IF EXISTS sp_migrate_onboarding_v1;
 DROP PROCEDURE IF EXISTS sp_programs_set_colors;
 DROP PROCEDURE IF EXISTS sp_components_set_colors;
 DROP PROCEDURE IF EXISTS sp_user_invitations_create;
@@ -868,6 +869,8 @@ DROP PROCEDURE IF EXISTS sp_support_ticket_set_status;
 DROP PROCEDURE IF EXISTS sp_ai_reports_create;
 DROP PROCEDURE IF EXISTS sp_ai_reports_list;
 DROP PROCEDURE IF EXISTS sp_ai_reports_get;
+DROP PROCEDURE IF EXISTS sp_onboarding_get;
+DROP PROCEDURE IF EXISTS sp_onboarding_set;
 DROP PROCEDURE IF EXISTS sp_pre_enrollments_create;
 DROP PROCEDURE IF EXISTS sp_pre_enrollments_list;
 DROP PROCEDURE IF EXISTS sp_pre_enrollments_resolve;
@@ -1037,6 +1040,16 @@ BEGIN
       ADD COLUMN contact_email VARCHAR(190) NULL AFTER portfolio_url,
       ADD COLUMN phone VARCHAR(40) NULL AFTER contact_email,
       ADD COLUMN city VARCHAR(120) NULL AFTER phone;
+  END IF;
+END$$
+
+-- Guia de primer uso: cuando el usuario la termina (o la salta) no vuelve
+-- a mostrarse, en ningun dispositivo.
+CREATE PROCEDURE sp_migrate_onboarding_v1()
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+    WHERE table_schema = DATABASE() AND table_name = 'users' AND column_name = 'onboarding_done_at') THEN
+    ALTER TABLE users ADD COLUMN onboarding_done_at DATETIME NULL AFTER must_change_password;
   END IF;
 END$$
 
@@ -5459,6 +5472,17 @@ BEGIN
   SELECT r.*, u.full_name AS created_by_name
   FROM ai_reports r LEFT JOIN users u ON u.id = r.created_by
   WHERE r.id = p_report_id AND (p_actor_role = 'super_admin' OR r.tenant_id <=> p_actor_tenant_id);
+END$$
+
+CREATE PROCEDURE sp_onboarding_get(IN p_actor_user_id BIGINT UNSIGNED)
+BEGIN
+  SELECT onboarding_done_at FROM users WHERE id = p_actor_user_id;
+END$$
+
+-- p_done = FALSE vuelve a mostrar la guia en el proximo ingreso.
+CREATE PROCEDURE sp_onboarding_set(IN p_actor_user_id BIGINT UNSIGNED, IN p_done BOOLEAN)
+BEGIN
+  UPDATE users SET onboarding_done_at = IF(p_done, NOW(), NULL) WHERE id = p_actor_user_id;
 END$$
 
 CREATE PROCEDURE sp_dashboard_get(IN p_user_id BIGINT, IN p_role VARCHAR(80), IN p_tenant_id BIGINT)

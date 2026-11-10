@@ -110,6 +110,25 @@ export function registerProfileRoutes(app) {
     }
   })
 
+  // Guia de primer uso.
+  app.get('/api/me/onboarding', authenticate, async (req, res) => {
+    try {
+      const [row] = await callProcedure('sp_onboarding_get', { p_actor_user_id: req.user.id })
+      res.json({ data: { done: Boolean(row?.onboarding_done_at) } })
+    } catch (err) {
+      sendError(res, err)
+    }
+  })
+
+  app.post('/api/me/onboarding', authenticate, async (req, res) => {
+    try {
+      await callProcedure('sp_onboarding_set', { p_actor_user_id: req.user.id, p_done: req.body?.done !== false })
+      res.json({ ok: true })
+    } catch (err) {
+      sendError(res, err)
+    }
+  })
+
   app.get('/api/students/profiles', authenticate, async (req, res) => {
     try {
       const rows = await callProcedure('sp_student_profiles_list', {
