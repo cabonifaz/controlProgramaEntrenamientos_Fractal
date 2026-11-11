@@ -999,6 +999,27 @@ app.post('/api/components/:id/material/content', authenticate, async (req, res) 
   }
 })
 
+// Contenido fuente (JSON por tema) del material vigente: permite llevarlo a
+// otro componente o ambiente reenviandolo a POST .../material/content.
+app.get('/api/components/:id/material/content', authenticate, async (req, res) => {
+  const componentId = Number(req.params.id)
+  if (!Number.isInteger(componentId)) return res.status(400).json({ message: 'Invalid request format' })
+
+  try {
+    const [row] = await callProcedure('sp_component_materials_get', {
+      p_actor_user_id: req.user.id, p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId,
+      p_component_id: componentId,
+    })
+    if (!row?.can_manage) return res.status(403).json({ message: 'not_authorized' })
+    const content = await readMaterialContent(componentId, row.folder)
+    const temas = Object.values(content || {}).sort((a, b) => a.numero - b.numero)
+    res.json({ data: { componentId, componentName: row.component_name, temas } })
+  } catch (err) {
+    const { status, message } = mapStoredProcedureError(err)
+    res.status(status).json({ message })
+  }
+})
+
 app.delete('/api/components/:id/material', authenticate, async (req, res) => {
   const componentId = Number(req.params.id)
   if (!Number.isInteger(componentId)) return res.status(400).json({ message: 'Invalid request format' })
