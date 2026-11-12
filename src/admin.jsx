@@ -2619,6 +2619,63 @@ export function PreEnrollmentsPanel({ session }) {
   )
 }
 
+// Datos del programa (nombre, cohorte, descripcion, modalidad y fechas).
+// Cambiar las fechas no mueve los temas: se reprograman en Horarios.
+function ProgramEditModal({ session, program, modalities, onClose, onSaved }) {
+  const { token } = session
+  const day = (v) => (v ? String(v).slice(0, 10) : '')
+  const [form, setForm] = useState({
+    name: program.name || '', cohort: program.cohort || '', description: program.description || '',
+    modalityCode: program.modality_code || '', startsOn: day(program.starts_on), endsOn: day(program.ends_on),
+  })
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const set = (k) => (e) => setForm({ ...form, [k]: e.target.value })
+  const datesChanged = form.startsOn !== day(program.starts_on) || form.endsOn !== day(program.ends_on)
+  const badRange = form.startsOn && form.endsOn && form.startsOn > form.endsOn
+
+  async function save(e) {
+    e.preventDefault()
+    setSaving(true)
+    setError('')
+    try {
+      await apiRequest(`/api/programs/${program.id}`, { method: 'PATCH', token, body: form })
+      onSaved()
+      onClose()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Modal title={`Editar programa — ${program.name}`} onClose={onClose}>
+      <form className="admin-form program-edit-form" onSubmit={save}>
+        {program.tenant_name && <p className="muted full-field">Tenant: <strong>{program.tenant_name}</strong></p>}
+        <label>Nombre<input value={form.name} onChange={set('name')} required maxLength={180} /></label>
+        <label>Cohorte<input value={form.cohort} onChange={set('cohort')} required maxLength={80} /></label>
+        <label className="full-field">Descripción<textarea rows={3} value={form.description} onChange={set('description')} /></label>
+        <label>Modalidad
+          <select value={form.modalityCode} onChange={set('modalityCode')}>
+            <option value="">Sin definir</option>
+            {modalities.map((m) => <option key={m.code} value={m.code}>{m.label}</option>)}
+          </select>
+        </label>
+        <label>Inicio<input type="date" value={form.startsOn} onChange={set('startsOn')} /></label>
+        <label>Fin<input type="date" value={form.endsOn} onChange={set('endsOn')} min={form.startsOn || undefined} /></label>
+        {badRange && <p className="form-error full-field">La fecha de inicio no puede ser posterior a la de fin.</p>}
+        {datesChanged && !badRange && <p className="muted small-note full-field">Cambiar las fechas no mueve las clases ya programadas. Para reprogramarlas desde el nuevo inicio, usa Horarios → “Generar horarios y fechas”.</p>}
+        <ErrorNote message={error} />
+        <div className="full-field row-actions">
+          <button type="button" className="secondary" onClick={onClose}>Cancelar</button>
+          <button className="primary" disabled={saving || badRange}>{saving ? 'Guardando…' : 'Guardar cambios'}</button>
+        </div>
+      </form>
+    </Modal>
+  )
+}
+
 export function ProgramsPanel({ session }) {
   const { token, profile } = session
   const isSuperAdmin = profile.roleCode === 'super_admin'
@@ -2632,6 +2689,7 @@ export function ProgramsPanel({ session }) {
   const [selectedProgram, setSelectedProgram] = useState(null)
   const [publicProgram, setPublicProgram] = useState(null)
   const [colorsProgram, setColorsProgram] = useState(null)
+  const [editProgram, setEditProgram] = useState(null)
   // Marca del tenant del programa nuevo: es lo que se hereda si no se elige paleta.
   const newProgramTenantBrand = isSuperAdmin
     ? tenants.find((t) => String(t.id) === String(form.tenantId))?.brand_color
@@ -2715,12 +2773,13 @@ export function ProgramsPanel({ session }) {
         <h3>Programas{isSuperAdmin ? ' (todos los tenants)' : ''}</h3>
         <ErrorNote message={error} />
         {loading ? <p className="muted">Cargando…</p> : (
+          <div className="table-fit">
           <table className="admin-table">
             <thead><tr><th>Nombre</th><th>Cohorte</th><th>Estado</th><th>Fechas</th><th>Web pública</th><th></th></tr></thead>
             <tbody>
               {items.map((p) => (
                 <tr key={p.id}>
-                  <td>{p.name}</td>
+                  <td>{p.name}{isSuperAdmin && p.tenant_name && <small className="muted program-tenant">{p.tenant_name}</small>}</td>
                   <td>{p.cohort}</td>
                   <td>
                     <select value={p.status_code} onChange={(e) => changeStatus(p, e.target.value)}>
@@ -2733,6 +2792,7 @@ export function ProgramsPanel({ session }) {
                     {Number(p.pending_pre_enrollments) > 0 && <span className="pill pill-warn">{p.pending_pre_enrollments} por confirmar</span>}
                   </td>
                   <td className="row-actions">
+                    <button className="btn-mini" onClick={() => setEditProgram(p)}>Editar</button>
                     <button className="btn-mini" onClick={() => setSelectedProgram(p)}>Ver componentes</button>
                     <button className="btn-mini" onClick={() => setPublicProgram(p)}>Web pública</button>
                     <button className="btn-mini btn-with-swatch" onClick={() => setColorsProgram(p)}>
@@ -2743,8 +2803,10 @@ export function ProgramsPanel({ session }) {
               ))}
             </tbody>
           </table>
+          </div>
         )}
       </section>
+      {editProgram &&<ProgramEditModal session={session} program={editProgram} modalities={modalities} onClose={() => setEditProgram(null)} onSaved={reload} />}
       {publicProgram && <ProgramPublicModal session={session} program={publicProgram} onClose={() => setPublicProgram(null)} onSaved={reload} />}
       {colorsProgram && (
         <Modal title={`Colores — ${colorsProgram.name}`} onClose={() => setColorsProgram(null)}>

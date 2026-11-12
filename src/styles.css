@@ -1092,3 +1092,5 @@ input[type=file]:focus-visible{outline:3px solid #066b9c59;outline-offset:2px;bo
 p.sch-warn{margin:0 0 10px}
 @media (max-width:640px){.sch-pickers,.sch-pickers .pf-select,.sch-pickers select{width:100%}.sch-assign select{min-width:0;width:100%}.sch-closed{flex-wrap:wrap}}
 .sch-head>.sch-pickers{flex:0 1 auto;display:flex}
+.program-tenant{display:block;font-size:12px;margin-top:2px}
+.program-edit-form .row-actions{justify-content:flex-end;gap:8px}

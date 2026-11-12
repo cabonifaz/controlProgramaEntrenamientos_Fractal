@@ -101,11 +101,15 @@ function initials(name) {
 }
 
 function TopBar({ tenant, enrollHref, enrollmentOpen, homeHref }) {
+  // Con logo basta el logo; el nombre solo acompaña a la inicial cuando no hay (o no carga).
+  const [logoFailed, setLogoFailed] = useState(false)
+  const showLogo = tenant.logoUrl && !logoFailed
   return (
     <header className="pp-top">
-      <a className="pp-brand" href={homeHref}>
-        <ImageOr src={tenant.logoUrl} alt={tenant.name} fallback={<span className="pp-brand-mark">{tenant.name.slice(0, 1)}</span>} />
-        <strong>{tenant.name}</strong>
+      <a className="pp-brand" href={homeHref} aria-label={tenant.name}>
+        {showLogo
+          ? <img src={tenant.logoUrl} alt={tenant.name} onError={() => setLogoFailed(true)} />
+          : <><span className="pp-brand-mark">{tenant.name.slice(0, 1)}</span><strong>{tenant.name}</strong></>}
       </a>
       {enrollHref && enrollmentOpen && <a className="pp-cta pp-cta-small" href={enrollHref}>Preinscríbete</a>}
     </header>

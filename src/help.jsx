@@ -232,7 +232,7 @@ const SCREEN_GUIDES = {
   Programas: {
     default: [
       { selector: '.admin-form-panel', title: 'Nuevo programa', text: 'Crea el programa con su nombre, cohorte, fechas y colores.' },
-      { selector: '.admin-table', title: 'Estructura', text: '“Ver componentes” → grupos (con su profesor) → temario. Puedes cargar los temas por Excel.' },
+      { selector: '.admin-table', title: 'Estructura', text: '“Editar” cambia nombre, cohorte, descripción, modalidad y fechas. “Ver componentes” → grupos (con su profesor) → temario. Puedes cargar los temas por Excel.' },
     ],
   },
   Usuarios: {

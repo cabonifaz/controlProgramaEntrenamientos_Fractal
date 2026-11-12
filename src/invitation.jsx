@@ -87,10 +87,10 @@ export function InvitationApp({ token }) {
     <main className="invite-shell" style={{ '--brand': brand, '--on-brand': readableTextOn(brand) }}>
       <section className="invite-card">
         <div className="invite-brand">
+          {/* Con logo basta el logo; sin logo, inicial + nombre. */}
           {data?.tenant?.logoUrl && !logoFailed
             ? <img src={data.tenant.logoUrl} alt={data.tenant.name} onError={() => setLogoFailed(true)} />
-            : <span className="invite-brand-mark">{(data?.tenant?.name || 'F').slice(0, 1)}</span>}
-          <strong>{data?.tenant?.name || 'Fractal Training'}</strong>
+            : <><span className="invite-brand-mark">{(data?.tenant?.name || 'F').slice(0, 1)}</span><strong>{data?.tenant?.name || 'Fractal Training'}</strong></>}
         </div>
 
         {state.status === 'loading' && <p className="muted">Cargando…</p>}

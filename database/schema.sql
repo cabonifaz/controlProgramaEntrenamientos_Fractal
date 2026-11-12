@@ -1775,6 +1775,9 @@ BEGIN
     SELECT v.id INTO v_modality_id FROM master_catalog_values v JOIN master_catalogs c ON c.id = v.catalog_id
     WHERE c.code = 'CLASS_MODALITY' AND v.code = p_modality_code;
   END IF;
+  IF p_starts_on IS NOT NULL AND p_ends_on IS NOT NULL AND p_starts_on > p_ends_on THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'invalid_date_range';
+  END IF;
 
   UPDATE training_programs
   SET name = p_name, description = p_description, cohort = p_cohort, modality_id = v_modality_id,
