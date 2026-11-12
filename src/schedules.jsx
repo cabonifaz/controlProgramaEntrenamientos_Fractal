@@ -1,13 +1,14 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
-import { AlertTriangle, CalendarCog, CheckCircle2, Clock, Plus, Trash2, Wand2 } from 'lucide-react'
+import { AlertTriangle, CalendarCog, CheckCircle2, Clock, Lock, LockOpen, Plus, Trash2, UserCog, Wand2 } from 'lucide-react'
 import { apiRequest } from './api'
 import { ErrorNote, Modal } from './admin.jsx'
 import { formatDay, programOptionLabel, withPeriod } from './progress.jsx'
 
-// Disponibilidad semanal de los profesores y generacion automatica de los
-// horarios de un programa (dias/hora de cada grupo y fechas de sus temas,
-// saltando los feriados del tenant). La logica vive en
-// server/schedulePlanner.js; aqui se edita y se muestra.
+// Disponibilidad de los profesores POR PROGRAMA y generacion automatica de
+// los horarios de un programa (dias/hora de cada grupo y fechas de sus
+// temas, saltando los feriados del tenant y sin cruces). La logica vive en
+// server/schedulePlanner.js; aqui se edita y se muestra. Super admin y admin
+// del tenant usan la misma pantalla (el super admin elige el tenant).
 
 const DAYS = [
   { weekday: 1, label: 'Lunes', short: 'Lun' },
@@ -27,6 +28,9 @@ const PRESETS = [
   { label: 'Sábados', days: [6], start: '09:00', end: '13:00' },
 ]
 const day = (iso) => (iso ? formatDay(iso, { weekday: false }) : '—')
+const when = (value) => (value ? new Date(String(value).replace(' ', 'T')).toLocaleDateString('es-PE', { day: 'numeric', month: 'short', year: 'numeric' }) : '')
+// withPeriod ordena (actual, proximos, pasados) pero devuelve solo lo basico: se conserva el resto.
+const sortByPeriod = (list) => withPeriod(list, new Date().toISOString().slice(0, 10)).map((p) => ({ ...list.find((x) => x.id === p.id), ...p }))
 export const slotsText = (slots) => (slots || []).map((s) => `${SHORT[s.weekday]} ${s.start}–${s.end}`).join(' · ')
 
 // Disponibilidad compacta: los dias con la misma franja juntos ('Lun–Vie 08:00–13:00').
@@ -59,9 +63,14 @@ function hoursOf(blocks) {
   return Math.round(minutes / 6) / 10
 }
 
+function LockedNote({ children }) {
+  return <p className="sch-locked" role="status"><Lock size={15} aria-hidden="true" /> <span>{children}</span></p>
+}
+
 // ===================================================================
-// Editor de disponibilidad (lo usan el profesor y el admin).
-export function AvailabilityEditor({ token, instructorId, initialBlocks, onSaved }) {
+// Editor de disponibilidad de un profesor en un programa (lo usan el
+// profesor, el admin y el super admin). locked = horario cerrado: solo lectura.
+export function AvailabilityEditor({ token, instructorId, programId, initialBlocks, onSaved, locked }) {
   const [blocks, setBlocks] = useState(() => (initialBlocks || []).map((b, i) => ({ ...b, key: i })))
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -82,7 +91,7 @@ export function AvailabilityEditor({ token, instructorId, initialBlocks, onSaved
     setError('')
     setSaved('')
     try {
-      await apiRequest(`/api/availability/${instructorId}`, { method: 'PUT', token, body: { blocks: blocks.map(({ weekday, start, end }) => ({ weekday, start, end })) } })
+      await apiRequest(`/api/availability/${instructorId}`, { method: 'PUT', token, body: { programId, blocks: blocks.map(({ weekday, start, end }) => ({ weekday, start, end })) } })
       setSaved('Disponibilidad guardada.')
       onSaved?.(blocks)
     } catch (err) {
@@ -90,6 +99,15 @@ export function AvailabilityEditor({ token, instructorId, initialBlocks, onSaved
     } finally {
       setSaving(false)
     }
+  }
+
+  if (locked) {
+    return (
+      <div className="av-editor">
+        <LockedNote>El horario de este programa ya se cerró: la disponibilidad no se puede cambiar.</LockedNote>
+        <p className="av-readonly">{blocks.length ? compactBlocks(blocks) : 'No se registró disponibilidad.'}</p>
+      </div>
+    )
   }
 
   const invalid = blocks.some((b) => !b.start || !b.end || b.start >= b.end)
@@ -123,7 +141,7 @@ export function AvailabilityEditor({ token, instructorId, initialBlocks, onSaved
         })}
       </ul>
       <div className="av-foot">
-        <span className="muted">{blocks.length ? `${hoursOf(blocks)} h por semana en ${new Set(blocks.map((b) => b.weekday)).size} día(s)` : 'Sin franjas: el generador no podrá asignarte grupos.'}</span>
+        <span className="muted">{blocks.length ? `${hoursOf(blocks)} h por semana en ${new Set(blocks.map((b) => b.weekday)).size} día(s)` : 'Sin franjas: el generador no podrá programar sus grupos.'}</span>
         <div className="row-actions">
           {saved && <span className="av-saved" role="status"><CheckCircle2 size={14} aria-hidden="true" /> {saved}</span>}
           <button type="button" className="primary" onClick={save} disabled={saving || invalid}>{saving ? 'Guardando…' : 'Guardar disponibilidad'}</button>
@@ -135,36 +153,62 @@ export function AvailabilityEditor({ token, instructorId, initialBlocks, onSaved
   )
 }
 
-// Profesor: "Mi disponibilidad".
+// Profesor: "Mi disponibilidad" en cada programa donde le asignaron un curso.
 export function MyAvailabilityPanel({ session }) {
   const { token, profile } = session
-  const [blocks, setBlocks] = useState(null)
+  const [programs, setPrograms] = useState(null)
+  const [programId, setProgramId] = useState('')
   const [error, setError] = useState('')
-  useEffect(() => {
+  const load = useCallback(() => {
     apiRequest('/api/availability', { token })
-      .then(({ data }) => setBlocks(data.find((a) => a.instructorId === profile.id)?.blocks || []))
+      .then(({ data }) => {
+        const mine = sortByPeriod(data.filter((a) => a.instructorId === profile.id).map((a) => ({ ...a, id: a.programId, name: a.programName, starts_on: a.startsOn, ends_on: a.endsOn })))
+        setPrograms(mine)
+        setProgramId((current) => current || String(mine[0]?.programId || ''))
+      })
       .catch((err) => setError(err.message))
   }, [token, profile.id])
+  useEffect(() => { load() }, [load])
+  const current = programs?.find((p) => String(p.programId) === programId)
   return (
     <div className="admin-wrap">
       <section className="panel">
-        <h3>Mi disponibilidad</h3>
-        <p className="muted">Indica los días y horas en que puedes dictar. El administrador genera los horarios de los cursos a partir de esta disponibilidad, sin cruzarte clases y saltando los feriados.</p>
+        <div className="sch-head">
+          <div>
+            <h3>Mi disponibilidad</h3>
+            <p className="muted">Indica, para cada programa, los días y horas en que puedes dictar. Con esto se genera el horario de tus cursos sin cruzarte clases y saltando los feriados. Cuando el horario se cierra, ya no se puede cambiar.</p>
+          </div>
+          {programs?.length > 1 && (
+            <label className="pf-select"><span className="sr-only">Programa</span>
+              <select value={programId} onChange={(e) => setProgramId(e.target.value)}>
+                {programs.map((p) => <option key={p.programId} value={String(p.programId)}>{programOptionLabel(p)}{p.locked ? ' · cerrado' : ''}</option>)}
+              </select>
+            </label>
+          )}
+        </div>
         <ErrorNote message={error} />
-        {blocks === null ? !error && <p className="muted">Cargando…</p> : <AvailabilityEditor token={token} instructorId={profile.id} initialBlocks={blocks} />}
+        {programs === null ? !error && <p className="muted">Cargando…</p>
+          : !programs.length ? <p className="muted">Aún no te asignaron cursos. Cuando el administrador te asigne uno, aquí registras tu disponibilidad para ese programa.</p>
+          : current && (
+            <>
+              <p className="sch-program-line"><strong>{current.programName}</strong> <span className="muted">· {current.groupCount} grupo{current.groupCount === 1 ? '' : 's'} a tu cargo</span></p>
+              <AvailabilityEditor key={current.programId} token={token} instructorId={profile.id} programId={current.programId} initialBlocks={current.blocks} locked={current.locked} onSaved={load} />
+            </>
+          )}
       </section>
     </div>
   )
 }
 
 // ===================================================================
-// Admin: "Horarios".
+// Admin y super admin: "Horarios".
 export function SchedulePlannerPanel({ session }) {
-  const { token } = session
+  const { token, profile } = session
+  const isSuperAdmin = profile?.roleCode === 'super_admin'
   const [programs, setPrograms] = useState(null)
+  const [tenantId, setTenantId] = useState('')
   const [programId, setProgramId] = useState('')
   const [data, setData] = useState(null)
-  const [availability, setAvailability] = useState([])
   const [options, setOptions] = useState({ startDate: '', sessionsPerWeek: 3, sessionMinutes: 180, mode: 'sequence' })
   const [preview, setPreview] = useState(null)
   const [applied, setApplied] = useState(null)
@@ -172,26 +216,35 @@ export function SchedulePlannerPanel({ session }) {
   const [error, setError] = useState('')
   const [editing, setEditing] = useState(null)
   const [holidayMsg, setHolidayMsg] = useState('')
+  const [assigning, setAssigning] = useState(null)
 
   useEffect(() => {
     apiRequest('/api/programs', { token }).then(({ data }) => {
-      const list = withPeriod(data || [], new Date().toISOString().slice(0, 10))
+      const list = sortByPeriod((data || []).filter((p) => (p.program_type || 'training') === 'training' && !['archived', 'cancelled'].includes(p.status_code)))
       setPrograms(list)
+      setTenantId(String(list[0]?.tenant_id || ''))
       setProgramId(String(list[0]?.id || ''))
     }).catch((err) => setError(err.message))
   }, [token])
+
+  const tenants = useMemo(() => {
+    const map = new Map()
+    for (const p of programs || []) if (!map.has(p.tenant_id)) map.set(p.tenant_id, p.tenant_name || `Tenant ${p.tenant_id}`)
+    return [...map.entries()].map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name))
+  }, [programs])
+  const tenantPrograms = useMemo(() => (programs || []).filter((p) => !isSuperAdmin || String(p.tenant_id) === tenantId), [programs, tenantId, isSuperAdmin])
+  function chooseTenant(id) {
+    setTenantId(id)
+    setProgramId(String((programs || []).find((p) => String(p.tenant_id) === id)?.id || ''))
+  }
 
   const load = useCallback(async () => {
     if (!programId) return
     setError('')
     try {
-      const [planner, avail] = await Promise.all([
-        apiRequest(`/api/schedule-planner/${programId}`, { token }),
-        apiRequest('/api/availability', { token }),
-      ])
-      setData(planner.data)
-      setAvailability(avail.data)
-      setOptions((o) => ({ ...o, startDate: o.startDate || planner.data.defaultStart }))
+      const { data: planner } = await apiRequest(`/api/schedule-planner/${programId}`, { token })
+      setData(planner)
+      setOptions((o) => ({ ...o, startDate: o.startDate || planner.defaultStart }))
     } catch (err) {
       setError(err.message)
     }
@@ -214,7 +267,7 @@ export function SchedulePlannerPanel({ session }) {
   }
 
   async function apply() {
-    if (!window.confirm('Se reemplazará el horario semanal de los grupos listos y se recalcularán las fechas de sus temas pendientes o programados (los temas ya dictados no se tocan). ¿Continuar?')) return
+    if (!window.confirm('Se reemplazará el horario semanal de los grupos listos y se fijarán las fechas de sus temas pendientes o programados (los temas ya dictados no se tocan). ¿Continuar?')) return
     setBusy('apply')
     setError('')
     try {
@@ -225,6 +278,38 @@ export function SchedulePlannerPanel({ session }) {
       setError(err.message)
     } finally {
       setBusy('')
+    }
+  }
+
+  async function setClosed(closed) {
+    const ask = closed
+      ? 'Al cerrar el horario ya no se podrá regenerar y la disponibilidad de los profesores de este programa quedará fija. ¿Cerrar el horario?'
+      : 'Al reabrir, los profesores podrán cambiar su disponibilidad y el horario se podrá volver a generar. ¿Reabrir?'
+    if (!window.confirm(ask)) return
+    setBusy('close')
+    setError('')
+    try {
+      await apiRequest(`/api/schedule-planner/${programId}/close`, { method: 'POST', token, body: { closed } })
+      setPreview(null)
+      await load()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setBusy('')
+    }
+  }
+
+  async function assign(group, instructorId) {
+    setAssigning(group.groupId)
+    setError('')
+    try {
+      await apiRequest(`/api/groups/${group.groupId}`, { method: 'PATCH', token, body: { name: group.groupName, instructorId: instructorId ? Number(instructorId) : null, changeReason: 'reassignment' } })
+      setPreview(null)
+      await load()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setAssigning(null)
     }
   }
 
@@ -240,16 +325,13 @@ export function SchedulePlannerPanel({ session }) {
     }
   }
 
-  const instructorsInProgram = useMemo(() => {
-    const ids = [...new Set((data?.groups || []).map((g) => g.instructorId).filter(Boolean))]
-    return ids.map((id) => {
-      const g = data.groups.find((x) => x.instructorId === id)
-      const a = availability.find((x) => x.instructorId === id)
-      return { id, name: g.instructorName, blocks: a?.blocks || [], groups: data.groups.filter((x) => x.instructorId === id).length }
-    })
-  }, [data, availability])
+  // Profesores del tenant: primero los que dictan en este programa.
+  const instructors = useMemo(() => [...(data?.instructors || [])].sort((a, b) => (b.groupCount > 0) - (a.groupCount > 0) || a.instructorName.localeCompare(b.instructorName)), [data])
   const resultFor = (groupId) => applied?.results.find((r) => r.groupId === groupId)
   const setOpt = (k) => (e) => { setOptions({ ...options, [k]: k === 'startDate' || k === 'mode' ? e.target.value : Number(e.target.value) }); setPreview(null); setApplied(null) }
+  const closed = data?.closed
+  const unassigned = preview?.unassigned || data?.unassigned || []
+  const withoutAvailability = instructors.filter((i) => i.groupCount > 0 && !i.blocks.length)
 
   if (!programs) return <div className="admin-wrap">{error ? <ErrorNote message={error} /> : <p className="muted">Cargando…</p>}</div>
   return (
@@ -258,58 +340,109 @@ export function SchedulePlannerPanel({ session }) {
         <div className="sch-head">
           <div>
             <h3>Generar horarios</h3>
-            <p className="muted">Elige los días y la hora de cada grupo según la disponibilidad de su profesor y programa todos los temas con fecha, saltando los feriados del país.</p>
+            <p className="muted">Por programa: decide quién dicta cada curso, registra la disponibilidad de cada profesor y genera los días, la hora y las fechas de todos los temas, saltando feriados y sin cruces.</p>
           </div>
-          <label className="pf-select"><span className="sr-only">Programa</span>
-            <select value={programId} onChange={(e) => setProgramId(e.target.value)}>
-              {programs.map((p) => <option key={p.id} value={String(p.id)}>{programOptionLabel(p)}</option>)}
-            </select>
-          </label>
+          <div className="sch-pickers">
+            {isSuperAdmin && tenants.length > 0 && (
+              <label className="pf-select"><span className="sr-only">Tenant</span>
+                <select value={tenantId} onChange={(e) => chooseTenant(e.target.value)}>
+                  {tenants.map((t) => <option key={t.id} value={String(t.id)}>{t.name}</option>)}
+                </select>
+              </label>
+            )}
+            <label className="pf-select"><span className="sr-only">Programa</span>
+              <select value={programId} onChange={(e) => setProgramId(e.target.value)}>
+                {tenantPrograms.map((p) => <option key={p.id} value={String(p.id)}>{programOptionLabel(p)}</option>)}
+              </select>
+            </label>
+          </div>
         </div>
         <ErrorNote message={error} />
-        {!data ? <p className="muted">Cargando…</p> : (
+        {!tenantPrograms.length ? <p className="muted">No hay programas de entrenamiento activos{isSuperAdmin ? ' en este tenant' : ''}.</p> : !data ? <p className="muted">Cargando…</p> : (
           <>
+            {closed ? (
+              <div className="sch-closed" role="status">
+                <Lock size={18} aria-hidden="true" />
+                <div><strong>Horario cerrado</strong><span>Lo cerró {closed.closedByName || 'un administrador'} el {when(closed.closedAt)}. La disponibilidad de los profesores de este programa ya no cambia y el horario no se regenera.</span></div>
+                <button type="button" className="btn-mini" onClick={() => setClosed(false)} disabled={busy !== ''}><LockOpen size={14} aria-hidden="true" /> Reabrir</button>
+              </div>
+            ) : unassigned.length > 0 && (
+              <div className="sch-alert" role="alert">
+                <AlertTriangle size={18} aria-hidden="true" />
+                <div>
+                  <strong>{unassigned.length === 1 ? '1 componente sin profesor' : `${unassigned.length} componentes sin profesor`}</strong>
+                  <span>No se programarán hasta que les asignes uno en el paso 1:</span>
+                  <ul>{unassigned.map((u) => <li key={u.componentId}>{u.componentName}{u.groups.length > 1 ? ` (${u.groups.join(', ')})` : ''} · {u.topics} tema{u.topics === 1 ? '' : 's'}</li>)}</ul>
+                </div>
+              </div>
+            )}
             <ol className="sch-steps">
               <li>
-                <h4><span className="sch-step-n">1</span> Profesores y su disponibilidad</h4>
-                {!instructorsInProgram.length ? <p className="muted">Ningún grupo de este programa tiene profesor. Asígnalos en Programas → componente → grupos.</p> : (
-                  <ul className="sch-instructors">
-                    {instructorsInProgram.map((i) => (
-                      <li key={i.id} className={i.blocks.length ? '' : 'missing'}>
-                        <div>
-                          <strong>{i.name}</strong>
-                          <span className="muted">{i.groups} grupo{i.groups === 1 ? '' : 's'} · {i.blocks.length ? compactBlocks(i.blocks) : 'sin disponibilidad registrada'}</span>
-                        </div>
-                        <button type="button" className="btn-mini" onClick={() => setEditing(i)}><Clock size={13} aria-hidden="true" /> {i.blocks.length ? 'Editar' : 'Registrar'} disponibilidad</button>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-                <p className="muted sch-note">El profesor también puede registrarla desde su sección “Mi disponibilidad”. Para cambiar quién dicta un grupo, ve a Programas → componente → grupos.</p>
+                <h4><span className="sch-step-n">1</span> Quién dicta cada curso</h4>
+                <div className="table-fit">
+                  <table className="admin-table sch-table sch-assign">
+                    <thead><tr><th>Componente · grupo</th><th>Profesor</th><th>Temas</th></tr></thead>
+                    <tbody>
+                      {data.groups.map((g) => (
+                        <tr key={g.groupId} className={g.instructorId ? '' : 'sch-row-missing'}>
+                          <td className="sch-name">{g.componentName}<small className="muted">{g.groupName}</small></td>
+                          <td>
+                            <label className="sch-assign-select"><span className="sr-only">Profesor de {g.componentName} · {g.groupName}</span>
+                              <select value={g.instructorId ? String(g.instructorId) : ''} onChange={(e) => assign(g, e.target.value)} disabled={Boolean(closed) || assigning === g.groupId}>
+                                <option value="">— Sin profesor —</option>
+                                {instructors.map((i) => <option key={i.instructorId} value={String(i.instructorId)}>{i.instructorName}</option>)}
+                              </select>
+                            </label>
+                          </td>
+                          <td className="ind-n">{g.topicsTotal}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                {!instructors.length && <p className="muted sch-note">Este tenant aún no tiene profesores. Créalos en Usuarios.</p>}
               </li>
               <li>
-                <h4><span className="sch-step-n">2</span> Reglas del horario</h4>
+                <h4><span className="sch-step-n">2</span> Disponibilidad de los profesores para este programa</h4>
+                {withoutAvailability.length > 0 && !closed && <p className="sch-warn"><AlertTriangle size={15} aria-hidden="true" /> Falta la disponibilidad de {withoutAvailability.map((i) => i.instructorName).join(', ')}.</p>}
+                <ul className="sch-instructors">
+                  {instructors.map((i) => (
+                    <li key={i.instructorId} className={i.groupCount > 0 && !i.blocks.length ? 'missing' : ''}>
+                      <div>
+                        <strong>{i.instructorName}</strong>
+                        <span className="muted">{i.groupCount ? `${i.groupCount} grupo${i.groupCount === 1 ? '' : 's'} en este programa` : 'Sin cursos en este programa'} · {i.blocks.length ? compactBlocks(i.blocks) : 'sin disponibilidad registrada'}</span>
+                      </div>
+                      <button type="button" className="btn-mini" onClick={() => setEditing(i)}>{closed ? <><Lock size={13} aria-hidden="true" /> Ver</> : <><Clock size={13} aria-hidden="true" /> {i.blocks.length ? 'Editar' : 'Registrar'}</>}</button>
+                    </li>
+                  ))}
+                </ul>
+                <p className="muted sch-note">Cada profesor también la registra desde su sección “Mi disponibilidad”. Al cerrar el horario, ya nadie puede cambiarla.</p>
+              </li>
+              <li>
+                <h4><span className="sch-step-n">3</span> Reglas del horario</h4>
                 <div className="admin-form sch-options">
-                  <label>Fecha de inicio<input type="date" value={options.startDate} onChange={setOpt('startDate')} /></label>
+                  <label>Fecha de inicio<input type="date" value={options.startDate} onChange={setOpt('startDate')} disabled={Boolean(closed)} /></label>
                   <label>Clases por semana
-                    <select value={options.sessionsPerWeek} onChange={setOpt('sessionsPerWeek')}>{[1, 2, 3, 4, 5, 6].map((n) => <option key={n} value={n}>{n}</option>)}</select>
+                    <select value={options.sessionsPerWeek} onChange={setOpt('sessionsPerWeek')} disabled={Boolean(closed)}>{[1, 2, 3, 4, 5, 6].map((n) => <option key={n} value={n}>{n}</option>)}</select>
                   </label>
                   <label>Duración de cada clase
-                    <select value={options.sessionMinutes} onChange={setOpt('sessionMinutes')}>{[60, 90, 120, 150, 180, 240].map((n) => <option key={n} value={n}>{n >= 60 ? `${n / 60} h` : `${n} min`}{n % 60 ? '' : ''}</option>)}</select>
+                    <select value={options.sessionMinutes} onChange={setOpt('sessionMinutes')} disabled={Boolean(closed)}>{[60, 90, 120, 150, 180, 240].map((n) => <option key={n} value={n}>{n / 60} h</option>)}</select>
                   </label>
                   <label>Componentes
-                    <select value={options.mode} onChange={setOpt('mode')}>
+                    <select value={options.mode} onChange={setOpt('mode')} disabled={Boolean(closed)}>
                       <option value="sequence">Uno tras otro</option>
                       <option value="parallel">Todos a la vez</option>
                     </select>
                   </label>
                 </div>
+                <p className="muted sch-note">Sin cruces: un profesor nunca dicta dos clases el mismo día (en ningún programa), dos componentes del programa nunca coinciden a la misma hora y ninguna clase cae en feriado.</p>
               </li>
               <li>
-                <h4><span className="sch-step-n">3</span> Vista previa y generación</h4>
+                <h4><span className="sch-step-n">4</span> Vista previa, generación y cierre</h4>
                 <div className="sch-actions">
-                  <button type="button" className="btn-mini sch-preview" onClick={runPreview} disabled={busy !== ''}><CalendarCog size={15} aria-hidden="true" /> {busy === 'preview' ? 'Calculando…' : 'Ver vista previa'}</button>
-                  <button type="button" className="primary sch-apply" onClick={apply} disabled={!preview || !preview.totals.ready || busy !== ''}><Wand2 size={16} aria-hidden="true" /> {busy === 'apply' ? 'Generando…' : 'Generar horarios y fechas'}</button>
+                  <button type="button" className="btn-mini sch-preview" onClick={runPreview} disabled={busy !== '' || Boolean(closed)}><CalendarCog size={15} aria-hidden="true" /> {busy === 'preview' ? 'Calculando…' : 'Ver vista previa'}</button>
+                  <button type="button" className="primary sch-apply" onClick={apply} disabled={!preview || !preview.totals.ready || busy !== '' || Boolean(closed)}><Wand2 size={16} aria-hidden="true" /> {busy === 'apply' ? 'Generando…' : 'Generar horarios y fechas'}</button>
+                  {!closed && <button type="button" className="btn-mini sch-close" onClick={() => setClosed(true)} disabled={busy !== ''}><Lock size={14} aria-hidden="true" /> Cerrar horario</button>}
                 </div>
                 {preview?.missingHolidayYears.length > 0 && (
                   <div className="sch-warn" role="alert">
@@ -319,7 +452,13 @@ export function SchedulePlannerPanel({ session }) {
                   </div>
                 )}
                 {holidayMsg && <p className="st-done" role="status">{holidayMsg}</p>}
-                {applied && <p className="temp-password-box" role="status">Listo: {applied.applied} grupo{applied.applied === 1 ? '' : 's'} con horario y fechas nuevas. Revisa el resultado en Avance o en el temario de cada grupo.</p>}
+                {applied && (
+                  <p className="temp-password-box" role="status">
+                    Listo: {applied.applied} grupo{applied.applied === 1 ? '' : 's'} con horario y {applied.topicsScheduled} temas con fecha.
+                    {applied.unassigned.length > 0 && ` Quedaron sin programar por no tener profesor: ${applied.unassigned.map((u) => u.componentName).join(', ')}.`}
+                    {' '}Cuando estés conforme, cierra el horario.
+                  </p>
+                )}
                 {preview && (
                   <>
                     <p className="muted sch-summary">{preview.totals.ready} de {preview.totals.groups} grupos listos · {preview.totals.topics} temas con fecha{preview.lastDate ? ` · termina el ${day(preview.lastDate)}` : ''}</p>
@@ -329,18 +468,18 @@ export function SchedulePlannerPanel({ session }) {
                         <tbody>
                           {preview.plan.map((p) => {
                             const r = resultFor(p.groupId)
+                            const ready = p.slots.length > 0 && p.topicsToPlan > 0 && p.dates.length === p.topicsToPlan
                             return (
                               <tr key={p.groupId}>
                                 <td className="sch-name">{p.componentName}<small className="muted">{p.groupName}</small></td>
-                                <td>{p.instructorName || '—'}</td>
+                                <td>{p.instructorName || <span className="sch-missing-name"><UserCog size={13} aria-hidden="true" /> Sin profesor</span>}</td>
                                 <td>{p.slots.length ? slotsText(p.slots) : '—'}</td>
                                 <td className="sch-dates">{p.firstDate ? `${day(p.firstDate)} – ${day(p.lastDate)}` : '—'}</td>
                                 <td className="ind-n">{p.dates.length}/{p.topicsToPlan}</td>
                                 <td>
-                                  {r ? (r.ok ? <span className="ind-pill ind-advance">Generado</span> : <span className="ind-pill ind-unjustified">{r.skipped ? 'Omitido' : 'Error'}</span>)
-                                    : p.dates.length ? <span className="ind-pill ind-advance">Listo</span> : <span className="ind-pill ind-same_day">Revisar</span>}
+                                  {r ? (r.ok ? <span className="ind-pill ind-advance">Generado</span> : <span className="ind-pill ind-unjustified">Omitido</span>)
+                                    : ready ? <span className="ind-pill ind-advance">Listo</span> : <span className="ind-pill ind-same_day">Revisar</span>}
                                   {p.problems.map((m) => <small key={m} className="sch-problem">{m}</small>)}
-                                  {r && !r.ok && r.message && <small className="sch-problem">{r.message}</small>}
                                 </td>
                               </tr>
                             )
@@ -375,8 +514,8 @@ export function SchedulePlannerPanel({ session }) {
         )}
       </section>
       {editing && (
-        <Modal title={`Disponibilidad de ${editing.name}`} onClose={() => setEditing(null)} wide>
-          <AvailabilityEditor token={token} instructorId={editing.id} initialBlocks={editing.blocks} onSaved={() => { load(); setPreview(null) }} />
+        <Modal title={`Disponibilidad de ${editing.instructorName}`} onClose={() => setEditing(null)} wide>
+          <AvailabilityEditor token={token} instructorId={editing.instructorId} programId={Number(programId)} initialBlocks={editing.blocks} locked={Boolean(closed)} onSaved={() => { load(); setPreview(null) }} />
         </Modal>
       )}
     </div>

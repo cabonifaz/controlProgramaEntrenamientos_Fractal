@@ -506,6 +506,7 @@ CREATE TABLE IF NOT EXISTS password_reset_requests (
 CREATE TABLE IF NOT EXISTS instructor_availability (
   id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
   instructor_id BIGINT UNSIGNED NOT NULL,
+  program_id BIGINT UNSIGNED NULL,
   weekday TINYINT UNSIGNED NOT NULL,
   start_time TIME NOT NULL,
   end_time TIME NOT NULL,
@@ -514,7 +515,8 @@ CREATE TABLE IF NOT EXISTS instructor_availability (
   CONSTRAINT fk_avail_instructor FOREIGN KEY (instructor_id) REFERENCES users(id),
   CONSTRAINT chk_avail_weekday CHECK (weekday BETWEEN 0 AND 6),
   CONSTRAINT chk_avail_times CHECK (start_time < end_time),
-  INDEX idx_avail_instructor (instructor_id)
+  INDEX idx_avail_instructor (instructor_id),
+  INDEX idx_avail_program (program_id, instructor_id)
 );
 
 -- Incidencias, observaciones y mejoras que reporta cualquier usuario, con
@@ -839,6 +841,9 @@ DROP PROCEDURE IF EXISTS sp_migrate_student_profile_v1;
 DROP PROCEDURE IF EXISTS sp_migrate_onboarding_v1;
 DROP PROCEDURE IF EXISTS sp_migrate_class_links_v1;
 DROP PROCEDURE IF EXISTS sp_migrate_program_type_v1;
+DROP PROCEDURE IF EXISTS sp_migrate_schedule_close_v1;
+DROP PROCEDURE IF EXISTS sp_programs_schedule_close;
+DROP PROCEDURE IF EXISTS sp_topics_apply_plan;
 DROP PROCEDURE IF EXISTS sp_programs_set_colors;
 DROP PROCEDURE IF EXISTS sp_components_set_colors;
 DROP PROCEDURE IF EXISTS sp_user_invitations_create;
@@ -1208,6 +1213,32 @@ BEGIN
       ADD COLUMN program_type VARCHAR(20) NOT NULL DEFAULT 'training' AFTER cohort,
       ADD COLUMN sequential BOOLEAN NOT NULL DEFAULT TRUE AFTER program_type;
   END IF;
+END$$
+
+-- Horario cerrado por programa y disponibilidad de profesores por programa.
+-- La disponibilidad general que existia se copia a cada programa en el que
+-- el profesor dicta algun grupo.
+CREATE PROCEDURE sp_migrate_schedule_close_v1()
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+    WHERE table_schema = DATABASE() AND table_name = 'training_programs' AND column_name = 'schedule_closed_at') THEN
+    ALTER TABLE training_programs
+      ADD COLUMN schedule_closed_at DATETIME NULL,
+      ADD COLUMN schedule_closed_by BIGINT UNSIGNED NULL;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+    WHERE table_schema = DATABASE() AND table_name = 'instructor_availability' AND column_name = 'program_id') THEN
+    ALTER TABLE instructor_availability
+      ADD COLUMN program_id BIGINT UNSIGNED NULL AFTER instructor_id,
+      ADD INDEX idx_avail_program (program_id, instructor_id);
+  END IF;
+  INSERT INTO instructor_availability (instructor_id, program_id, weekday, start_time, end_time, created_at, created_by)
+  SELECT a.instructor_id, x.program_id, a.weekday, a.start_time, a.end_time, a.created_at, a.created_by
+  FROM instructor_availability a
+  JOIN (SELECT DISTINCT g.instructor_id, c.program_id FROM component_groups g JOIN components c ON c.id = g.component_id
+        WHERE g.is_deleted = FALSE AND c.is_deleted = FALSE AND g.instructor_id IS NOT NULL) x ON x.instructor_id = a.instructor_id
+  WHERE a.program_id IS NULL;
+  DELETE FROM instructor_availability WHERE program_id IS NULL;
 END$$
 
 -- El contacto del tenant pasa a ser un usuario (contact_user_id).
@@ -5296,37 +5327,84 @@ END$$
 -- ===================================================================
 -- Generacion automatica de horarios: disponibilidad de profesores y los
 -- datos que usa el planificador (server/schedulePlanner.js).
+-- Disponibilidad por programa. Admin y super admin ven a todos los
+-- profesores del tenant del programa (con cuantos grupos dictan en el); el
+-- profesor solo la suya. Sin programa, el profesor recibe la de todos sus
+-- programas. locked = el horario del programa ya se cerro.
 CREATE PROCEDURE sp_instructor_availability_list(
-  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED,
+  IN p_program_id BIGINT UNSIGNED
 )
 BEGIN
+  DECLARE v_tenant_id BIGINT UNSIGNED;
   IF p_actor_role NOT IN ('instructor', 'tenant_admin', 'super_admin') THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
   END IF;
-  SELECT u.id AS instructor_id, u.full_name AS instructor_name, u.tenant_id, a.id, a.weekday,
-         TIME_FORMAT(a.start_time, '%H:%i') AS start_time, TIME_FORMAT(a.end_time, '%H:%i') AS end_time
-  FROM users u
-  JOIN master_catalog_values r ON r.id = u.role_id AND r.code = 'instructor'
-  LEFT JOIN instructor_availability a ON a.instructor_id = u.id
-  WHERE u.is_deleted = FALSE AND u.is_active = TRUE
-    AND (p_actor_role = 'super_admin' OR u.tenant_id <=> p_actor_tenant_id)
-    AND (p_actor_role <> 'instructor' OR u.id = p_actor_user_id)
-  ORDER BY u.full_name, a.weekday, a.start_time;
+  IF p_program_id IS NOT NULL THEN
+    SELECT tenant_id INTO v_tenant_id FROM training_programs WHERE id = p_program_id AND is_deleted = FALSE;
+    IF v_tenant_id IS NULL THEN
+      SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'program_not_found';
+    END IF;
+    IF p_actor_role <> 'super_admin' AND NOT (v_tenant_id <=> p_actor_tenant_id) THEN
+      SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
+    END IF;
+    SELECT u.id AS instructor_id, u.full_name AS instructor_name, u.email AS instructor_email, u.tenant_id,
+           p_program_id AS program_id, (p.schedule_closed_at IS NOT NULL) AS locked,
+           (SELECT COUNT(*) FROM component_groups g JOIN components c ON c.id = g.component_id
+             WHERE c.program_id = p_program_id AND g.instructor_id = u.id AND g.is_deleted = FALSE AND c.is_deleted = FALSE) AS group_count,
+           a.id, a.weekday, TIME_FORMAT(a.start_time, '%H:%i') AS start_time, TIME_FORMAT(a.end_time, '%H:%i') AS end_time
+    FROM users u
+    JOIN master_catalog_values r ON r.id = u.role_id AND r.code = 'instructor'
+    JOIN training_programs p ON p.id = p_program_id
+    LEFT JOIN instructor_availability a ON a.instructor_id = u.id AND a.program_id = p_program_id
+    WHERE u.is_deleted = FALSE AND u.is_active = TRUE AND u.tenant_id = v_tenant_id
+      AND (p_actor_role <> 'instructor' OR u.id = p_actor_user_id)
+    ORDER BY u.full_name, a.weekday, a.start_time;
+  ELSE
+    IF p_actor_role <> 'instructor' THEN
+      SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'program_not_found';
+    END IF;
+    -- Programas donde dicta algun grupo, con o sin disponibilidad cargada.
+    SELECT u.id AS instructor_id, u.full_name AS instructor_name, u.email AS instructor_email, u.tenant_id,
+           p.id AS program_id, p.name AS program_name, p.cohort, p.starts_on, p.ends_on,
+           (p.schedule_closed_at IS NOT NULL) AS locked,
+           (SELECT COUNT(*) FROM component_groups g JOIN components c ON c.id = g.component_id
+             WHERE c.program_id = p.id AND g.instructor_id = u.id AND g.is_deleted = FALSE AND c.is_deleted = FALSE) AS group_count,
+           a.id, a.weekday, TIME_FORMAT(a.start_time, '%H:%i') AS start_time, TIME_FORMAT(a.end_time, '%H:%i') AS end_time
+    FROM users u
+    JOIN training_programs p ON p.is_deleted = FALSE AND p.id IN (
+      SELECT c.program_id FROM component_groups g JOIN components c ON c.id = g.component_id
+      WHERE g.instructor_id = u.id AND g.is_deleted = FALSE AND c.is_deleted = FALSE)
+    LEFT JOIN instructor_availability a ON a.instructor_id = u.id AND a.program_id = p.id
+    WHERE u.id = p_actor_user_id
+    ORDER BY p.starts_on DESC, p.id, a.weekday, a.start_time;
+  END IF;
 END$$
 
--- Reemplaza toda la disponibilidad de un profesor. p_blocks es un JSON
--- [{"weekday":1,"start":"09:00","end":"13:00"}, ...].
+-- Reemplaza la disponibilidad de un profesor en un programa. p_blocks es un
+-- JSON [{"weekday":1,"start":"09:00","end":"13:00"}, ...]. Con el horario del
+-- programa cerrado ya no se puede cambiar (ni el profesor ni el admin).
 CREATE PROCEDURE sp_instructor_availability_set(
   IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED,
-  IN p_instructor_id BIGINT UNSIGNED, IN p_blocks JSON
+  IN p_instructor_id BIGINT UNSIGNED, IN p_program_id BIGINT UNSIGNED, IN p_blocks JSON
 )
 BEGIN
   DECLARE v_tenant_id BIGINT UNSIGNED;
   DECLARE v_role VARCHAR(80);
+  DECLARE v_program_tenant_id BIGINT UNSIGNED;
+  DECLARE v_closed DATETIME;
   DECLARE v_bad INT;
   SELECT u.tenant_id, r.code INTO v_tenant_id, v_role
   FROM users u JOIN master_catalog_values r ON r.id = u.role_id WHERE u.id = p_instructor_id AND u.is_deleted = FALSE;
   IF v_role IS NULL OR v_role <> 'instructor' THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'instructor_invalid';
+  END IF;
+  SELECT tenant_id, schedule_closed_at INTO v_program_tenant_id, v_closed
+  FROM training_programs WHERE id = p_program_id AND is_deleted = FALSE;
+  IF v_program_tenant_id IS NULL THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'program_not_found';
+  END IF;
+  IF NOT (v_program_tenant_id <=> v_tenant_id) THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'instructor_invalid';
   END IF;
   IF p_actor_role = 'instructor' AND p_actor_user_id <> p_instructor_id THEN
@@ -5336,6 +5414,16 @@ BEGIN
   ELSEIF p_actor_role NOT IN ('instructor', 'tenant_admin', 'super_admin') THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
   END IF;
+  -- El profesor solo carga disponibilidad en programas donde le asignaron un curso.
+  IF p_actor_role = 'instructor' AND NOT EXISTS (
+    SELECT 1 FROM component_groups g JOIN components c ON c.id = g.component_id
+    WHERE c.program_id = p_program_id AND g.instructor_id = p_instructor_id AND g.is_deleted = FALSE AND c.is_deleted = FALSE
+  ) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+  IF v_closed IS NOT NULL THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'availability_locked';
+  END IF;
   SELECT COUNT(*) INTO v_bad
   FROM JSON_TABLE(COALESCE(p_blocks, JSON_ARRAY()), '$[*]' COLUMNS (
     weekday INT PATH '$.weekday', start_time TIME PATH '$.start', end_time TIME PATH '$.end')) jt
@@ -5344,11 +5432,161 @@ BEGIN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'invalid_schedule_day';
   END IF;
 
-  DELETE FROM instructor_availability WHERE instructor_id = p_instructor_id;
-  INSERT INTO instructor_availability (instructor_id, weekday, start_time, end_time, created_by)
-  SELECT p_instructor_id, jt.weekday, jt.start_time, jt.end_time, p_actor_user_id
+  DELETE FROM instructor_availability WHERE instructor_id = p_instructor_id AND program_id = p_program_id;
+  INSERT INTO instructor_availability (instructor_id, program_id, weekday, start_time, end_time, created_by)
+  SELECT p_instructor_id, p_program_id, jt.weekday, jt.start_time, jt.end_time, p_actor_user_id
   FROM JSON_TABLE(COALESCE(p_blocks, JSON_ARRAY()), '$[*]' COLUMNS (
     weekday INT PATH '$.weekday', start_time TIME PATH '$.start', end_time TIME PATH '$.end')) jt;
+END$$
+
+-- Cierra (o reabre) el horario de un programa. Cerrado: no se regenera y la
+-- disponibilidad de sus profesores queda fija.
+CREATE PROCEDURE sp_programs_schedule_close(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED,
+  IN p_program_id BIGINT UNSIGNED, IN p_closed BOOLEAN
+)
+BEGIN
+  DECLARE v_tenant_id BIGINT UNSIGNED;
+  SELECT tenant_id INTO v_tenant_id FROM training_programs WHERE id = p_program_id AND is_deleted = FALSE;
+  IF v_tenant_id IS NULL THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'program_not_found';
+  END IF;
+  IF p_actor_role = 'tenant_admin' AND NOT (v_tenant_id <=> p_actor_tenant_id) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
+  ELSEIF p_actor_role NOT IN ('tenant_admin', 'super_admin') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+  UPDATE training_programs
+  SET schedule_closed_at = IF(p_closed, COALESCE(schedule_closed_at, NOW()), NULL),
+      schedule_closed_by = IF(p_closed, COALESCE(schedule_closed_by, p_actor_user_id), NULL),
+      updated_at = NOW(), updated_by = p_actor_user_id
+  WHERE id = p_program_id;
+END$$
+
+-- Aplica de una vez el plan del generador a un programa: horario semanal de
+-- cada grupo y la fecha exacta de cada tema pendiente o programado, en
+-- orden. p_plan = [{"group_id":1,"days":[{weekday,start,end}],"dates":["2026-01-05",...]}].
+-- Todo o nada: si alguna fecha cae en feriado, cruza al profesor con otra
+-- clase ese dia o cruza a dos componentes del programa a la misma hora, no
+-- se guarda nada.
+CREATE PROCEDURE sp_topics_apply_plan(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED,
+  IN p_program_id BIGINT UNSIGNED, IN p_plan JSON
+)
+BEGIN
+  DECLARE v_tenant_id BIGINT UNSIGNED;
+  DECLARE v_closed DATETIME;
+  DECLARE v_scheduled_status_id BIGINT UNSIGNED;
+  DECLARE v_count INT;
+  DECLARE EXIT HANDLER FOR SQLEXCEPTION
+  BEGIN
+    ROLLBACK;
+    DROP TEMPORARY TABLE IF EXISTS tmp_plan_groups, tmp_plan_dates, tmp_plan_topics;
+    RESIGNAL;
+  END;
+
+  SELECT tenant_id, schedule_closed_at INTO v_tenant_id, v_closed FROM training_programs WHERE id = p_program_id AND is_deleted = FALSE;
+  IF v_tenant_id IS NULL THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'program_not_found';
+  END IF;
+  IF p_actor_role = 'tenant_admin' AND NOT (v_tenant_id <=> p_actor_tenant_id) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
+  ELSEIF p_actor_role NOT IN ('tenant_admin', 'super_admin') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+  IF v_closed IS NOT NULL THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'schedule_closed';
+  END IF;
+
+  DROP TEMPORARY TABLE IF EXISTS tmp_plan_groups, tmp_plan_dates, tmp_plan_topics;
+  CREATE TEMPORARY TABLE tmp_plan_groups (group_id BIGINT UNSIGNED PRIMARY KEY, days JSON);
+  CREATE TEMPORARY TABLE tmp_plan_dates (group_id BIGINT UNSIGNED, pos INT, d DATE, PRIMARY KEY (group_id, pos));
+  CREATE TEMPORARY TABLE tmp_plan_topics (topic_id BIGINT UNSIGNED PRIMARY KEY, group_id BIGINT UNSIGNED, pos INT);
+
+  INSERT INTO tmp_plan_groups (group_id, days)
+  SELECT jt.group_id, jt.days FROM JSON_TABLE(p_plan, '$[*]' COLUMNS (group_id BIGINT UNSIGNED PATH '$.group_id', days JSON PATH '$.days')) jt;
+  INSERT INTO tmp_plan_dates (group_id, pos, d)
+  SELECT jt.group_id, jt.pos, jt.d FROM JSON_TABLE(p_plan, '$[*]' COLUMNS (
+    group_id BIGINT UNSIGNED PATH '$.group_id',
+    NESTED PATH '$.dates[*]' COLUMNS (pos FOR ORDINALITY, d DATE PATH '$'))) jt
+  WHERE jt.d IS NOT NULL;
+
+  -- Todos los grupos deben ser de este programa.
+  SELECT COUNT(*) INTO v_count FROM tmp_plan_groups pg
+  LEFT JOIN component_groups g ON g.id = pg.group_id AND g.is_deleted = FALSE
+  LEFT JOIN components c ON c.id = g.component_id AND c.program_id = p_program_id AND c.is_deleted = FALSE
+  WHERE c.id IS NULL;
+  IF v_count > 0 THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'group_not_found';
+  END IF;
+
+  INSERT INTO tmp_plan_topics (topic_id, group_id, pos)
+  SELECT t.id, t.group_id, ROW_NUMBER() OVER (PARTITION BY t.group_id ORDER BY t.sort_order, t.id)
+  FROM topics t JOIN master_catalog_values ts ON ts.id = t.status_id
+  WHERE t.group_id IN (SELECT group_id FROM tmp_plan_groups) AND t.is_deleted = FALSE AND ts.code IN ('pending', 'scheduled');
+
+  -- Una fecha por tema, ni mas ni menos.
+  SELECT COUNT(*) INTO v_count FROM tmp_plan_topics tt LEFT JOIN tmp_plan_dates pd ON pd.group_id = tt.group_id AND pd.pos = tt.pos WHERE pd.d IS NULL;
+  IF v_count > 0 THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'plan_incomplete';
+  END IF;
+  SELECT COUNT(*) INTO v_count FROM tmp_plan_dates pd JOIN holidays h ON h.tenant_id = v_tenant_id AND h.holiday_on = pd.d AND h.is_deleted = FALSE;
+  IF v_count > 0 THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'date_is_holiday';
+  END IF;
+
+  SELECT v.id INTO v_scheduled_status_id FROM master_catalog_values v JOIN master_catalogs c ON c.id = v.catalog_id
+  WHERE c.code = 'TOPIC_STATUS' AND v.code = 'scheduled';
+
+  START TRANSACTION;
+  UPDATE component_group_schedule_days d JOIN tmp_plan_groups pg ON pg.group_id = d.group_id
+  SET d.is_deleted = TRUE, d.deleted_at = NOW(), d.deleted_by = p_actor_user_id
+  WHERE d.is_deleted = FALSE;
+  INSERT INTO component_group_schedule_days (group_id, weekday, start_time, end_time, created_by)
+  SELECT pg.group_id, jt.weekday, jt.start_time, jt.end_time, p_actor_user_id
+  FROM tmp_plan_groups pg,
+       JSON_TABLE(pg.days, '$[*]' COLUMNS (weekday INT PATH '$.weekday', start_time TIME PATH '$.start', end_time TIME PATH '$.end')) jt
+  ON DUPLICATE KEY UPDATE start_time = VALUES(start_time), end_time = VALUES(end_time), is_deleted = FALSE, deleted_at = NULL, deleted_by = NULL;
+
+  UPDATE topics t
+  JOIN tmp_plan_topics tt ON tt.topic_id = t.id
+  JOIN tmp_plan_dates pd ON pd.group_id = tt.group_id AND pd.pos = tt.pos
+  SET t.scheduled_on = pd.d, t.status_id = v_scheduled_status_id, t.updated_at = NOW(), t.updated_by = p_actor_user_id;
+
+  -- Cada fecha debe caer en un dia del horario semanal del grupo.
+  SELECT COUNT(*) INTO v_count FROM tmp_plan_topics tt JOIN topics t ON t.id = tt.topic_id
+  WHERE NOT EXISTS (SELECT 1 FROM component_group_schedule_days d
+    WHERE d.group_id = t.group_id AND d.is_deleted = FALSE AND d.weekday = DAYOFWEEK(t.scheduled_on) - 1);
+  IF v_count > 0 THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'plan_conflict';
+  END IF;
+  -- Un profesor no dicta dos clases el mismo dia (en ningun programa).
+  SELECT COUNT(*) INTO v_count FROM tmp_plan_topics tt
+  JOIN topics t ON t.id = tt.topic_id
+  JOIN component_groups g ON g.id = t.group_id AND g.instructor_id IS NOT NULL
+  JOIN component_groups g2 ON g2.instructor_id = g.instructor_id AND g2.is_deleted = FALSE
+  JOIN topics t2 ON t2.group_id = g2.id AND t2.is_deleted = FALSE AND t2.scheduled_on = t.scheduled_on AND t2.id <> t.id;
+  IF v_count > 0 THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'plan_conflict';
+  END IF;
+  -- Dos componentes del programa no coinciden el mismo dia a la misma hora
+  -- (los grupos de un mismo componente son alternativas y si pueden).
+  SELECT COUNT(*) INTO v_count FROM tmp_plan_topics tt
+  JOIN topics t ON t.id = tt.topic_id
+  JOIN component_groups g ON g.id = t.group_id
+  JOIN component_group_schedule_days d ON d.group_id = g.id AND d.is_deleted = FALSE AND d.weekday = DAYOFWEEK(t.scheduled_on) - 1
+  JOIN topics t2 ON t2.scheduled_on = t.scheduled_on AND t2.is_deleted = FALSE AND t2.id <> t.id
+  JOIN component_groups g2 ON g2.id = t2.group_id AND g2.is_deleted = FALSE AND g2.component_id <> g.component_id
+  JOIN components c2 ON c2.id = g2.component_id AND c2.program_id = p_program_id AND c2.is_deleted = FALSE
+  JOIN component_group_schedule_days d2 ON d2.group_id = g2.id AND d2.is_deleted = FALSE AND d2.weekday = d.weekday
+  WHERE NOT (d.end_time <= d2.start_time OR d.start_time >= d2.end_time);
+  IF v_count > 0 THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'plan_conflict';
+  END IF;
+  COMMIT;
+
+  SELECT COUNT(*) AS topics_scheduled, COUNT(DISTINCT group_id) AS groups_scheduled FROM tmp_plan_topics;
+  DROP TEMPORARY TABLE IF EXISTS tmp_plan_groups, tmp_plan_dates, tmp_plan_topics;
 END$$
 
 -- Grupos de un programa, en el orden de sus componentes, con su profesor,
@@ -5368,6 +5606,7 @@ BEGIN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
   END IF;
   SELECT p.id AS program_id, p.name AS program_name, p.tenant_id, p.starts_on AS program_starts_on,
+         p.schedule_closed_at, cu.full_name AS schedule_closed_by_name,
          c.id AS component_id, c.name AS component_name, c.sort_order AS component_sort,
          g.id AS group_id, g.name AS group_name, g.instructor_id, iu.full_name AS instructor_name,
          (SELECT GROUP_CONCAT(CONCAT(d.weekday, '|', TIME_FORMAT(d.start_time, '%H:%i'), '|', TIME_FORMAT(d.end_time, '%H:%i')) ORDER BY d.weekday SEPARATOR ',')
@@ -5383,6 +5622,7 @@ BEGIN
   JOIN components c ON c.program_id = p.id AND c.is_deleted = FALSE
   JOIN component_groups g ON g.component_id = c.id AND g.is_deleted = FALSE
   LEFT JOIN users iu ON iu.id = g.instructor_id
+  LEFT JOIN users cu ON cu.id = p.schedule_closed_by
   WHERE p.id = p_program_id
   ORDER BY c.sort_order, c.id, g.name, g.id;
 END$$

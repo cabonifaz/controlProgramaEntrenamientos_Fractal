@@ -1071,3 +1071,24 @@ input[type=file]:focus-visible{outline:3px solid #066b9c59;outline-offset:2px;bo
 .ij-funnel li{grid-template-columns:minmax(0,1.5fr) minmax(140px,1fr) 250px}
 .ij-funnel-num{white-space:normal}
 @media (max-width:680px){.ij-funnel li{grid-template-columns:1fr}}
+/* Horarios: tenant + programa, alerta de componentes sin profesor, horario cerrado */
+.sch-pickers{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.sch-alert,.sch-closed{display:flex;gap:10px;align-items:flex-start;border-radius:10px;padding:12px 14px;margin:4px 0 14px;font-size:13px}
+.sch-alert{background:#fdecea;border:1px solid #f1b5ad;color:#7a1f14}
+.sch-alert svg,.sch-closed svg{flex:none;margin-top:1px}
+.sch-alert>div,.sch-closed>div{display:grid;gap:3px;min-width:0;flex:1}
+.sch-alert ul{margin:4px 0 0;padding-left:18px;display:grid;gap:2px}
+.sch-closed{background:#e8f1f6;border:1px solid #b7d3e2;color:#06425e;align-items:center}
+.sch-closed span{color:#2f4a58}
+.sch-closed .btn-mini{display:inline-flex;align-items:center;gap:5px;flex:none}
+.sch-locked{display:flex;gap:8px;align-items:center;background:#e8f1f6;border:1px solid #b7d3e2;color:#06425e;border-radius:9px;padding:9px 12px;font-size:13px;margin:0 0 10px}
+.av-readonly{font-size:14px;color:var(--ink);margin:0}
+.sch-assign select{min-width:190px;max-width:100%;padding:6px 8px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--ink);font:inherit;font-size:13px}
+.sch-assign select:disabled{background:var(--soft);color:var(--muted)}
+.sch-row-missing td{background:#fff7f5}
+.sch-missing-name{display:inline-flex;align-items:center;gap:4px;color:#a3281a;font-weight:600}
+.sch-close{display:inline-flex;align-items:center;gap:5px}
+.sch-program-line{margin:0 0 10px;font-size:14px}
+p.sch-warn{margin:0 0 10px}
+@media (max-width:640px){.sch-pickers,.sch-pickers .pf-select,.sch-pickers select{width:100%}.sch-assign select{min-width:0;width:100%}.sch-closed{flex-wrap:wrap}}
+.sch-head>.sch-pickers{flex:0 1 auto;display:flex}
