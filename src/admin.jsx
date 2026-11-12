@@ -57,6 +57,8 @@ const ERROR_MESSAGES = {
   enrolled_in_component: 'Esa persona está inscrita como alumno en este componente: no puede dictarlo.',
   teaches_this_component: 'Esa persona dicta este componente: no puede inscribirse como alumno en él.',
   not_enrolled: 'No estás inscrito como alumno en ningún programa.',
+  schedule_clash: 'Se cruza con otra clase que esa persona dicta o cursa a la misma fecha y hora.',
+  already_in_component: 'Ya estás inscrito en otro grupo de este componente.',
   availability_outside_window: 'La disponibilidad debe estar dentro de las franjas de clase del programa.',
   plan_conflict: 'El plan cruza clases (mismo profesor el mismo día o dos componentes a la misma hora). Vuelve a calcular la vista previa.',
   student_invalid: 'El alumno seleccionado no es válido.',

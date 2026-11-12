@@ -14,6 +14,7 @@ import { InstructorAttendanceOverview, InstructorSyllabusPanel } from './instruc
 import { NextClassBar } from './classroom.jsx'
 import { MaterialJobsIndicator } from './aiMaterial.jsx'
 import { InductionAdminPanel, MyInductionPanel } from './induction.jsx'
+import { CourseCatalogPanel, STUDENT_MODE_REFRESH_EVENT, STUDENT_MODE_REQUEST_EVENT } from './courses.jsx'
 import { getPublicProgramRoute, PublicProgramApp } from './public.jsx'
 import { getInvitationRoute, InvitationApp } from './invitation.jsx'
 import { apiRequest } from './api'
@@ -35,7 +36,7 @@ const data = {
 }
 
 const SIDEBAR_KEY = 'fractal-sidebar-mode'
-const PROFILE_NAV = new Set(['Mi perfil', 'Mis alumnos', 'Alumnos', 'Satisfacción', 'Inasistencias', 'Horarios', 'Mi disponibilidad', 'Soporte', 'Ayuda', 'Inducción', 'Mi inducción'])
+const PROFILE_NAV = new Set(['Cursos', 'Mi perfil', 'Mis alumnos', 'Alumnos', 'Satisfacción', 'Inasistencias', 'Horarios', 'Mi disponibilidad', 'Soporte', 'Ayuda', 'Inducción', 'Mi inducción'])
 const SUPER_ADMIN_EXTRA_NAV = new Set(['Calendario'])
 
 // Acciones rapidas del Inicio: [texto, seccion a la que lleva, icono].
@@ -48,8 +49,8 @@ const QUICK_ACTIONS = {
 
 const roleKeyByCode = { student: 'student', instructor: 'instructor', tenant_admin: 'admin', super_admin: 'superAdmin' }
 
-const ADMIN_PANEL_BY_NAV = { Avance: ProgressPanel, Tenants: TenantsPanel, Usuarios: UsersPanel, Programas: ProgramsPanel, Inscripciones: PreEnrollmentsPanel, Calendario: HolidaysPanel, Horarios: SchedulePlannerPanel, 'Inducción': InductionAdminPanel, Alumnos: StudentDirectoryPanel, 'Satisfacción': SatisfactionPanel, Inasistencias: AbsencesPanel, Permisos: LeaveRequestsPanel, Alertas: AlertsPanel, Ayuda: HelpPanel, Soporte: SupportPanel, Reportes: ReportsPanel, Configuracion: ChangePasswordPanel }
-const INSTRUCTOR_PANEL_BY_NAV = { Inicio: RealDashboard, Avance: ProgressPanel, 'Mis clases': InstructorClassesPanel, Temarios: InstructorSyllabusPanel, Asistencia: InstructorAttendanceOverview, 'Mis alumnos': StudentDirectoryPanel, 'Mi disponibilidad': MyAvailabilityPanel, Permisos: LeaveRequestsPanel, Alertas: AlertsPanel, Ayuda: HelpPanel, Soporte: SupportPanel, 'Mi cuenta': ChangePasswordPanel }
+const ADMIN_PANEL_BY_NAV = { Avance: ProgressPanel, Tenants: TenantsPanel, Usuarios: UsersPanel, Programas: ProgramsPanel, Inscripciones: PreEnrollmentsPanel, Calendario: HolidaysPanel, Horarios: SchedulePlannerPanel, Cursos: CourseCatalogPanel, 'Inducción': InductionAdminPanel, Alumnos: StudentDirectoryPanel, 'Satisfacción': SatisfactionPanel, Inasistencias: AbsencesPanel, Permisos: LeaveRequestsPanel, Alertas: AlertsPanel, Ayuda: HelpPanel, Soporte: SupportPanel, Reportes: ReportsPanel, Configuracion: ChangePasswordPanel }
+const INSTRUCTOR_PANEL_BY_NAV = { Inicio: RealDashboard, Avance: ProgressPanel, 'Mis clases': InstructorClassesPanel, Temarios: InstructorSyllabusPanel, Asistencia: InstructorAttendanceOverview, 'Mis alumnos': StudentDirectoryPanel, 'Mi disponibilidad': MyAvailabilityPanel, Cursos: CourseCatalogPanel, Permisos: LeaveRequestsPanel, Alertas: AlertsPanel, Ayuda: HelpPanel, Soporte: SupportPanel, 'Mi cuenta': ChangePasswordPanel }
 const STUDENT_PANEL_BY_NAV = { Inicio: RealDashboard, Avance: ProgressPanel, 'Mi horario': StudentSchedulePanel, 'Mis temas': StudentTopicsOverview, 'Mi inducción': MyInductionPanel, Permisos: LeaveRequestsPanel, Asistencia: StudentAttendanceView, Alertas: AlertsPanel, 'Mi perfil': StudentProfilePanel, Ayuda: HelpPanel, Soporte: SupportPanel, 'Mi cuenta': ChangePasswordPanel }
 const SECTION_PANELS_BY_ROLE = { admin: ADMIN_PANEL_BY_NAV, superAdmin: ADMIN_PANEL_BY_NAV, instructor: INSTRUCTOR_PANEL_BY_NAV, student: STUDENT_PANEL_BY_NAV }
 
@@ -237,8 +238,16 @@ function App() {
   useEffect(() => {
     setStudentMode({ available: false, active: false })
     if (!sessionToken || (session?.role === 'student' && !session?.baseRole)) return
-    apiRequest('/api/auth/student-mode', { token: sessionToken }).then(({ data }) => setStudentMode(data)).catch(() => {})
+    const refresh = () => apiRequest('/api/auth/student-mode', { token: sessionToken }).then(({ data }) => setStudentMode(data)).catch(() => {})
+    refresh()
+    window.addEventListener(STUDENT_MODE_REFRESH_EVENT, refresh)
+    return () => window.removeEventListener(STUDENT_MODE_REFRESH_EVENT, refresh)
   }, [sessionToken])
+  useEffect(() => {
+    const request = () => switchStudentMode(true)
+    window.addEventListener(STUDENT_MODE_REQUEST_EVENT, request)
+    return () => window.removeEventListener(STUDENT_MODE_REQUEST_EVENT, request)
+  })
   async function switchStudentMode(on) {
     if (switching) return
     setSwitching(true)
@@ -266,12 +275,13 @@ function App() {
   const brandMark = tenantLogoUrl
     ? <img src={tenantLogoUrl} alt="Logo" className="logo-mark logo-mark-image" />
     : <div className="logo-mark">F</div>
-  const baseNav = role === 'student' ? ['Inicio', 'Mi horario', 'Mis temas', 'Mi inducción', 'Asistencia', 'Permisos', 'Alertas', 'Mi perfil', 'Ayuda', 'Soporte', 'Mi cuenta'] : role === 'instructor' ? ['Inicio', 'Mis clases', 'Temarios', 'Asistencia', 'Mis alumnos', 'Mi disponibilidad', 'Permisos', 'Alertas', 'Ayuda', 'Soporte', 'Reportes', 'Mi cuenta'] : role === 'superAdmin' ? ['Inicio', 'Tenants', 'Usuarios', 'Alumnos', 'Programas', 'Inducción', 'Calendario', 'Horarios', 'Inscripciones', 'Satisfacción', 'Inasistencias', 'Permisos', 'Alertas', 'Ayuda', 'Soporte', 'Reportes', 'Configuracion'] : ['Inicio', 'Programas', 'Inducción', 'Inscripciones', 'Usuarios', 'Alumnos', 'Calendario', 'Horarios', 'Satisfacción', 'Inasistencias', 'Permisos', 'Alertas', 'Ayuda', 'Soporte', 'Reportes', 'Configuracion']
+  const baseNav = role === 'student' ? ['Inicio', 'Mi horario', 'Mis temas', 'Mi inducción', 'Asistencia', 'Permisos', 'Alertas', 'Mi perfil', 'Ayuda', 'Soporte', 'Mi cuenta'] : role === 'instructor' ? ['Inicio', 'Mis clases', 'Temarios', 'Asistencia', 'Mis alumnos', 'Mi disponibilidad', 'Cursos', 'Permisos', 'Alertas', 'Ayuda', 'Soporte', 'Reportes', 'Mi cuenta'] : role === 'superAdmin' ? ['Inicio', 'Tenants', 'Usuarios', 'Alumnos', 'Programas', 'Inducción', 'Calendario', 'Horarios', 'Cursos', 'Inscripciones', 'Satisfacción', 'Inasistencias', 'Permisos', 'Alertas', 'Ayuda', 'Soporte', 'Reportes', 'Configuracion'] : ['Inicio', 'Programas', 'Inducción', 'Inscripciones', 'Usuarios', 'Alumnos', 'Calendario', 'Horarios', 'Cursos', 'Satisfacción', 'Inasistencias', 'Permisos', 'Alertas', 'Ayuda', 'Soporte', 'Reportes', 'Configuracion']
   // "Avance" (kanban) va segundo para todos los roles; el resto conserva
   // el icono de la posicion que tenia antes de agregarlo.
   const nav = [baseNav[0], 'Avance', ...baseNav.slice(1)]
   const navIcon = (item) => {
     if (item === 'Avance') return <SquareKanban size={18} />
+    if (item === 'Cursos') return <BookOpenText size={18} />
     if (item === 'Mi perfil') return <UserRound size={18} />
     if (item === 'Mis alumnos' || item === 'Alumnos') return <GraduationCap size={18} />
     if (item === 'Satisfacción') return <Smile size={18} />

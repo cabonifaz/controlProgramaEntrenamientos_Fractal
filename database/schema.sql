@@ -863,6 +863,9 @@ DROP PROCEDURE IF EXISTS sp_programs_schedule_close;
 DROP PROCEDURE IF EXISTS sp_topics_apply_plan;
 DROP PROCEDURE IF EXISTS sp_program_windows_list;
 DROP PROCEDURE IF EXISTS sp_auth_student_context;
+DROP PROCEDURE IF EXISTS sp_self_enroll_catalog;
+DROP PROCEDURE IF EXISTS sp_group_self_enroll;
+DROP PROCEDURE IF EXISTS sp_group_self_unenroll;
 DROP PROCEDURE IF EXISTS sp_program_windows_set;
 DROP PROCEDURE IF EXISTS sp_programs_set_colors;
 DROP PROCEDURE IF EXISTS sp_components_set_colors;
@@ -2222,6 +2225,23 @@ BEGIN
   IF EXISTS (SELECT 1 FROM component_groups g2 WHERE g2.is_deleted = FALSE AND g2.instructor_id = p_student_id
     AND g2.component_id = (SELECT component_id FROM component_groups WHERE id = p_group_id)) THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'teaches_this_component';
+  END IF;
+  -- Ni cruza sus clases (las que dicta o cursa) a la misma fecha y hora.
+  IF EXISTS (
+    SELECT 1 FROM topics tc
+    JOIN component_group_schedule_days dc ON dc.group_id = tc.group_id AND dc.is_deleted = FALSE AND dc.weekday = DAYOFWEEK(tc.scheduled_on) - 1
+    JOIN topics tx ON tx.scheduled_on = tc.scheduled_on AND tx.is_deleted = FALSE AND tx.group_id <> tc.group_id
+    JOIN component_groups gx ON gx.id = tx.group_id AND gx.is_deleted = FALSE
+    JOIN components cx ON cx.id = gx.component_id AND cx.is_deleted = FALSE
+    JOIN training_programs px ON px.id = cx.program_id AND px.is_deleted = FALSE
+    JOIN master_catalog_values psx ON psx.id = px.status_id AND psx.code IN ('draft', 'active', 'paused')
+    JOIN component_group_schedule_days dx ON dx.group_id = gx.id AND dx.is_deleted = FALSE AND dx.weekday = dc.weekday
+    WHERE tc.group_id = p_group_id AND tc.is_deleted = FALSE AND tc.scheduled_on IS NOT NULL
+      AND NOT (dc.end_time <= dx.start_time OR dc.start_time >= dx.end_time)
+      AND (gx.instructor_id = p_student_id OR EXISTS (SELECT 1 FROM group_enrollments gex
+        WHERE gex.group_id = gx.id AND gex.student_id = p_student_id AND gex.is_deleted = FALSE))
+  ) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'schedule_clash';
   END IF;
 
   INSERT INTO group_enrollments (group_id, student_id, created_by) VALUES (p_group_id, p_student_id, p_actor_user_id);
@@ -5514,6 +5534,131 @@ BEGIN
   SELECT p_instructor_id, p_program_id, jt.weekday, jt.start_time, jt.end_time, p_actor_user_id
   FROM JSON_TABLE(COALESCE(p_blocks, JSON_ARRAY()), '$[*]' COLUMNS (
     weekday INT PATH '$.weekday', start_time TIME PATH '$.start', end_time TIME PATH '$.end')) jt;
+END$$
+
+-- Cursos a los que un profesor, admin o super admin puede inscribirse solo:
+-- grupos de programas vigentes de su tenant (super admin: todos), sin los
+-- componentes que dicta. clashes = choca con algo que ya dicta o cursa.
+CREATE PROCEDURE sp_self_enroll_catalog(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED
+)
+BEGIN
+  IF p_actor_role NOT IN ('instructor', 'tenant_admin', 'super_admin') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+  SELECT p.id AS program_id, p.name AS program_name, p.cohort, p.starts_on, p.ends_on, p.tenant_id, tn.name AS tenant_name,
+         c.id AS component_id, c.name AS component_name, g.id AS group_id, g.name AS group_name, iu.full_name AS instructor_name,
+         (SELECT GROUP_CONCAT(CONCAT(d.weekday, '|', TIME_FORMAT(d.start_time, '%H:%i'), '|', TIME_FORMAT(d.end_time, '%H:%i')) ORDER BY d.weekday SEPARATOR ',')
+            FROM component_group_schedule_days d WHERE d.group_id = g.id AND d.is_deleted = FALSE) AS schedule,
+         (SELECT MIN(t.scheduled_on) FROM topics t WHERE t.group_id = g.id AND t.is_deleted = FALSE) AS first_date,
+         (SELECT MAX(t.scheduled_on) FROM topics t WHERE t.group_id = g.id AND t.is_deleted = FALSE) AS last_date,
+         (SELECT COUNT(*) FROM topics t WHERE t.group_id = g.id AND t.is_deleted = FALSE) AS topic_count,
+         EXISTS (SELECT 1 FROM group_enrollments ge WHERE ge.group_id = g.id AND ge.student_id = p_actor_user_id AND ge.is_deleted = FALSE) AS enrolled,
+         EXISTS (SELECT 1 FROM group_enrollments ge JOIN component_groups go ON go.id = ge.group_id AND go.is_deleted = FALSE
+                 WHERE go.component_id = c.id AND go.id <> g.id AND ge.student_id = p_actor_user_id AND ge.is_deleted = FALSE) AS in_other_group,
+         EXISTS (
+           SELECT 1 FROM topics tc
+           JOIN component_group_schedule_days dc ON dc.group_id = tc.group_id AND dc.is_deleted = FALSE AND dc.weekday = DAYOFWEEK(tc.scheduled_on) - 1
+           JOIN topics tx ON tx.scheduled_on = tc.scheduled_on AND tx.is_deleted = FALSE AND tx.group_id <> tc.group_id
+           JOIN component_groups gx ON gx.id = tx.group_id AND gx.is_deleted = FALSE
+           JOIN components cx ON cx.id = gx.component_id AND cx.is_deleted = FALSE
+           JOIN training_programs px ON px.id = cx.program_id AND px.is_deleted = FALSE
+           JOIN master_catalog_values psx ON psx.id = px.status_id AND psx.code IN ('draft', 'active', 'paused')
+           JOIN component_group_schedule_days dx ON dx.group_id = gx.id AND dx.is_deleted = FALSE AND dx.weekday = dc.weekday
+           WHERE tc.group_id = g.id AND tc.is_deleted = FALSE AND tc.scheduled_on IS NOT NULL
+             AND NOT (dc.end_time <= dx.start_time OR dc.start_time >= dx.end_time)
+             AND (gx.instructor_id = p_actor_user_id OR EXISTS (SELECT 1 FROM group_enrollments gex
+               WHERE gex.group_id = gx.id AND gex.student_id = p_actor_user_id AND gex.is_deleted = FALSE))
+         ) AS clashes
+  FROM training_programs p
+  JOIN master_catalog_values ps ON ps.id = p.status_id AND ps.code IN ('draft', 'active', 'paused')
+  JOIN tenants tn ON tn.id = p.tenant_id
+  JOIN components c ON c.program_id = p.id AND c.is_deleted = FALSE
+  JOIN component_groups g ON g.component_id = c.id AND g.is_deleted = FALSE
+  LEFT JOIN users iu ON iu.id = g.instructor_id
+  WHERE p.is_deleted = FALSE AND p.program_type = 'training'
+    AND (p_actor_role = 'super_admin' OR p.tenant_id <=> p_actor_tenant_id)
+    AND NOT EXISTS (SELECT 1 FROM component_groups gt WHERE gt.component_id = c.id AND gt.instructor_id = p_actor_user_id AND gt.is_deleted = FALSE)
+  ORDER BY p.starts_on DESC, p.id, c.sort_order, c.id, g.name;
+END$$
+
+-- Autoinscripcion en un grupo (y en su programa si hace falta).
+CREATE PROCEDURE sp_group_self_enroll(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED,
+  IN p_group_id BIGINT UNSIGNED
+)
+BEGIN
+  DECLARE v_program_id BIGINT UNSIGNED;
+  DECLARE v_tenant_id BIGINT UNSIGNED;
+  DECLARE v_component_id BIGINT UNSIGNED;
+  IF p_actor_role NOT IN ('instructor', 'tenant_admin', 'super_admin') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+  SELECT p.id, p.tenant_id, c.id INTO v_program_id, v_tenant_id, v_component_id
+  FROM component_groups g JOIN components c ON c.id = g.component_id AND c.is_deleted = FALSE
+  JOIN training_programs p ON p.id = c.program_id AND p.is_deleted = FALSE
+  JOIN master_catalog_values ps ON ps.id = p.status_id AND ps.code IN ('draft', 'active', 'paused')
+  WHERE g.id = p_group_id AND g.is_deleted = FALSE;
+  IF v_program_id IS NULL THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'program_not_active';
+  END IF;
+  IF p_actor_role <> 'super_admin' AND NOT (v_tenant_id <=> p_actor_tenant_id) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
+  END IF;
+  IF EXISTS (SELECT 1 FROM component_groups gt WHERE gt.component_id = v_component_id AND gt.instructor_id = p_actor_user_id AND gt.is_deleted = FALSE) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'teaches_this_component';
+  END IF;
+  IF EXISTS (SELECT 1 FROM group_enrollments ge WHERE ge.group_id = p_group_id AND ge.student_id = p_actor_user_id AND ge.is_deleted = FALSE) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'already_enrolled';
+  END IF;
+  IF EXISTS (SELECT 1 FROM group_enrollments ge JOIN component_groups go ON go.id = ge.group_id AND go.is_deleted = FALSE
+             WHERE go.component_id = v_component_id AND ge.student_id = p_actor_user_id AND ge.is_deleted = FALSE) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'already_in_component';
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM topics tc
+    JOIN component_group_schedule_days dc ON dc.group_id = tc.group_id AND dc.is_deleted = FALSE AND dc.weekday = DAYOFWEEK(tc.scheduled_on) - 1
+    JOIN topics tx ON tx.scheduled_on = tc.scheduled_on AND tx.is_deleted = FALSE AND tx.group_id <> tc.group_id
+    JOIN component_groups gx ON gx.id = tx.group_id AND gx.is_deleted = FALSE
+    JOIN components cx ON cx.id = gx.component_id AND cx.is_deleted = FALSE
+    JOIN training_programs px ON px.id = cx.program_id AND px.is_deleted = FALSE
+    JOIN master_catalog_values psx ON psx.id = px.status_id AND psx.code IN ('draft', 'active', 'paused')
+    JOIN component_group_schedule_days dx ON dx.group_id = gx.id AND dx.is_deleted = FALSE AND dx.weekday = dc.weekday
+    WHERE tc.group_id = p_group_id AND tc.is_deleted = FALSE AND tc.scheduled_on IS NOT NULL
+      AND NOT (dc.end_time <= dx.start_time OR dc.start_time >= dx.end_time)
+      AND (gx.instructor_id = p_actor_user_id OR EXISTS (SELECT 1 FROM group_enrollments gex
+        WHERE gex.group_id = gx.id AND gex.student_id = p_actor_user_id AND gex.is_deleted = FALSE))
+  ) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'schedule_clash';
+  END IF;
+
+  INSERT INTO program_enrollments (program_id, student_id, created_by) VALUES (v_program_id, p_actor_user_id, p_actor_user_id)
+  ON DUPLICATE KEY UPDATE is_deleted = FALSE, deleted_at = NULL, deleted_by = NULL;
+  INSERT INTO group_enrollments (group_id, student_id, created_by) VALUES (p_group_id, p_actor_user_id, p_actor_user_id)
+  ON DUPLICATE KEY UPDATE is_deleted = FALSE, deleted_at = NULL, deleted_by = NULL;
+END$$
+
+-- Darse de baja de un grupo cursado; sin grupos en ese programa, tambien del programa.
+CREATE PROCEDURE sp_group_self_unenroll(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED,
+  IN p_group_id BIGINT UNSIGNED
+)
+BEGIN
+  DECLARE v_program_id BIGINT UNSIGNED;
+  IF p_actor_role NOT IN ('instructor', 'tenant_admin', 'super_admin') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+  SELECT c.program_id INTO v_program_id FROM component_groups g JOIN components c ON c.id = g.component_id WHERE g.id = p_group_id;
+  UPDATE group_enrollments SET is_deleted = TRUE, deleted_at = NOW(), deleted_by = p_actor_user_id
+  WHERE group_id = p_group_id AND student_id = p_actor_user_id AND is_deleted = FALSE;
+  IF ROW_COUNT() = 0 THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'target_not_found';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM group_enrollments ge JOIN component_groups g ON g.id = ge.group_id JOIN components c ON c.id = g.component_id
+                 WHERE c.program_id = v_program_id AND ge.student_id = p_actor_user_id AND ge.is_deleted = FALSE) THEN
+    UPDATE program_enrollments SET is_deleted = TRUE, deleted_at = NOW(), deleted_by = p_actor_user_id
+    WHERE program_id = v_program_id AND student_id = p_actor_user_id AND is_deleted = FALSE;
+  END IF;
 END$$
 
 -- Modo alumno de un profesor, admin o super admin inscrito en algun

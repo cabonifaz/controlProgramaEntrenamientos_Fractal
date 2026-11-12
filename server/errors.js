@@ -50,6 +50,8 @@ const STATUS_BY_SP_MESSAGE = {
   enrolled_in_component: 409,
   teaches_this_component: 409,
   not_enrolled: 409,
+  schedule_clash: 409,
+  already_in_component: 409,
   availability_outside_window: 400,
   tenant_not_found: 404,
   target_not_found: 404,
