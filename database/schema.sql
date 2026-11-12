@@ -5706,6 +5706,7 @@ BEGIN
       JOIN topics t ON t.id = a.topic_id AND t.is_deleted = FALSE
       JOIN component_groups g ON g.id = t.group_id JOIN components c ON c.id = g.component_id
       JOIN training_programs p ON p.id = c.program_id AND p.is_deleted = FALSE
+      JOIN master_catalog_values ps ON ps.id = p.status_id AND ps.code IN ('draft', 'active', 'paused')
       WHERE a.is_deleted = FALSE AND t.scheduled_on >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
         AND (v_tenant IS NULL OR p.tenant_id = v_tenant)) AS attendance_rate_30d,
     (SELECT COUNT(*) FROM topics t JOIN component_groups g ON g.id = t.group_id AND g.is_deleted = FALSE
@@ -5717,9 +5718,11 @@ BEGIN
     (SELECT COUNT(DISTINCT t.id) FROM topics t JOIN component_groups g ON g.id = t.group_id AND g.is_deleted = FALSE
       JOIN components c ON c.id = g.component_id AND c.is_deleted = FALSE
       JOIN training_programs p ON p.id = c.program_id AND p.is_deleted = FALSE
+      JOIN master_catalog_values ps ON ps.id = p.status_id AND ps.code IN ('draft', 'active', 'paused')
       JOIN master_catalog_values ts ON ts.id = t.status_id AND ts.code = 'completed'
       WHERE t.is_deleted = FALSE AND t.scheduled_on < CURDATE() AND (v_tenant IS NULL OR p.tenant_id = v_tenant)
-        AND EXISTS (SELECT 1 FROM group_enrollments ge WHERE ge.group_id = g.id AND ge.is_deleted = FALSE)
+        AND EXISTS (SELECT 1 FROM group_enrollments ge JOIN users ue ON ue.id = ge.student_id AND ue.is_active = TRUE AND ue.is_deleted = FALSE
+                    WHERE ge.group_id = g.id AND ge.is_deleted = FALSE)
         AND NOT EXISTS (SELECT 1 FROM attendance a WHERE a.topic_id = t.id AND a.is_deleted = FALSE)) AS attendance_missing,
     (SELECT COUNT(*) FROM component_groups g JOIN components c ON c.id = g.component_id AND c.is_deleted = FALSE
       JOIN training_programs p ON p.id = c.program_id AND p.is_deleted = FALSE AND p.program_type = 'training'
