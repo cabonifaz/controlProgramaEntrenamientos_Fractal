@@ -1145,3 +1145,11 @@ p.sch-warn{margin:0 0 10px}
 .cc-chip.ok{background:#dff3e6;color:#1d5b34}
 .cc-chip.warn{background:#fdecea;color:#7a1f14}
 .cc-enroll,.cc-go{display:inline-flex;align-items:center;gap:6px}
+/* Inscribir: persona registrada o nueva */
+.enroll-mode{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 12px}
+.enroll-mode label{display:inline-flex;align-items:center;gap:6px;min-height:38px;padding:6px 12px;border:1px solid var(--line);border-radius:9px;background:#fff;color:var(--ink);font-size:13px;font-weight:600;cursor:pointer}
+.enroll-mode label.on{border-color:var(--blue);background:#e8f1f6;color:#06425e}
+.enroll-mode input{accent-color:var(--blue);margin:0}
+.enroll-mode label:focus-within{outline:2px solid var(--blue);outline-offset:2px}
+/* Un buscador abierto dentro de una tabla desplazable no debe quedar recortado */
+.table-fit:has(.search-select-menu){overflow:visible}

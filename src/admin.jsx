@@ -810,6 +810,7 @@ export function UsersPanel({ session, navParams }) {
         <ErrorNote message={error} />
         {loading ? <p className="muted">Cargando…</p> : visibleUsers.length === 0 ? <p className="muted">No hay usuarios con estos filtros.</p> : (
           <div className="table-scroll">
+          <div className="table-fit">
           <table className="admin-table">
             <thead><tr><th>Nombre</th><th>Correo</th>{isSuperAdmin && <th>Tenant</th>}<th>Rol</th><th>Estado</th><th></th></tr></thead>
             <tbody>
@@ -838,6 +839,7 @@ export function UsersPanel({ session, navParams }) {
               ))}
             </tbody>
           </table>
+          </div>
           </div>
         )}
       </section>
@@ -916,6 +918,7 @@ function TopicsPanel({ session, group, onBack }) {
         <h3>Temario</h3>
         <ErrorNote message={error} />
         {loading ? <p className="muted">Cargando…</p> : (
+          <div className="table-fit">
           <table className="admin-table">
             <thead><tr><th>Título</th><th>Programado</th><th>Estado</th><th>Actualizar</th><th>Reprogramar</th></tr></thead>
             <tbody>
@@ -935,6 +938,7 @@ function TopicsPanel({ session, group, onBack }) {
               ))}
             </tbody>
           </table>
+          </div>
         )}
       </section>
     </div>
@@ -1466,29 +1470,50 @@ function GroupHorarioPanel({ session, group, onBack }) {
 // hace los dos pasos de forma transparente: inscribe al programa si hace
 // falta (ignora "already_enrolled", que solo significa que ya estaba) y
 // luego al grupo, en una sola accion.
-function EnrollStudentModal({ session, group, programId, students, onClose, onEnrolled }) {
+function EnrollStudentModal({ session, group, programId, tenantId, students, onClose, onEnrolled }) {
   const { token } = session
+  const [mode, setMode] = useState('existing')
   const [studentId, setStudentId] = useState('')
+  const [newPerson, setNewPerson] = useState({ fullName: '', email: '' })
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
+  const [invitation, setInvitation] = useState(null)
   const [saving, setSaving] = useState(false)
+
+  // Programa (si hace falta; "already_enrolled" solo significa que ya estaba) y luego el grupo.
+  async function enroll(id) {
+    try {
+      await apiRequest(`/api/programs/${programId}/students`, { method: 'POST', token, body: { studentId: Number(id) } })
+    } catch (err) {
+      if (err.message !== 'already_enrolled') throw err
+    }
+    await apiRequest(`/api/groups/${group.id}/students`, { method: 'POST', token, body: { studentId: Number(id) } })
+  }
 
   async function handleEnroll(e) {
     e.preventDefault()
-    if (!studentId) return
     setError('')
     setSuccess('')
+    setInvitation(null)
     setSaving(true)
     try {
-      try {
-        await apiRequest(`/api/programs/${programId}/students`, { method: 'POST', token, body: { studentId: Number(studentId) } })
-      } catch (err) {
-        if (err.message !== 'already_enrolled') throw err
+      if (mode === 'existing') {
+        if (!studentId) return
+        await enroll(studentId)
+        const enrolled = students.find((s) => String(s.id) === String(studentId))
+        setSuccess(`${enrolled ? enrolled.full_name : 'Alumno'} inscrito correctamente.`)
+        setStudentId('')
+      } else {
+        // Persona nueva: se crea como alumno (por invitacion) y se inscribe de una vez.
+        const { data } = await apiRequest('/api/users', {
+          method: 'POST', token,
+          body: { tenantId: tenantId ?? undefined, fullName: newPerson.fullName.trim(), email: newPerson.email.trim(), roleCode: 'student' },
+        })
+        await enroll(data.userId)
+        setSuccess(`${newPerson.fullName.trim()} se creó como alumno y quedó inscrito.`)
+        setInvitation({ invitationUrl: data.invitationUrl, email: data.email, fullName: newPerson.fullName.trim(), expiresAt: data.expiresAt })
+        setNewPerson({ fullName: '', email: '' })
       }
-      await apiRequest(`/api/groups/${group.id}/students`, { method: 'POST', token, body: { studentId: Number(studentId) } })
-      const enrolled = students.find((s) => String(s.id) === String(studentId))
-      setSuccess(`${enrolled ? enrolled.full_name : 'Alumno'} inscrito correctamente.`)
-      setStudentId('')
       onEnrolled?.()
     } catch (err) {
       setError(err.message)
@@ -1497,16 +1522,32 @@ function EnrollStudentModal({ session, group, programId, students, onClose, onEn
     }
   }
 
+  const canSubmit = mode === 'existing' ? Boolean(studentId) : newPerson.fullName.trim() && newPerson.email.includes('@')
   return (
     <Modal title={`Inscribir alumno — ${group.name}`} onClose={onClose}>
-      <p className="muted small-note">También puedes inscribir a profesores, admins y super admins para que cursen como alumnos, salvo en un componente que dictan.</p>
+      <div className="enroll-mode" role="radiogroup" aria-label="A quién inscribir">
+        <label className={mode === 'existing' ? 'on' : ''}><input type="radio" name="enroll-mode" checked={mode === 'existing'} onChange={() => { setMode('existing'); setError('') }} /> Persona registrada</label>
+        <label className={mode === 'new' ? 'on' : ''}><input type="radio" name="enroll-mode" checked={mode === 'new'} onChange={() => { setMode('new'); setError('') }} /> Persona nueva</label>
+      </div>
       <form className="admin-form" onSubmit={handleEnroll}>
-        <label className="full-field">Alumno
-          <SearchSelect options={students} value={studentId} onChange={setStudentId} placeholder="Buscar alumno…" allowEmpty={false} />
-        </label>
+        {mode === 'existing' ? (
+          <>
+            <p className="muted small-note full-field">Alumnos, profesores, admins y super admins. Nadie puede cursar un componente que dicta ni uno que se cruce con sus clases.</p>
+            <label className="full-field">Persona
+              <SearchSelect options={students} value={studentId} onChange={setStudentId} placeholder="Buscar por nombre o correo…" allowEmpty={false} />
+            </label>
+          </>
+        ) : (
+          <>
+            <p className="muted small-note full-field">Se crea su usuario de alumno y queda inscrito. Te damos su enlace para que cree su contraseña.</p>
+            <label>Nombre completo<input value={newPerson.fullName} onChange={(e) => setNewPerson({ ...newPerson, fullName: e.target.value })} required maxLength={150} /></label>
+            <label>Correo<input type="email" value={newPerson.email} onChange={(e) => setNewPerson({ ...newPerson, email: e.target.value })} required maxLength={190} /></label>
+          </>
+        )}
         <ErrorNote message={error} />
-        {success && <p className="temp-password-box">{success}</p>}
-        <button className="primary" disabled={saving || !studentId}>{saving ? 'Inscribiendo…' : 'Inscribir'}</button>
+        {success && <p className="temp-password-box full-field">{success}</p>}
+        {invitation && <div className="full-field"><InvitationLinkBox invitation={invitation} /></div>}
+        <button className="primary" disabled={saving || !canSubmit}>{saving ? 'Inscribiendo…' : mode === 'new' ? 'Crear e inscribir' : 'Inscribir'}</button>
       </form>
     </Modal>
   )
@@ -1603,6 +1644,7 @@ function GroupsPanel({ session, component, program, onBack }) {
         <ErrorNote message={error} />
         {scheduleMessage && <p className="temp-password-box">{scheduleMessage}</p>}
         {loading ? <p className="muted">Cargando…</p> : items.length === 0 ? <p className="muted">Este componente todavía no tiene grupos.</p> : (
+          <div className="table-fit">
           <table className="admin-table">
             <thead><tr><th>Nombre</th><th>Instructor</th><th>Alumnos</th><th>Inscribir</th><th>Horario</th><th>Calendario</th><th></th></tr></thead>
             <tbody>
@@ -1621,6 +1663,7 @@ function GroupsPanel({ session, component, program, onBack }) {
               ))}
             </tbody>
           </table>
+          </div>
         )}
       </section>
       {change && (
@@ -1637,6 +1680,7 @@ function GroupsPanel({ session, component, program, onBack }) {
           session={session}
           group={enrollingGroup}
           programId={component.program_id}
+          tenantId={program?.tenant_id}
           students={students}
           onClose={() => setEnrollingGroup(null)}
           onEnrolled={reload}
@@ -2335,6 +2379,7 @@ function ComponentsPanel({ session, program, onBack }) {
         <h3>Componentes</h3>
         <ErrorNote message={error} />
         {loading ? <p className="muted">Cargando…</p> : (
+          <div className="table-fit">
           <table className="admin-table">
             <thead><tr><th>Nombre</th><th>Descripción</th><th>Estado</th><th>Grupos</th><th>Temas</th><th>Material</th><th></th></tr></thead>
             <tbody>
@@ -2360,6 +2405,7 @@ function ComponentsPanel({ session, program, onBack }) {
               ))}
             </tbody>
           </table>
+          </div>
         )}
       </section>
       {editingComponent && (
@@ -2603,6 +2649,7 @@ export function PreEnrollmentsPanel({ session }) {
           </div>
         )}
         {loading ? <p className="muted">Cargando…</p> : items.length === 0 ? <p className="muted">No hay preinscripciones con estos filtros.</p> : (
+          <div className="table-fit">
           <table className="admin-table">
             <thead><tr><th>Fecha</th><th>Persona</th><th>Contacto</th><th>Documento</th><th>Programa</th><th>Estado</th><th></th></tr></thead>
             <tbody>
@@ -2630,6 +2677,7 @@ export function PreEnrollmentsPanel({ session }) {
               ))}
             </tbody>
           </table>
+          </div>
         )}
       </section>
     </div>
@@ -3032,6 +3080,7 @@ export function LeaveRequestsPanel({ session }) {
         {isStudent && <p className="muted">Para avisar que faltarás a una clase concreta, usa <b>Asistencia</b> o <b>Mi horario</b>: el aviso le llega a tu instructor.</p>}
         <ErrorNote message={error || actionError} />
         {loading ? <p className="muted">Cargando…</p> : (
+          <div className="table-fit">
           <table className="admin-table">
             <thead><tr>{!isStudent && <th>Alumno</th>}<th>Clase</th><th>Fechas</th><th>Motivo</th><th>Estado</th><th>Comentario</th><th></th></tr></thead>
             <tbody>
@@ -3062,6 +3111,7 @@ export function LeaveRequestsPanel({ session }) {
               ))}
             </tbody>
           </table>
+          </div>
         )}
       </section>
     </div>
@@ -3196,6 +3246,7 @@ export function HolidaysPanel({ session }) {
         <p className="muted">Ningún tema puede programarse automáticamente en estas fechas; el procedimiento almacenado lo bloquea.</p>
         <ErrorNote message={error} />
         {loading ? <p className="muted">Cargando…</p> : (
+          <div className="table-fit">
           <table className="admin-table">
             <thead><tr><th>Fecha</th><th>Nombre</th><th>Tipo</th></tr></thead>
             <tbody>
@@ -3204,6 +3255,7 @@ export function HolidaysPanel({ session }) {
               ))}
             </tbody>
           </table>
+          </div>
         )}
       </section>
     </div>
@@ -3298,6 +3350,7 @@ export function InstructorAttendancePanel({ session, topic, onBack, embedded = f
         {saveResult && <p className="temp-password-box">{saveResult}</p>}
         {loading ? <p className="muted">Cargando…</p> : items.length === 0 ? <p className="muted">No hay alumnos inscritos en este componente todavía.</p> : (
           <>
+            <div className="table-fit">
             <table className="admin-table">
               <thead><tr><th>Alumno</th><th>Estado</th><th>Motivo</th><th>Observaciones</th></tr></thead>
               <tbody>
@@ -3330,6 +3383,7 @@ export function InstructorAttendancePanel({ session, topic, onBack, embedded = f
                 ))}
               </tbody>
             </table>
+            </div>
             <button className="primary" disabled={saving} onClick={saveAll}>{saving ? 'Guardando…' : 'Guardar asistencia'}</button>
           </>
         )}
@@ -3356,6 +3410,7 @@ function InstructorTopicsPanel({ session, group, onBack }) {
         <h3>Temario — {group.component_name} ({group.name})</h3>
         <ErrorNote message={error} />
         {loading ? <p className="muted">Cargando…</p> : items.length === 0 ? <p className="muted">Este grupo todavía no tiene temas.</p> : (
+          <div className="table-fit">
           <table className="admin-table">
             <thead><tr><th>Título</th><th>Programado</th><th>Estado</th><th></th></tr></thead>
             <tbody>
@@ -3372,6 +3427,7 @@ function InstructorTopicsPanel({ session, group, onBack }) {
               ))}
             </tbody>
           </table>
+          </div>
         )}
       </section>
       {materialTopic && <MaterialViewer session={session} topic={materialTopic} onClose={() => setMaterialTopic(null)} />}
@@ -3474,6 +3530,7 @@ export function InstructorClassesPanel({ session, navigate }) {
         <h3>Mis grupos</h3>
         <ErrorNote message={error} />
         {loading ? <p className="muted">Cargando…</p> : items.length === 0 ? <p className="muted">Todavía no tienes grupos asignados.</p> : (
+          <div className="table-fit">
           <table className="admin-table">
             <thead><tr><th>Programa</th><th>Componente</th><th>Grupo</th><th>Estado</th><th></th></tr></thead>
             <tbody>
@@ -3491,6 +3548,7 @@ export function InstructorClassesPanel({ session, navigate }) {
               ))}
             </tbody>
           </table>
+          </div>
         )}
       </section>
       {materialGroup && (
@@ -3548,6 +3606,7 @@ export function AlertsPanel({ session }) {
         {detectMessage && <p className="temp-password-box">{detectMessage}</p>}
         <ErrorNote message={error || actionError} />
         {loading ? <p className="muted">Cargando…</p> : items.length === 0 ? <p className="muted">No hay alertas por ahora.</p> : (
+          <div className="table-fit">
           <table className="admin-table">
             <thead><tr><th>Prioridad</th><th>Alerta</th><th>Generada</th><th>Estado</th><th></th></tr></thead>
             <tbody>
@@ -3562,6 +3621,7 @@ export function AlertsPanel({ session }) {
               ))}
             </tbody>
           </table>
+          </div>
         )}
       </section>
     </div>
@@ -3676,6 +3736,7 @@ export function ReportsPanel({ session }) {
         <ErrorNote message={error} />
         {loading ? <p className="muted">Cargando…</p> : rows.length === 0 ? <p className="muted">Sin datos para este reporte todavía.</p> : (
           <div className="report-table-scroll">
+            <div className="table-fit">
             <table className="admin-table">
               <thead><tr>{columns.map((c) => <th key={c}>{REPORT_COLUMN_LABELS[c] || c}</th>)}</tr></thead>
               <tbody>
@@ -3684,6 +3745,7 @@ export function ReportsPanel({ session }) {
                 ))}
               </tbody>
             </table>
+            </div>
           </div>
         )}
       </section>
@@ -3906,6 +3968,7 @@ export function RealDashboard({ session, navigate }) {
         <h3>{isStudent ? 'Próximas sesiones' : 'Tu agenda'}</h3>
         <ErrorNote message={agendaError} />
         {agendaLoading ? <p className="muted">Cargando…</p> : agenda.length === 0 ? <p className="muted">No hay temas programados próximamente.</p> : isStudent ? (
+          <div className="table-fit">
           <table className="admin-table">
             <thead><tr><th>Tema</th><th>Fecha</th><th>Componente</th><th>Instructor</th></tr></thead>
             <tbody>
@@ -3919,6 +3982,7 @@ export function RealDashboard({ session, navigate }) {
               ))}
             </tbody>
           </table>
+          </div>
         ) : (
           <div className="agenda-card-list">
             {agenda.map((t) => (

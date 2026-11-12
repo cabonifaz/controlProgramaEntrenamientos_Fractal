@@ -26,6 +26,7 @@ const GUIDES = {
     { nav: 'Mis alumnos', title: 'Mis alumnos', text: 'Los perfiles de tus alumnos con sus links (GitHub, LinkedIn) y correo para conectar con el talento.' },
     { nav: 'Mi disponibilidad', title: 'Mi disponibilidad', text: 'Para cada programa donde dictas, indica los días y horas en que puedes. El administrador genera el horario con esto; al cerrarlo ya no cambia.' },
     { nav: 'Permisos', title: 'Avisos de inasistencia', text: 'Los avisos de tus alumnos para tus clases y tus propios avisos de inasistencia.' },
+    { nav: 'Cursos', title: 'Cursos', text: 'Inscríbete como alumno en otros cursos sin cruzar tus clases, y cúrsalos con “Modo alumno” (arriba).' },
     { nav: 'Ayuda', title: 'Ayuda', text: 'El manual completo del profesor. Para reportar un problema usa “Reportar” en la barra superior.' },
   ],
   admin: [
@@ -35,6 +36,7 @@ const GUIDES = {
     { nav: 'Calendario', title: '3. Feriados', text: 'Carga los feriados de Perú del año con un botón. Las clases nunca se programan en feriado.' },
     { nav: 'Horarios', title: '4. Horarios automáticos', text: 'Por programa: asigna quién dicta cada curso, registra la disponibilidad y genera días, horas y fechas sin cruces ni feriados. Luego cierra el horario.' },
     { nav: 'Avance', title: '5. Seguimiento', text: 'El avance de cada componente y tema, con asistencia. Inasistencias y Satisfacción tienen los indicadores de alumnos y profesores.' },
+    { nav: 'Cursos', title: 'Cursos', text: 'Inscríbete como alumno en otros cursos sin cruzar tus clases, y cúrsalos con “Modo alumno” (arriba).' },
     { nav: 'Soporte', title: 'Soporte', text: 'Las incidencias, observaciones y mejoras que reportan los usuarios, con la captura de su pantalla. Respóndelas desde aquí.' },
     { nav: 'Ayuda', title: 'Ayuda', text: 'El manual detallado de cada rol. ¡Éxitos con tu programa!' },
   ],
@@ -351,6 +353,14 @@ export function useFirstUseGuide(session) {
 
 // ===================================================================
 // Manual por rol. Cada seccion: para que sirve, pasos y consejos.
+// Secciones que comparten varios roles (pantallas iguales para todos).
+const ALERTS_SECTION = { id: 'alertas', title: 'Alertas', nav: 'Alertas', body: 'Los avisos del sistema para ti.', steps: ['La campana de arriba muestra un punto rojo cuando tienes alertas sin leer.', 'Abre Alertas para ver cada aviso: inasistencias, solicitudes, respuestas de soporte, materiales listos y más.', 'Márcalas como leídas cuando las atiendas.'] }
+const HELP_SECTION = { id: 'ayuda', title: 'Ayuda y guías', nav: 'Ayuda', body: 'Este manual y las guías paso a paso.', steps: ['“Ver la guía” repite el recorrido de bienvenida.', 'Busca cualquier tema en el buscador o salta a una sección desde el índice.', 'En cualquier pantalla, el botón “Guía” de arriba explica esa pantalla paso a paso.'] }
+const ACCOUNT_SECTION = { id: 'cuenta', title: 'Mi cuenta y contraseña', nav: 'Mi cuenta', body: 'Cambia tu contraseña.', steps: ['Escribe tu contraseña actual y la nueva (mínimo 8 caracteres, con letras y números).', 'Guarda los cambios.'], tips: ['Si la olvidaste, en el login toca “¿Olvidaste tu contraseña?”: tu administrador te enviará un enlace para crear una nueva.'] }
+const COURSES_SECTION = { id: 'cursos', title: 'Cursos: inscribirte como alumno', nav: 'Cursos', body: 'Puedes cursar como alumno los cursos de los programas vigentes.', steps: ['Busca el curso por nombre, programa o profesor (o marca “Solo mis cursos”).', 'Toca “Inscribirme”. Si dice “Se cruza con tu horario”, choca a la misma fecha y hora con una clase que dictas o que ya cursas.', '“Darme de baja” te retira del curso.', 'Para cursar, toca “Modo alumno” arriba (o “Cursar en modo alumno”); “Volver a mi rol” te regresa.'], tips: ['No aparecen los cursos que dictas: nadie cursa lo que enseña.', 'Mismo día y hora pero en otra fecha sí se puede: solo se bloquea el cruce real.'] }
+const REPORTS_SECTION = { id: 'reportes', title: 'Reportes', nav: 'Reportes', body: 'Reportes listos para revisar la operación.', steps: ['Elige el reporte: inasistencias justificadas y no justificadas, avance por programa o por componente, cumplimiento de profesores, temas atrasados o adelantados y resumen de permisos.', 'Para el comparativo por periodo, elige las fechas desde y hasta.', 'Revisa la tabla con los resultados.'] }
+
+
 const MANUALS = {
   student: {
     label: 'Alumno (talento)',
@@ -363,6 +373,11 @@ const MANUALS = {
       { id: 'perfil', title: 'Mi perfil profesional', nav: 'Mi perfil', body: 'Tu carta de presentación ante profesores y la organización.', steps: ['Sube una foto o una imagen que te identifique.', 'Completa titular, GitHub, LinkedIn, portafolio, ciudad, correo de contacto y “Sobre ti”.', 'Revisa a la derecha cómo te ven tus profesores y guarda.'], tips: ['Tu teléfono solo lo ve el administrador.'] },
       { id: 'permisos', title: 'Permisos por fechas', nav: 'Permisos', body: 'Para ausencias de varios días.', steps: ['En Permisos indica desde, hasta, tipo, motivo e imagen opcional.', 'El administrador lo aprueba o rechaza y ves el estado aquí.'], tips: [] },
       { id: 'soporte', title: 'Reportar un problema o una idea', nav: 'Soporte', body: 'Incidencias, observaciones y mejoras.', steps: ['Ve a la pantalla donde está el problema y toca “Reportar” en la barra superior.', 'Elige el tipo, escribe título y detalle. La captura de la pantalla se adjunta sola y puedes agregar otra imagen.', 'Sigue las respuestas en Soporte; también te llegan como alerta.'], tips: [] },
+      { id: 'inicio', title: 'Inicio', nav: 'Inicio', body: 'Tu resumen del día.', steps: ['Arriba, en todas las pantallas, ves tu próxima clase con el botón para unirte a la reunión.', 'Debajo tienes tu asistencia, tus temas pendientes y tus próximas sesiones.', 'Usa los atajos para ir directo a tu horario o a tus temas.'], tips: ['“Guía” (arriba) explica cualquier pantalla paso a paso.'] },
+      { id: 'induccion', title: 'Mi inducción', nav: 'Mi inducción', body: 'Tu camino de inducción, paso a paso.', steps: ['Arriba ves cuántos pasos obligatorios llevas.', 'Toca un paso para ver el video, abrir la lectura, unirte a la sesión en vivo o responder el cuestionario.', 'Al terminar un paso, márcalo como hecho; los cuestionarios se califican solos y tienen nota mínima.', 'Si las etapas van en orden, la siguiente se abre al completar los pasos obligatorios de la anterior.'], tips: ['Si no apruebas un cuestionario, ves las respuestas correctas y puedes reintentar: queda tu mejor nota.'] },
+      ALERTS_SECTION,
+      HELP_SECTION,
+      ACCOUNT_SECTION,
     ],
   },
   instructor: {
@@ -377,6 +392,12 @@ const MANUALS = {
       { id: 'modo-alumno', title: 'Cursar como alumno (Modo alumno)', nav: 'Inicio', body: 'Puedes inscribirte tú mismo como alumno en cursos de programas vigentes y cursarlos con la vista de alumno.', steps: ['En “Cursos” toca “Inscribirme” en el curso que quieras (no aparecen los que dictas; los que se cruzan con tus clases están bloqueados).', 'Toca “Modo alumno” arriba a la derecha.', 'Verás tus temas, tu horario y tu asistencia como cualquier alumno.', 'Toca “Volver a mi rol” para regresar.'], tips: ['Nunca puedes cursar un componente que tú mismo dictas.'] },
       { id: 'avisos', title: 'Avisos de inasistencia', nav: 'Permisos', body: 'Los avisos de tus alumnos y los tuyos.', steps: ['Revisa los avisos de tus alumnos para tus clases (el administrador los aprueba).', 'Tus propios avisos aparecen en “Mis avisos de inasistencia”; puedes retirarlos si la clase no pasó.'], tips: ['Avisar con anticipación mejora tu indicador de puntualidad del aviso.'] },
       { id: 'soporte', title: 'Reportar un problema', nav: 'Soporte', body: 'Usa “Reportar” en la barra superior desde la pantalla con el problema: la captura se adjunta sola.', steps: [], tips: [] },
+      { id: 'temarios', title: 'Temarios', nav: 'Temarios', body: 'El temario de cada uno de tus grupos.', steps: ['Elige el grupo arriba (y el programa si tienes varios).', 'Ves cuántos temas dictaste, cuántos están atrasados y tu próxima clase.', 'En cada tema: fecha, estado, asistencia y la opinión de los alumnos; desde ahí registras asistencia o abres el material.', '“Clase” guarda el link de la reunión (para esa clase o para todo el grupo), la grabación, notas y archivos para tus alumnos.'] },
+      { id: 'asistencia-grupos', title: 'Asistencia de tus grupos', nav: 'Asistencia', body: 'Registra y revisa la asistencia.', steps: ['Elige el grupo.', 'En “Clases por registrar” toca Registrar: todos empiezan como Presente y marcas solo ausentes, tardanzas o retiros.', 'Revisa los avisos de inasistencia de tus alumnos para tus próximas clases.', 'El récord del grupo muestra cada sesión y el porcentaje de cada alumno.'] },
+      COURSES_SECTION,
+      ALERTS_SECTION,
+      HELP_SECTION,
+      ACCOUNT_SECTION,
     ],
   },
   admin: {
@@ -394,6 +415,15 @@ const MANUALS = {
       { id: 'inasistencias', title: 'Inasistencias e indicadores', nav: 'Inasistencias', body: 'Alumnos, profesores y cambios de profesor.', steps: ['Alumnos: faltas por persona según si avisaron con anticipación, el mismo día, justificaron después o no justificaron; historial de cada uno.', 'Profesores: registra faltas (aunque no hayan avisado), márcalas justificadas o no, y revisa la puntualidad del aviso.', 'Cambios de profesor: historial con motivos, incluidas renuncias.'], tips: [] },
       { id: 'satisfaccion', title: 'Satisfacción y reporte con IA', nav: 'Satisfacción', body: 'Lo que opinan los alumnos.', steps: ['Resumen por programa, curso y profesor; temas mejor valorados y a revisar.', 'Pedidos de repetir: para planificar a futuro.', 'Comentarios: búscalos y fíltralos por tipo.', 'Reporte con IA: elige el alcance y genera un análisis con fortalezas, problemas y recomendaciones. Queda guardado.'], tips: ['A la IA no se le envían nombres de alumnos.'] },
       { id: 'soporte', title: 'Soporte', nav: 'Soporte', body: 'Incidencias, observaciones y mejoras de los usuarios.', steps: ['Abre un reporte para ver la captura de la pantalla de origen, la imagen y los datos del navegador.', 'Responde: le llega como alerta a quien reportó.', 'Cambia el estado: abierto, en atención, resuelto o cerrado.'], tips: [] },
+      { id: 'induccion-admin', title: 'Inducción', nav: 'Inducción', body: 'Programas de inducción con un camino obligatorio y su tablero de cumplimiento.', steps: ['“Nueva inducción” crea el programa de inducción.', 'En “Camino y pasos” arma etapas y pasos: video, lectura, cuestionario (con nota mínima y preguntas sugeridas con IA), tarea o sesión en vivo de Teams; marca cuáles son obligatorios.', 'En “Alumnos” inscribe a las personas.', 'En “Avance” ves quién cumplió, “Dónde reforzar” y el camino de cada persona.'], tips: ['Con “las etapas se abren en orden”, nadie salta una etapa sin completar la anterior.'] },
+      { id: 'inscripciones', title: 'Inscripciones desde la web', nav: 'Inscripciones', body: 'Las preinscripciones que llegan desde la web pública de cada programa.', steps: ['Revisa los datos de cada persona.', 'Confírmala para crear su usuario e inscribirla en el programa, o recházala.'], tips: ['La web pública se activa en Programas → “Web pública”.'] },
+      { id: 'alumnos', title: 'Alumnos', nav: 'Alumnos', body: 'El directorio de alumnos con su perfil y contacto.', steps: ['Busca por nombre, ciudad o titular y filtra por programa (el super admin también por tenant).', '“Agrupar” los separa por tenant o por programa.', '“Ver perfil” muestra sus links, correo y teléfono.'], tips: ['También aparecen los profesores y admins que estén inscritos como alumnos.'] },
+      COURSES_SECTION,
+      { id: 'permisos-admin', title: 'Permisos y avisos de inasistencia', nav: 'Permisos', body: 'Las solicitudes de permiso y los avisos de inasistencia.', steps: ['Revisa cada solicitud con su motivo y fechas.', '“Ver evidencia” abre la imagen adjunta.', 'Apruébala o recházala: la persona ve la respuesta en sus alertas.'] },
+      REPORTS_SECTION,
+      { id: 'configuracion', title: 'Configuración', nav: 'Configuracion', body: 'La marca de tu organización y tu contraseña.', steps: ['Sube el logo y elige el color de marca: se usan en el login, el material y la web pública.', 'Copia el link de acceso propio de tu tenant para compartirlo.', 'Cambia tu contraseña con tu contraseña actual.'] },
+      ALERTS_SECTION,
+      HELP_SECTION,
     ],
   },
   superAdmin: {
@@ -416,7 +446,7 @@ export function HelpPanel({ session, navigate }) {
   const [query, setQuery] = useState('')
   const manual = MANUALS[manualKey]
   const q = query.trim().toLowerCase()
-  const sections = useMemo(() => manual.sections.filter((s) => !q || [s.title, s.body, ...s.steps, ...s.tips].some((t) => t.toLowerCase().includes(q))), [manual, q])
+  const sections = useMemo(() => manual.sections.filter((s) => !q || [s.title, s.body, ...(s.steps || []), ...(s.tips || [])].some((t) => t.toLowerCase().includes(q))), [manual, q])
 
   return (
     <div className="admin-wrap">
@@ -447,8 +477,8 @@ export function HelpPanel({ session, navigate }) {
               <article key={s.id} id={`help-${manualKey}-${s.id}`} className="help-section">
                 <h4><span className="sch-step-n">{i + 1}</span> {s.title}</h4>
                 <p>{s.body}</p>
-                {s.steps.length > 0 && <ol className="help-steps">{s.steps.map((t) => <li key={t}>{t}</li>)}</ol>}
-                {s.tips.length > 0 && <ul className="help-tips">{s.tips.map((t) => <li key={t}>{t}</li>)}</ul>}
+                {s.steps?.length > 0 && <ol className="help-steps">{s.steps.map((t) => <li key={t}>{t}</li>)}</ol>}
+                {s.tips?.length > 0 && <ul className="help-tips">{s.tips.map((t) => <li key={t}>{t}</li>)}</ul>}
                 {s.nav && manualKey === available[0] && navigate && <button type="button" className="btn-mini" onClick={() => navigate(s.nav)}>Ir a {s.nav} →</button>}
               </article>
             ))}
