@@ -362,6 +362,25 @@ export function registerSchedulePlannerRoutes(app) {
     }
   })
 
+  // Edicion manual del horario semanal de un grupo (reemplaza todos sus dias).
+  // Las fechas de cada clase se cambian una a una con /api/topics/:id/reschedule.
+  app.put('/api/groups/:id/schedule-days', authenticate, async (req, res) => {
+    const groupId = Number(req.params.id)
+    const days = Array.isArray(req.body?.days) ? req.body.days : null
+    if (!Number.isInteger(groupId) || !days || !days.length || days.length > 7 || new Set(days.map((d) => d?.weekday)).size !== days.length
+      || days.some((d) => !Number.isInteger(d?.weekday) || d.weekday < 0 || d.weekday > 6 || !TIME_RE.test(d.start) || !TIME_RE.test(d.end) || d.start >= d.end)) {
+      return res.status(400).json({ message: 'invalid_schedule_day' })
+    }
+    try {
+      await callProcedure('sp_group_schedule_replace', {
+        ...actor(req), p_group_id: groupId, p_days: JSON.stringify(days.map((d) => ({ weekday: d.weekday, start: d.start, end: d.end }))),
+      })
+      res.json({ ok: true })
+    } catch (err) {
+      sendError(res, err)
+    }
+  })
+
   // Franjas de clase del programa (vacio = sin restriccion).
   app.put('/api/schedule-planner/:programId/windows', authenticate, async (req, res) => {
     const programId = Number(req.params.programId)

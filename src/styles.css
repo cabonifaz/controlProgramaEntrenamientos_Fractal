@@ -1111,3 +1111,12 @@ p.sch-warn{margin:0 0 10px}
 .av-window.on{background:#e8f1f6;border-color:var(--blue);color:#06425e;font-weight:600}
 .av-window input{accent-color:var(--blue);margin:0}
 @media (max-width:640px){.sch-window-rows li{align-items:flex-start}.sch-window-time{width:100%}.sch-window-time input{flex:1;min-width:0}}
+/* Edicion manual de horario y fechas de un grupo */
+.sch-manual{display:grid;gap:10px}
+.sch-manual h4{margin:6px 0 0;font-size:14px}
+.sch-manual-day select{padding:6px 8px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--ink);font:inherit;min-width:130px}
+.sch-manual-topics{margin:0;padding-left:22px;display:grid;gap:6px}
+.sch-manual-topics li{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line);padding:6px 0}
+.sch-manual-title{display:grid;gap:2px;min-width:0;flex:1 1 220px;overflow-wrap:anywhere}
+.sch-manual-topics input{padding:6px 8px;border:1px solid var(--line);border-radius:8px;font:inherit;color:var(--ink);background:#fff}
+.sch-edit{display:inline-flex;align-items:center;gap:5px;white-space:nowrap}

@@ -351,6 +351,112 @@ export function MyAvailabilityPanel({ session }) {
 }
 
 // ===================================================================
+// Edicion manual de un grupo: dias y horas de la semana y la fecha de cada
+// clase. Se puede aun con el horario cerrado; las fechas siguen sin caer en
+// feriado ni cruzar al profesor (lo valida el servidor).
+function GroupManualEditor({ token, group, onChanged }) {
+  const [days, setDays] = useState(() => group.schedule.map((d, i) => ({ ...d, key: i })))
+  const [topics, setTopics] = useState(null)
+  const [error, setError] = useState('')
+  const [saved, setSaved] = useState('')
+  const [savingDays, setSavingDays] = useState(false)
+  const [savingTopic, setSavingTopic] = useState(null)
+  let nextKey = days.reduce((m, d) => Math.max(m, d.key), 0) + 1
+
+  const loadTopics = useCallback(() => {
+    apiRequest(`/api/groups/${group.groupId}/topics`, { token }).then(({ data }) => setTopics(data)).catch((err) => setError(err.message))
+  }, [group.groupId, token])
+  useEffect(() => { loadTopics() }, [loadTopics])
+
+  const update = (key, patch) => { setDays((list) => list.map((d) => (d.key === key ? { ...d, ...patch } : d))); setSaved('') }
+  const free = DAYS.filter((d) => !days.some((x) => x.weekday === d.weekday))
+  const invalid = !days.length || days.some((d) => !d.start || !d.end || d.start >= d.end)
+
+  async function saveDays() {
+    setSavingDays(true)
+    setError('')
+    setSaved('')
+    try {
+      await apiRequest(`/api/groups/${group.groupId}/schedule-days`, { method: 'PUT', token, body: { days: days.map(({ weekday, start, end }) => ({ weekday, start, end })) } })
+      setSaved('Días y horas guardados.')
+      onChanged()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setSavingDays(false)
+    }
+  }
+
+  async function moveTopic(topic, newDate) {
+    if (!newDate || newDate === String(topic.scheduled_on || '').slice(0, 10)) return
+    setSavingTopic(topic.id)
+    setError('')
+    setSaved('')
+    try {
+      await apiRequest(`/api/topics/${topic.id}/reschedule`, { method: 'POST', token, body: { newDate } })
+      setSaved(`“${topic.title}” pasa al ${day(newDate)}.`)
+      loadTopics()
+      onChanged()
+    } catch (err) {
+      setError(err.message)
+      loadTopics()
+    } finally {
+      setSavingTopic(null)
+    }
+  }
+
+  const weekdayOf = (iso) => new Date(`${iso}T00:00:00Z`).getUTCDay()
+  const offSchedule = (iso) => iso && days.length > 0 && !days.some((d) => d.weekday === weekdayOf(iso))
+  return (
+    <div className="sch-manual">
+      <h4>Días y horas de la semana</h4>
+      <ul className="sch-window-rows">
+        {days.map((d) => (
+          <li key={d.key} className={d.start >= d.end ? 'bad' : ''}>
+            <label className="sch-manual-day"><span className="sr-only">Día</span>
+              <select value={d.weekday} onChange={(e) => update(d.key, { weekday: Number(e.target.value) })}>
+                {DAYS.filter((x) => x.weekday === d.weekday || free.includes(x)).map((x) => <option key={x.weekday} value={x.weekday}>{x.label}</option>)}
+              </select>
+            </label>
+            <span className="sch-window-time">
+              <input type="time" value={d.start} onChange={(e) => update(d.key, { start: e.target.value })} aria-label="Desde" />
+              <span aria-hidden="true">–</span>
+              <input type="time" value={d.end} onChange={(e) => update(d.key, { end: e.target.value })} aria-label="Hasta" />
+            </span>
+            <button type="button" className="av-remove" onClick={() => { setDays((list) => list.filter((x) => x.key !== d.key)); setSaved('') }} aria-label="Quitar día"><Trash2 size={14} aria-hidden="true" /></button>
+          </li>
+        ))}
+      </ul>
+      <div className="av-foot">
+        {free.length > 0 ? <button type="button" className="btn-mini" onClick={() => { setDays((list) => [...list, { key: nextKey++, weekday: free[0].weekday, start: days.at(-1)?.start || '18:30', end: days.at(-1)?.end || '20:00' }]); setSaved('') }}><Plus size={13} aria-hidden="true" /> Día</button> : <span />}
+        <button type="button" className="primary" onClick={saveDays} disabled={savingDays || invalid}>{savingDays ? 'Guardando…' : 'Guardar días y horas'}</button>
+      </div>
+      {!days.length && <p className="form-error">El grupo necesita al menos un día de clase.</p>}
+
+      <h4>Fecha de cada clase</h4>
+      <p className="muted small-note">Cambia la fecha de una clase y se guarda al instante. No puede caer en feriado ni el mismo día que otra clase del profesor.</p>
+      {topics === null ? <p className="muted">Cargando…</p> : !topics.length ? <p className="muted">Este grupo no tiene temas.</p> : (
+        <ol className="sch-manual-topics">
+          {topics.map((t) => {
+            const iso = t.scheduled_on ? String(t.scheduled_on).slice(0, 10) : ''
+            return (
+              <li key={t.id}>
+                <span className="sch-manual-title">{t.title}<small className="muted">{t.status_label}{offSchedule(iso) ? ' · fuera de los días del grupo' : ''}</small></span>
+                <label><span className="sr-only">Fecha de {t.title}</span>
+                  <input type="date" defaultValue={iso} key={iso} onChange={(e) => moveTopic(t, e.target.value)} disabled={savingTopic === t.id} />
+                </label>
+              </li>
+            )
+          })}
+        </ol>
+      )}
+      {saved && <p className="av-saved" role="status"><CheckCircle2 size={14} aria-hidden="true" /> {saved}</p>}
+      <ErrorNote message={error} />
+    </div>
+  )
+}
+
+// ===================================================================
 // Admin y super admin: "Horarios".
 export function SchedulePlannerPanel({ session }) {
   const { token, profile } = session
@@ -367,6 +473,7 @@ export function SchedulePlannerPanel({ session }) {
   const [editing, setEditing] = useState(null)
   const [holidayMsg, setHolidayMsg] = useState('')
   const [assigning, setAssigning] = useState(null)
+  const [manualGroup, setManualGroup] = useState(null)
 
   useEffect(() => {
     apiRequest('/api/programs', { token }).then(({ data }) => {
@@ -393,7 +500,7 @@ export function SchedulePlannerPanel({ session }) {
     setError('')
     try {
       const { data: planner } = await apiRequest(`/api/schedule-planner/${programId}`, { token })
-      setData(planner)
+      setData({ ...planner, programId })
       setOptions((o) => ({ ...o, startDate: o.startDate || planner.defaultStart }))
     } catch (err) {
       setError(err.message)
@@ -508,7 +615,7 @@ export function SchedulePlannerPanel({ session }) {
           </div>
         </div>
         <ErrorNote message={error} />
-        {!tenantPrograms.length ? <p className="muted">No hay programas de entrenamiento activos{isSuperAdmin ? ' en este tenant' : ''}.</p> : !data ? <p className="muted">Cargando…</p> : (
+        {!tenantPrograms.length ? <p className="muted">No hay programas de entrenamiento activos{isSuperAdmin ? ' en este tenant' : ''}.</p> : !data || data.programId !== programId ? <p className="muted">Cargando…</p> : (
           <>
             {closed ? (
               <div className="sch-closed" role="status">
@@ -646,11 +753,11 @@ export function SchedulePlannerPanel({ session }) {
                 )}
               </li>
             </ol>
-            <details className="sch-current">
-              <summary>Horario actual de los grupos</summary>
+            <details className="sch-current" open>
+              <summary>Horario actual de los grupos · editar a mano</summary>
               <div className="table-fit">
                 <table className="admin-table sch-table">
-                  <thead><tr><th>Componente · grupo</th><th>Profesor</th><th>Días y hora</th><th>Fechas</th><th>Por programar</th></tr></thead>
+                  <thead><tr><th>Componente · grupo</th><th>Profesor</th><th>Días y hora</th><th>Fechas</th><th>Por programar</th><th><span className="sr-only">Acciones</span></th></tr></thead>
                   <tbody>
                     {data.groups.map((g) => (
                       <tr key={g.groupId}>
@@ -659,6 +766,7 @@ export function SchedulePlannerPanel({ session }) {
                         <td>{g.schedule.length ? slotsText(g.schedule) : '—'}</td>
                         <td className="sch-dates">{g.firstDate ? `${day(g.firstDate)} – ${day(g.lastDate)}` : '—'}</td>
                         <td className="ind-n">{g.topicsToPlan}/{g.topicsTotal}</td>
+                        <td><button type="button" className="btn-mini sch-edit" onClick={() => setManualGroup(g)}><CalendarCog size={13} aria-hidden="true" /> Editar</button></td>
                       </tr>
                     ))}
                   </tbody>
@@ -668,6 +776,11 @@ export function SchedulePlannerPanel({ session }) {
           </>
         )}
       </section>
+      {manualGroup && (
+        <Modal title={`Horario y fechas — ${manualGroup.componentName} · ${manualGroup.groupName}`} onClose={() => setManualGroup(null)} wide>
+          <GroupManualEditor token={token} group={manualGroup} onChanged={() => { load(); setPreview(null) }} />
+        </Modal>
+      )}
       {editing && (
         <Modal title={`Disponibilidad de ${editing.instructorName}`} onClose={() => setEditing(null)} wide>
           <AvailabilityEditor token={token} instructorId={editing.instructorId} programId={Number(programId)} initialBlocks={editing.blocks} locked={Boolean(closed)} windows={data?.windows || []} onSaved={() => { load(); setPreview(null) }} />
