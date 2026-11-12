@@ -115,7 +115,7 @@
 .pg-mark.warn{background:#fff4dc;color:#8a5a00}
 .pg-mark.danger{background:#fdecea;color:#b42318}
 .pg-mark.info{background:#e7f1f8;color:#06425e}
-.pg-mark.empty{background:transparent;color:#b8c4ca}
+.pg-mark.empty{background:transparent;color:#5d6b74}
 .pg-my-att{display:inline-flex;align-items:center;gap:8px}
 .pg-session-att{margin-top:6px;padding-top:16px;border-top:1px solid var(--line);display:grid;gap:10px}
 .pg-session-att h4{font:600 15px 'Space Grotesk'}
@@ -1120,3 +1120,10 @@ p.sch-warn{margin:0 0 10px}
 .sch-manual-title{display:grid;gap:2px;min-width:0;flex:1 1 220px;overflow-wrap:anywhere}
 .sch-manual-topics input{padding:6px 8px;border:1px solid var(--line);border-radius:8px;font:inherit;color:var(--ink);background:#fff}
 .sch-edit{display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
+/* Modo alumno (profesor/admin cursando) */
+.mode-switch{display:inline-flex;align-items:center;gap:6px;min-height:38px;padding:6px 12px;border:1px solid var(--line);border-radius:10px;background:#fff;color:var(--deep);font-weight:600;font-size:13px}
+.mode-switch.on{background:var(--deep);border-color:var(--deep);color:#fff}
+.mode-switch:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+.student-mode-bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;background:#e8f1f6;border-bottom:1px solid #b7d3e2;color:#06425e;padding:8px 24px;font-size:13px}
+.student-mode-bar span{flex:1;min-width:200px}
+@media (max-width:640px){.mode-switch span{display:none}.mode-switch{padding:6px 9px}.student-mode-bar{padding:8px 16px}}

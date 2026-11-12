@@ -18,9 +18,11 @@ export async function verifyPassword(plainPassword, passwordHash) {
   return bcrypt.compare(plainPassword, passwordHash)
 }
 
-export function signSessionToken({ userId, tenantId, roleCode, fullName }) {
+// baseRole/baseTenantId: solo en "modo alumno" (un profesor o admin cursando
+// como alumno); guardan su rol real para volver a el.
+export function signSessionToken({ userId, tenantId, roleCode, fullName, baseRole, baseTenantId }) {
   return jwt.sign(
-    { sub: String(userId), tenantId, roleCode, fullName },
+    { sub: String(userId), tenantId, roleCode, fullName, ...(baseRole ? { baseRole, baseTenantId: baseTenantId ?? null } : {}) },
     getJwtSecret(),
     { expiresIn: process.env.JWT_EXPIRES_IN || '8h' },
   )

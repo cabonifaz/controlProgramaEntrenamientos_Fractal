@@ -197,6 +197,53 @@ app.get('/api/auth/me', authenticate, (req, res) => {
   res.json({ user: req.user })
 })
 
+// "Modo alumno": un profesor, admin o super admin inscrito como alumno en
+// algun programa cursa con la vista y los permisos de un alumno. El token
+// guarda su rol real (baseRole) para volver a el; nunca suma permisos.
+const STUDENT_MODE_ROLES = new Set(['instructor', 'tenant_admin', 'super_admin'])
+
+app.get('/api/auth/student-mode', authenticate, async (req, res) => {
+  const baseRole = req.user.baseRoleCode || req.user.roleCode
+  if (!STUDENT_MODE_ROLES.has(baseRole)) return res.json({ data: { available: false, active: false } })
+  try {
+    const [ctx] = await callProcedure('sp_auth_student_context', { p_user_id: req.user.id })
+    res.json({ data: { available: Boolean(ctx), active: Boolean(req.user.baseRoleCode), programs: Number(ctx?.programs) || 0 } })
+  } catch (err) {
+    const { status, message } = mapStoredProcedureError(err)
+    res.status(status).json({ message })
+  }
+})
+
+app.post('/api/auth/student-mode', authenticate, async (req, res) => {
+  const on = req.body?.on
+  if (typeof on !== 'boolean') return res.status(400).json({ message: 'Invalid request format' })
+  const baseRole = req.user.baseRoleCode || req.user.roleCode
+  const baseTenantId = req.user.baseRoleCode ? req.user.baseTenantId : req.user.tenantId
+  try {
+    if (!on) {
+      if (!req.user.baseRoleCode) return res.status(400).json({ message: 'Invalid request format' })
+      const token = signSessionToken({ userId: req.user.id, tenantId: baseTenantId, roleCode: baseRole, fullName: req.user.fullName })
+      return res.json({ token, user: { roleCode: baseRole, tenantId: baseTenantId, baseRoleCode: null } })
+    }
+    if (!STUDENT_MODE_ROLES.has(baseRole)) return res.status(403).json({ message: 'not_authorized' })
+    const [ctx] = await callProcedure('sp_auth_student_context', { p_user_id: req.user.id })
+    if (!ctx) return res.status(409).json({ message: 'not_enrolled' })
+    const token = signSessionToken({
+      userId: req.user.id, tenantId: ctx.tenant_id, roleCode: 'student', fullName: req.user.fullName, baseRole, baseTenantId,
+    })
+    res.json({
+      token,
+      user: {
+        roleCode: 'student', tenantId: ctx.tenant_id, baseRoleCode: baseRole,
+        tenantLogoUrl: ctx.tenant_logo_path ? `/uploads/${ctx.tenant_logo_path}` : null, tenantBrandColor: ctx.tenant_brand_color || null,
+      },
+    })
+  } catch (err) {
+    const { status, message } = mapStoredProcedureError(err)
+    res.status(status).json({ message })
+  }
+})
+
 // No hay servicio de correo disponible, por lo que no existe un "forgot password"
 // por email. El propio usuario cambia su contrasena conociendo la actual; si la
 // perdio, un administrador le genera un enlace para crear una nueva.

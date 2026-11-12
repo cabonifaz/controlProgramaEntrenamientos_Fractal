@@ -53,6 +53,10 @@ const ERROR_MESSAGES = {
   availability_locked: 'El horario de este programa ya se cerró: la disponibilidad no se puede cambiar.',
   plan_incomplete: 'El plan no cubre todos los temas. Vuelve a calcular la vista previa.',
   windows_overlap: 'Dos franjas del mismo día se pisan. Ajusta las horas.',
+  program_not_active: 'El programa no está vigente (finalizado, cancelado o archivado): no se le asignan profesores.',
+  enrolled_in_component: 'Esa persona está inscrita como alumno en este componente: no puede dictarlo.',
+  teaches_this_component: 'Esa persona dicta este componente: no puede inscribirse como alumno en él.',
+  not_enrolled: 'No estás inscrito como alumno en ningún programa.',
   availability_outside_window: 'La disponibilidad debe estar dentro de las franjas de clase del programa.',
   plan_conflict: 'El plan cruza clases (mismo profesor el mismo día o dos componentes a la misma hora). Vuelve a calcular la vista previa.',
   student_invalid: 'El alumno seleccionado no es válido.',
@@ -1493,6 +1497,7 @@ function EnrollStudentModal({ session, group, programId, students, onClose, onEn
 
   return (
     <Modal title={`Inscribir alumno — ${group.name}`} onClose={onClose}>
+      <p className="muted small-note">También puedes inscribir a profesores, admins y super admins para que cursen como alumnos, salvo en un componente que dictan.</p>
       <form className="admin-form" onSubmit={handleEnroll}>
         <label className="full-field">Alumno
           <SearchSelect options={students} value={studentId} onChange={setStudentId} placeholder="Buscar alumno…" allowEmpty={false} />
@@ -1505,11 +1510,19 @@ function EnrollStudentModal({ session, group, programId, students, onClose, onEn
   )
 }
 
-function GroupsPanel({ session, component, onBack }) {
+// Pueden inscribirse como alumnos: alumnos, profesores, admins y super admins
+// (nunca en un componente que dictan; eso lo valida el SP).
+const PARTICIPANT_ROLE_TAG = { instructor: 'profesor', tenant_admin: 'admin', super_admin: 'super admin' }
+
+function GroupsPanel({ session, component, program, onBack }) {
   const { token } = session
   const { items, error, loading, reload } = useList(`/api/components/${component.id}/groups`, token)
   const { items: instructors } = useList('/api/users?role=instructor', token)
-  const { items: students } = useList('/api/users?role=student', token)
+  const { items: allUsers } = useList('/api/users', token)
+  const students = useMemo(() => allUsers
+    .filter((u) => u.is_active && (u.role_code === 'student' || PARTICIPANT_ROLE_TAG[u.role_code])
+      && (u.role_code === 'super_admin' || !program?.tenant_id || String(u.tenant_id) === String(program.tenant_id)))
+    .map((u) => (PARTICIPANT_ROLE_TAG[u.role_code] ? { ...u, full_name: `${u.full_name} (${PARTICIPANT_ROLE_TAG[u.role_code]})` } : u)), [allUsers, program])
   const [form, setForm] = useState({ name: '', instructorId: '' })
   const [formError, setFormError] = useState('')
   const [enrollingGroup, setEnrollingGroup] = useState(null)
@@ -2282,7 +2295,7 @@ function ComponentsPanel({ session, program, onBack }) {
     return <ProgramSchedulePanel session={session} program={program} onBack={() => setShowSchedule(false)} />
   }
   if (selectedComponent) {
-    return <GroupsPanel session={session} component={selectedComponent} onBack={() => setSelectedComponent(null)} />
+    return <GroupsPanel session={session} component={selectedComponent} program={program} onBack={() => setSelectedComponent(null)} />
   }
 
   return (

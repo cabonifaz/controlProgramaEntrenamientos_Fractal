@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AlertTriangle, CalendarCog, CheckCircle2, Clock, Lock, LockOpen, Plus, Trash2, UserCog, Wand2 } from 'lucide-react'
 import { apiRequest } from './api'
 import { ErrorNote, Modal } from './admin.jsx'
@@ -495,11 +495,15 @@ export function SchedulePlannerPanel({ session }) {
     setProgramId(String((programs || []).find((p) => String(p.tenant_id) === id)?.id || ''))
   }
 
+  // Programa elegido ahora: una respuesta que llega tarde de otro programa se descarta.
+  const currentProgram = useRef(programId)
+  currentProgram.current = programId
   const load = useCallback(async () => {
     if (!programId) return
     setError('')
     try {
       const { data: planner } = await apiRequest(`/api/schedule-planner/${programId}`, { token })
+      if (currentProgram.current !== programId) return
       setData({ ...planner, programId })
       setOptions((o) => ({ ...o, startDate: o.startDate || planner.defaultStart }))
     } catch (err) {

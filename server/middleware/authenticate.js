@@ -13,6 +13,9 @@ export function authenticate(req, res, next) {
       tenantId: payload.tenantId ?? null,
       roleCode: payload.roleCode,
       fullName: payload.fullName,
+      // Rol real cuando la sesion esta en modo alumno (si no, null).
+      baseRoleCode: payload.baseRole ?? null,
+      baseTenantId: payload.baseRole ? (payload.baseTenantId ?? null) : null,
     }
     next()
   } catch {

@@ -862,6 +862,7 @@ DROP PROCEDURE IF EXISTS sp_migrate_schedule_close_v1;
 DROP PROCEDURE IF EXISTS sp_programs_schedule_close;
 DROP PROCEDURE IF EXISTS sp_topics_apply_plan;
 DROP PROCEDURE IF EXISTS sp_program_windows_list;
+DROP PROCEDURE IF EXISTS sp_auth_student_context;
 DROP PROCEDURE IF EXISTS sp_program_windows_set;
 DROP PROCEDURE IF EXISTS sp_programs_set_colors;
 DROP PROCEDURE IF EXISTS sp_components_set_colors;
@@ -1856,7 +1857,8 @@ BEGIN
   FROM users u JOIN master_catalog_values v ON v.id = u.role_id
   WHERE u.id = p_student_id AND u.is_deleted = FALSE;
 
-  IF v_student_role IS NULL OR v_student_role <> 'student' OR v_student_tenant_id <> v_program_tenant_id THEN
+  IF v_student_role IS NULL OR v_student_role NOT IN ('student', 'instructor', 'tenant_admin', 'super_admin')
+     OR (v_student_role <> 'super_admin' AND NOT (v_student_tenant_id <=> v_program_tenant_id)) THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'student_invalid';
   END IF;
 
@@ -2075,6 +2077,14 @@ BEGIN
     IF v_instructor_role IS NULL OR v_instructor_role <> 'instructor' OR v_instructor_tenant_id <> v_program_tenant_id THEN
       SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'instructor_invalid';
     END IF;
+    IF NOT EXISTS (SELECT 1 FROM components c3 JOIN training_programs p3 ON p3.id = c3.program_id
+      JOIN master_catalog_values ps3 ON ps3.id = p3.status_id WHERE c3.id = p_component_id AND ps3.code IN ('draft', 'active', 'paused')) THEN
+      SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'program_not_active';
+    END IF;
+    IF EXISTS (SELECT 1 FROM group_enrollments ge JOIN component_groups g4 ON g4.id = ge.group_id
+      WHERE g4.component_id = p_component_id AND g4.is_deleted = FALSE AND ge.student_id = p_instructor_id AND ge.is_deleted = FALSE) THEN
+      SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'enrolled_in_component';
+    END IF;
   END IF;
 
   SELECT v.id INTO v_status_id FROM master_catalog_values v JOIN master_catalogs c ON c.id = v.catalog_id
@@ -2122,12 +2132,31 @@ BEGIN
       SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'instructor_invalid';
     END IF;
 
+    IF NOT (p_instructor_id <=> (SELECT instructor_id FROM component_groups WHERE id = p_group_id)) THEN
+      IF NOT EXISTS (SELECT 1 FROM component_groups g3 JOIN components c3 ON c3.id = g3.component_id
+        JOIN training_programs p3 ON p3.id = c3.program_id JOIN master_catalog_values ps3 ON ps3.id = p3.status_id
+        WHERE g3.id = p_group_id AND ps3.code IN ('draft', 'active', 'paused')) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'program_not_active';
+      END IF;
+      IF EXISTS (SELECT 1 FROM group_enrollments ge JOIN component_groups g4 ON g4.id = ge.group_id
+        WHERE g4.component_id = (SELECT component_id FROM component_groups WHERE id = p_group_id)
+          AND g4.is_deleted = FALSE AND ge.student_id = p_instructor_id AND ge.is_deleted = FALSE) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'enrolled_in_component';
+      END IF;
+    END IF;
+
+    -- Puede dictar varios componentes y programas: solo se impide el cruce
+    -- real (misma fecha y hora) con sus clases de programas vigentes.
     IF EXISTS (
-      SELECT 1 FROM component_group_schedule_days d
-      JOIN component_group_schedule_days d2 ON d2.weekday = d.weekday AND d2.is_deleted = FALSE
-      JOIN component_groups g2 ON g2.id = d2.group_id
-      WHERE d.group_id = p_group_id AND d.is_deleted = FALSE
-        AND g2.instructor_id = p_instructor_id AND g2.id <> p_group_id
+      SELECT 1 FROM topics t
+      JOIN component_group_schedule_days d ON d.group_id = t.group_id AND d.is_deleted = FALSE AND d.weekday = DAYOFWEEK(t.scheduled_on) - 1
+      JOIN component_groups g2 ON g2.instructor_id = p_instructor_id AND g2.id <> p_group_id AND g2.is_deleted = FALSE
+      JOIN components c2 ON c2.id = g2.component_id AND c2.is_deleted = FALSE
+      JOIN training_programs p2 ON p2.id = c2.program_id AND p2.is_deleted = FALSE
+      JOIN master_catalog_values ps2 ON ps2.id = p2.status_id AND ps2.code IN ('draft', 'active', 'paused')
+      JOIN topics t2 ON t2.group_id = g2.id AND t2.is_deleted = FALSE AND t2.scheduled_on = t.scheduled_on
+      JOIN component_group_schedule_days d2 ON d2.group_id = g2.id AND d2.is_deleted = FALSE AND d2.weekday = d.weekday
+      WHERE t.group_id = p_group_id AND t.is_deleted = FALSE AND t.scheduled_on IS NOT NULL
         AND NOT (d.end_time <= d2.start_time OR d.start_time >= d2.end_time)
     ) THEN
       SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'instructor_schedule_conflict';
@@ -2177,7 +2206,8 @@ BEGIN
   FROM users u JOIN master_catalog_values v ON v.id = u.role_id
   WHERE u.id = p_student_id AND u.is_deleted = FALSE;
 
-  IF v_student_role IS NULL OR v_student_role <> 'student' OR v_student_tenant_id <> v_program_tenant_id THEN
+  IF v_student_role IS NULL OR v_student_role NOT IN ('student', 'instructor', 'tenant_admin', 'super_admin')
+     OR (v_student_role <> 'super_admin' AND NOT (v_student_tenant_id <=> v_program_tenant_id)) THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'student_invalid';
   END IF;
 
@@ -2187,6 +2217,11 @@ BEGIN
 
   IF EXISTS (SELECT 1 FROM group_enrollments WHERE group_id = p_group_id AND student_id = p_student_id AND is_deleted = FALSE) THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'already_enrolled';
+  END IF;
+  -- Nadie cursa un componente que dicta.
+  IF EXISTS (SELECT 1 FROM component_groups g2 WHERE g2.is_deleted = FALSE AND g2.instructor_id = p_student_id
+    AND g2.component_id = (SELECT component_id FROM component_groups WHERE id = p_group_id)) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'teaches_this_component';
   END IF;
 
   INSERT INTO group_enrollments (group_id, student_id, created_by) VALUES (p_group_id, p_student_id, p_actor_user_id);
@@ -2385,10 +2420,14 @@ BEGIN
   END IF;
 
   IF v_instructor_id IS NOT NULL AND EXISTS (
-    SELECT 1 FROM component_group_schedule_days d
-    JOIN component_groups g2 ON g2.id = d.group_id
-    WHERE g2.instructor_id = v_instructor_id AND g2.id <> p_group_id
-      AND d.weekday = p_weekday AND d.is_deleted = FALSE
+    SELECT 1 FROM topics t
+    JOIN component_groups g2 ON g2.instructor_id = v_instructor_id AND g2.id <> p_group_id AND g2.is_deleted = FALSE
+    JOIN components c2 ON c2.id = g2.component_id AND c2.is_deleted = FALSE
+    JOIN training_programs p2 ON p2.id = c2.program_id AND p2.is_deleted = FALSE
+    JOIN master_catalog_values ps2 ON ps2.id = p2.status_id AND ps2.code IN ('draft', 'active', 'paused')
+    JOIN topics t2 ON t2.group_id = g2.id AND t2.is_deleted = FALSE AND t2.scheduled_on = t.scheduled_on
+    JOIN component_group_schedule_days d ON d.group_id = g2.id AND d.is_deleted = FALSE AND d.weekday = p_weekday
+    WHERE t.group_id = p_group_id AND t.is_deleted = FALSE AND DAYOFWEEK(t.scheduled_on) - 1 = p_weekday
       AND NOT (p_end_time <= d.start_time OR p_start_time >= d.end_time)
   ) THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'instructor_schedule_conflict';
@@ -2545,7 +2584,10 @@ BEGIN
   END IF;
 
   IF v_instructor_id IS NOT NULL AND EXISTS (
-    SELECT 1 FROM topics t2 JOIN component_groups g2 ON g2.id = t2.group_id
+    SELECT 1 FROM topics t2 JOIN component_groups g2 ON g2.id = t2.group_id AND g2.is_deleted = FALSE
+    JOIN components c2 ON c2.id = g2.component_id AND c2.is_deleted = FALSE
+    JOIN training_programs p2 ON p2.id = c2.program_id AND p2.is_deleted = FALSE
+    JOIN master_catalog_values ps2 ON ps2.id = p2.status_id AND ps2.code IN ('draft', 'active', 'paused')
     WHERE g2.instructor_id = v_instructor_id AND t2.scheduled_on = p_new_date AND t2.is_deleted = FALSE AND t2.id <> p_topic_id
   ) THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'instructor_not_available';
@@ -4768,7 +4810,7 @@ BEGIN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
   END IF;
 
-  SELECT u.id, u.full_name, u.email, u.is_active, u.public_headline AS headline, u.public_bio AS bio, u.photo_path,
+  SELECT u.id, u.full_name, u.email, u.is_active, r.code AS role_code, u.public_headline AS headline, u.public_bio AS bio, u.photo_path,
          u.linkedin_url, u.github_url, u.portfolio_url, u.contact_email, u.city,
          CASE WHEN p_actor_role IN ('tenant_admin', 'super_admin') THEN u.phone END AS phone,
          u.tenant_id, t.name AS tenant_name,
@@ -4779,7 +4821,8 @@ BEGIN
          GROUP_CONCAT(DISTINCT CONCAT(p.id, '|', p.name) SEPARATOR ';;') AS program_list,
          GROUP_CONCAT(DISTINCT CONCAT(ep.id, '|', ep.name) SEPARATOR ';;') AS enrolled_program_list
   FROM users u
-  JOIN master_catalog_values r ON r.id = u.role_id AND r.code = 'student'
+  JOIN master_catalog_values r ON r.id = u.role_id AND (r.code = 'student'
+    OR EXISTS (SELECT 1 FROM program_enrollments x WHERE x.student_id = u.id AND x.is_deleted = FALSE))
   LEFT JOIN tenants t ON t.id = u.tenant_id
   LEFT JOIN group_enrollments ge ON ge.student_id = u.id AND ge.is_deleted = FALSE
   LEFT JOIN component_groups g ON g.id = ge.group_id AND g.is_deleted = FALSE
@@ -4791,7 +4834,7 @@ BEGIN
   WHERE u.is_deleted = FALSE
     AND (p_actor_role = 'super_admin' OR u.tenant_id <=> p_actor_tenant_id)
     AND (p_actor_role <> 'instructor' OR u.is_active = TRUE)
-  GROUP BY u.id, u.full_name, u.email, u.is_active, u.public_headline, u.public_bio, u.photo_path,
+  GROUP BY u.id, u.full_name, u.email, u.is_active, r.code, u.public_headline, u.public_bio, u.photo_path,
            u.linkedin_url, u.github_url, u.portfolio_url, u.contact_email, u.city, u.phone, u.tenant_id, t.name
   HAVING p_actor_role <> 'instructor' OR COUNT(c.id) > 0
   ORDER BY u.full_name;
@@ -5233,7 +5276,8 @@ BEGIN
          COUNT(a.id) AS sessions, SUM(av.code IN ('present', 'late')) AS attended,
          SUM(av.code IN ('late', 'left_early')) AS late_or_left
   FROM users su
-  JOIN master_catalog_values r ON r.id = su.role_id AND r.code = 'student'
+  JOIN master_catalog_values r ON r.id = su.role_id AND (r.code = 'student'
+    OR EXISTS (SELECT 1 FROM program_enrollments x WHERE x.student_id = su.id AND x.is_deleted = FALSE))
   LEFT JOIN attendance a ON a.student_id = su.id AND a.is_deleted = FALSE
   LEFT JOIN master_catalog_values av ON av.id = a.attendance_status_id
   WHERE su.is_deleted = FALSE AND (p_actor_role = 'super_admin' OR su.tenant_id <=> p_actor_tenant_id)
@@ -5472,6 +5516,21 @@ BEGIN
     weekday INT PATH '$.weekday', start_time TIME PATH '$.start', end_time TIME PATH '$.end')) jt;
 END$$
 
+-- Modo alumno de un profesor, admin o super admin inscrito en algun
+-- programa: el tenant de su inscripcion mas reciente (y su marca).
+CREATE PROCEDURE sp_auth_student_context(IN p_user_id BIGINT UNSIGNED)
+BEGIN
+  SELECT p.tenant_id, t.name AS tenant_name, t.logo_path AS tenant_logo_path, t.brand_color AS tenant_brand_color,
+         COUNT(DISTINCT pe.program_id) AS programs
+  FROM program_enrollments pe
+  JOIN training_programs p ON p.id = pe.program_id AND p.is_deleted = FALSE
+  JOIN tenants t ON t.id = p.tenant_id
+  WHERE pe.student_id = p_user_id AND pe.is_deleted = FALSE
+  GROUP BY p.tenant_id, t.name, t.logo_path, t.brand_color
+  ORDER BY MAX(pe.created_at) DESC
+  LIMIT 1;
+END$$
+
 -- Franjas de clase del programa. Las ve cualquiera del tenant (el profesor
 -- las necesita para marcar su disponibilidad).
 CREATE PROCEDURE sp_program_windows_list(
@@ -5671,6 +5730,9 @@ BEGIN
   JOIN topics t ON t.id = tt.topic_id
   JOIN component_groups g ON g.id = t.group_id AND g.instructor_id IS NOT NULL
   JOIN component_groups g2 ON g2.instructor_id = g.instructor_id AND g2.is_deleted = FALSE
+  JOIN components c2 ON c2.id = g2.component_id AND c2.is_deleted = FALSE
+  JOIN training_programs p2 ON p2.id = c2.program_id AND p2.is_deleted = FALSE
+  JOIN master_catalog_values ps2 ON ps2.id = p2.status_id AND ps2.code IN ('draft', 'active', 'paused')
   JOIN topics t2 ON t2.group_id = g2.id AND t2.is_deleted = FALSE AND t2.scheduled_on = t.scheduled_on AND t2.id <> t.id;
   IF v_count > 0 THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'plan_conflict';
@@ -5746,7 +5808,9 @@ BEGIN
   FROM component_groups g
   JOIN components c ON c.id = g.component_id AND c.program_id = p_program_id
   JOIN component_groups g2 ON g2.instructor_id = g.instructor_id AND g2.is_deleted = FALSE
-  JOIN components c2 ON c2.id = g2.component_id AND c2.program_id <> p_program_id
+  JOIN components c2 ON c2.id = g2.component_id AND c2.program_id <> p_program_id AND c2.is_deleted = FALSE
+  JOIN training_programs p2 ON p2.id = c2.program_id AND p2.is_deleted = FALSE
+  JOIN master_catalog_values ps2 ON ps2.id = p2.status_id AND ps2.code IN ('draft', 'active', 'paused')
   JOIN topics t2 ON t2.group_id = g2.id AND t2.is_deleted = FALSE AND t2.scheduled_on IS NOT NULL
   WHERE g.is_deleted = FALSE AND g.instructor_id IS NOT NULL AND t2.scheduled_on >= DATE_SUB(CURDATE(), INTERVAL 30 DAY);
 END$$

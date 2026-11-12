@@ -24,6 +24,11 @@ export function saveSession(session, remember) {
   })
 }
 
+// La sesion actual se guardo con "Recordarme" (localStorage).
+export function sessionIsRemembered() {
+  return Boolean(safe(() => localStorage.getItem(SESSION_KEY)))
+}
+
 export function clearSession() {
   safe(() => {
     localStorage.removeItem(SESSION_KEY)
