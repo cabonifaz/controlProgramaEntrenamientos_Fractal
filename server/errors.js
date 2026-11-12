@@ -45,6 +45,8 @@ const STATUS_BY_SP_MESSAGE = {
   availability_locked: 409,
   plan_incomplete: 409,
   plan_conflict: 409,
+  windows_overlap: 400,
+  availability_outside_window: 400,
   tenant_not_found: 404,
   target_not_found: 404,
   program_not_found: 404,

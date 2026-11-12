@@ -15,6 +15,10 @@ import { mapStoredProcedureError } from './errors.js'
 // empiezan en la fecha de inicio. Los grupos de un mismo componente son
 // alternativas para los alumnos y pueden ir a la misma hora.
 //
+// Si el programa tiene franjas de clase (p.ej. lun-vie 18:30-20:00 y
+// 20:30-22:00), la disponibilidad y las clases solo caen dentro de ellas y
+// cada clase dura su franja.
+//
 // Quien dicta cada grupo lo decide el admin; el generador no asigna
 // profesores, solo avisa que componentes quedan sin profesor. Con el
 // horario del programa cerrado no se regenera y la disponibilidad queda fija.
@@ -32,8 +36,28 @@ const weekdayOf = (iso) => new Date(`${iso}T00:00:00Z`).getUTCDay()
 const parseSchedule = (text) => (text || '').split(',').filter(Boolean).map((s) => { const [weekday, start, end] = s.split('|'); return { weekday: Number(weekday), start, end } })
 const overlaps = (a, b) => !(toMinutes(a.end) <= toMinutes(b.start) || toMinutes(a.start) >= toMinutes(b.end))
 
-// La primera franja de cada dia en que cabe la sesion, en el orden de
-// preferencia; se toman las N primeras.
+const covers = (block, w) => block.weekday === w.weekday && toMinutes(block.start) <= toMinutes(w.start) && toMinutes(block.end) >= toMinutes(w.end)
+const windowKey = (w) => `${w.weekday}|${w.start}`
+
+// Con franjas de clase del programa: cada clase ocupa una franja completa
+// que la disponibilidad del profesor cubra. Por dia se elige la franja
+// menos usada por los grupos ya planificados (asi dos cursos aprovechan las
+// dos franjas de una misma noche) y se toman N dias en orden de preferencia.
+function chooseWindowSlots(blocks, sessionsPerWeek, windows, load) {
+  const byDay = new Map()
+  for (const w of windows) {
+    if (!blocks.some((b) => covers(b, w))) continue
+    const best = byDay.get(w.weekday)
+    const score = (x) => (load.get(windowKey(x)) || 0) * 10000 + toMinutes(x.start)
+    if (!best || score(w) < score(best)) byDay.set(w.weekday, w)
+  }
+  return WEEKDAY_PREFERENCE.filter((d) => byDay.has(d)).slice(0, sessionsPerWeek)
+    .sort((a, b) => ((a + 6) % 7) - ((b + 6) % 7))
+    .map((d) => { const w = byDay.get(d); return { weekday: d, start: w.start, end: w.end } })
+}
+
+// Sin franjas: la primera franja de cada dia en que cabe la sesion, en el
+// orden de preferencia; se toman las N primeras.
 function chooseSlots(blocks, sessionsPerWeek, sessionMinutes) {
   const byDay = new Map()
   for (const b of blocks) {
@@ -84,7 +108,7 @@ export function unassignedComponents(groups) {
   return [...list.values()]
 }
 
-export function planProgram({ groups, availability, busyDates, holidays, fixedTopics = [], options }) {
+export function planProgram({ groups, availability, busyDates, holidays, fixedTopics = [], windows = [], options }) {
   const { startDate, sessionsPerWeek, sessionMinutes, mode } = options
   const components = []
   for (const g of groups) {
@@ -96,6 +120,7 @@ export function planProgram({ groups, availability, busyDates, holidays, fixedTo
   const taken = new Map()
   const takenFor = (id) => { if (!taken.has(id)) taken.set(id, new Set(busyDates.get(id) || [])); return taken.get(id) }
   const occupancy = createOccupancy()
+  const windowLoad = new Map()
 
   // Un grupo se replanifica si tiene profesor, disponibilidad y temas por programar.
   const plannable = (g) => g.instructor_id && Number(g.topics_to_plan) > 0 && (availability.get(g.instructor_id) || []).length > 0
@@ -127,8 +152,9 @@ export function planProgram({ groups, availability, busyDates, holidays, fixedTo
       if (!g.instructor_id) { item.problems.push('Sin profesor asignado: asígnale uno para programarlo.'); continue }
       const blocks = availability.get(g.instructor_id) || []
       if (!blocks.length) { item.problems.push(`${g.instructor_name} no registró su disponibilidad para este programa.`); continue }
-      item.slots = chooseSlots(blocks, sessionsPerWeek, sessionMinutes)
-      if (!item.slots.length) { item.problems.push(`La disponibilidad de ${g.instructor_name} no tiene franjas de ${sessionMinutes} minutos.`); continue }
+      item.slots = windows.length ? chooseWindowSlots(blocks, sessionsPerWeek, windows, windowLoad) : chooseSlots(blocks, sessionsPerWeek, sessionMinutes)
+      if (!item.slots.length) { item.problems.push(windows.length ? `La disponibilidad de ${g.instructor_name} no cubre ninguna franja de clase del programa.` : `La disponibilidad de ${g.instructor_name} no tiene franjas de ${sessionMinutes} minutos.`); continue }
+      item.slots.forEach((sl) => windowLoad.set(windowKey(sl), (windowLoad.get(windowKey(sl)) || 0) + 1))
       if (item.slots.length < sessionsPerWeek) item.problems.push(`Solo hay ${item.slots.length} día(s) disponible(s) por semana; el componente durará más.`)
       const busy = takenFor(g.instructor_id)
       item.dates = simulateDates({ startDate: componentStart, slots: item.slots, count: item.topicsToPlan, holidays, busy, occupancy, componentId: c.id })
@@ -179,10 +205,14 @@ function readOptions(body, fallbackStart) {
   return { sessionsPerWeek, sessionMinutes, startDate, mode }
 }
 
+const loadWindows = async (req, programId) => (await callProcedure('sp_program_windows_list', { ...actor(req), p_program_id: programId }))
+  .map((w) => ({ weekday: w.weekday, start: w.start_time, end: w.end_time }))
+
 async function loadPlanningData(req, programId) {
   const groups = await callProcedure('sp_schedule_planning_groups', { ...actor(req), p_program_id: programId })
   const instructors = groupAvailability(await callProcedure('sp_instructor_availability_list', { ...actor(req), p_program_id: programId }))
-  const empty = { groups, instructors, availability: new Map(), busyDates: new Map(), holidays: new Set(), holidayYears: [], fixedTopics: [] }
+  const windows = await loadWindows(req, programId)
+  const empty = { groups, instructors, windows, availability: new Map(), busyDates: new Map(), holidays: new Set(), holidayYears: [], fixedTopics: [] }
   if (!groups.length) return empty
   const tenantId = groups[0].tenant_id
   const [busyRows, holidayRows, fixedTopics] = await Promise.all([
@@ -219,7 +249,7 @@ function planResponse(data, options) {
   const years = []
   if (lastDate) for (let y = Number(options.startDate.slice(0, 4)); y <= Number(lastDate.slice(0, 4)); y += 1) years.push(y)
   return {
-    options, plan, lastDate,
+    options, plan, lastDate, windows: data.windows,
     unassigned: unassignedComponents(data.groups),
     missingHolidayYears: years.filter((y) => !data.holidayYears.includes(y)),
     totals: { groups: plan.length, ready: plan.filter(isReady).length, topics: plan.reduce((n, p) => n + p.dates.length, 0) },
@@ -235,7 +265,10 @@ export function registerSchedulePlannerRoutes(app) {
     const programId = req.query.programId ? Number(req.query.programId) : null
     if (programId !== null && !Number.isInteger(programId)) return res.status(400).json({ message: 'Invalid request format' })
     try {
-      res.json({ data: groupAvailability(await callProcedure('sp_instructor_availability_list', { ...actor(req), p_program_id: programId })) })
+      const list = groupAvailability(await callProcedure('sp_instructor_availability_list', { ...actor(req), p_program_id: programId }))
+      const windows = new Map()
+      for (const id of new Set(list.map((a) => a.programId))) windows.set(id, await loadWindows(req, id))
+      res.json({ data: list.map((a) => ({ ...a, windows: windows.get(a.programId) || [] })) })
     } catch (err) {
       sendError(res, err)
     }
@@ -276,6 +309,7 @@ export function registerSchedulePlannerRoutes(app) {
             hasAvailability: (data.availability.get(g.instructor_id) || []).length > 0,
           })),
           instructors: data.instructors,
+          windows: data.windows,
           unassigned: unassignedComponents(data.groups),
           closed: closedInfo(data.groups),
           defaultStart: defaultStart(data.groups),
@@ -323,6 +357,25 @@ export function registerSchedulePlannerRoutes(app) {
         ? { groupId: p.groupId, ok: true, topicsScheduled: p.dates.length }
         : { groupId: p.groupId, ok: false, skipped: true, problems: p.problems }))
       res.json({ data: { results, applied: ready.length, topicsScheduled: Number(r?.topics_scheduled) || 0, unassigned } })
+    } catch (err) {
+      sendError(res, err)
+    }
+  })
+
+  // Franjas de clase del programa (vacio = sin restriccion).
+  app.put('/api/schedule-planner/:programId/windows', authenticate, async (req, res) => {
+    const programId = Number(req.params.programId)
+    const windows = Array.isArray(req.body?.windows) ? req.body.windows : null
+    if (!Number.isInteger(programId) || !windows || windows.length > 70
+      || windows.some((w) => !Number.isInteger(w?.weekday) || w.weekday < 0 || w.weekday > 6 || !TIME_RE.test(w.start) || !TIME_RE.test(w.end) || w.start >= w.end)) {
+      return res.status(400).json({ message: 'invalid_schedule_day' })
+    }
+    try {
+      const [r] = await callProcedure('sp_program_windows_set', {
+        ...actor(req), p_program_id: programId,
+        p_windows: JSON.stringify(windows.map((w) => ({ weekday: w.weekday, start: w.start, end: w.end }))),
+      })
+      res.json({ data: { availabilityRemoved: Number(r?.availability_removed) || 0 } })
     } catch (err) {
       sendError(res, err)
     }

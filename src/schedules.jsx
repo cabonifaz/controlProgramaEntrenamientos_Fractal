@@ -63,6 +63,91 @@ function hoursOf(blocks) {
   return Math.round(minutes / 6) / 10
 }
 
+const windowLabel = (w) => `${w.start}–${w.end}`
+const sameWindow = (a, b) => a.weekday === b.weekday && a.start === b.start && a.end === b.end
+
+// Franjas por dia -> filas "mismos dias, mismo horario" para editarlas juntas.
+function windowsToRows(windows) {
+  const rows = new Map()
+  for (const w of windows) {
+    const key = windowLabel(w)
+    if (!rows.has(key)) rows.set(key, { key, start: w.start, end: w.end, days: [] })
+    rows.get(key).days.push(w.weekday)
+  }
+  return [...rows.values()].sort((a, b) => a.start.localeCompare(b.start))
+}
+const rowsToWindows = (rows) => rows.flatMap((r) => r.days.map((weekday) => ({ weekday, start: r.start, end: r.end })))
+
+// Admin: dias y franjas horarias en que se dicta el programa.
+function WindowsEditor({ token, programId, windows, locked, onSaved }) {
+  const [rows, setRows] = useState(() => windowsToRows(windows).map((r, i) => ({ ...r, key: i })))
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const [saved, setSaved] = useState('')
+  let nextKey = rows.reduce((m, r) => Math.max(m, r.key), 0) + 1
+  const update = (key, patch) => { setRows((list) => list.map((r) => (r.key === key ? { ...r, ...patch } : r))); setSaved('') }
+  const toggleDay = (row, d) => update(row.key, { days: row.days.includes(d) ? row.days.filter((x) => x !== d) : [...row.days, d] })
+  const add = (start = '18:30', end = '20:00', days = WEEKDAYS) => { setRows((list) => [...list, { key: nextKey++, start, end, days }]); setSaved('') }
+
+  async function save() {
+    setSaving(true)
+    setError('')
+    setSaved('')
+    try {
+      const { data } = await apiRequest(`/api/schedule-planner/${programId}/windows`, { method: 'PUT', token, body: { windows: rowsToWindows(rows) } })
+      setSaved(data.availabilityRemoved ? `Franjas guardadas. Se quitaron ${data.availabilityRemoved} franja(s) de disponibilidad que quedaron fuera.` : 'Franjas guardadas.')
+      onSaved?.()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (locked) return <p className="sch-windows-summary">{windows.length ? windowsToRows(windows).map((r) => `${daysText(r.days)} ${r.start}–${r.end}`).join(' · ') : 'Sin franjas: horario libre.'}</p>
+  const invalid = rows.some((r) => !r.start || !r.end || r.start >= r.end || !r.days.length)
+  return (
+    <div className="sch-windows">
+      {!rows.length && <p className="muted">Sin franjas: el generador usa cualquier hora de la disponibilidad de cada profesor. Agrega franjas para limitar los días y horas de clase.</p>}
+      <ul className="sch-window-rows">
+        {rows.map((r) => (
+          <li key={r.key} className={r.start >= r.end || !r.days.length ? 'bad' : ''}>
+            <div className="sch-window-days" role="group" aria-label="Días">
+              {DAYS.map((d) => <button key={d.weekday} type="button" className={r.days.includes(d.weekday) ? 'sch-day on' : 'sch-day'} aria-pressed={r.days.includes(d.weekday)} onClick={() => toggleDay(r, d.weekday)} title={d.label}>{d.short}</button>)}
+            </div>
+            <span className="sch-window-time">
+              <input type="time" value={r.start} onChange={(e) => update(r.key, { start: e.target.value })} aria-label="Desde" />
+              <span aria-hidden="true">–</span>
+              <input type="time" value={r.end} onChange={(e) => update(r.key, { end: e.target.value })} aria-label="Hasta" />
+            </span>
+            <button type="button" className="av-remove" onClick={() => { setRows((list) => list.filter((x) => x.key !== r.key)); setSaved('') }} aria-label="Quitar franja"><Trash2 size={14} aria-hidden="true" /></button>
+          </li>
+        ))}
+      </ul>
+      <div className="av-presets">
+        <button type="button" className="btn-mini" onClick={() => add()}><Plus size={13} aria-hidden="true" /> Franja</button>
+        <button type="button" className="btn-mini" onClick={() => { setRows([{ key: nextKey++, start: '18:30', end: '20:00', days: WEEKDAYS }, { key: nextKey++, start: '20:30', end: '22:00', days: WEEKDAYS }]); setSaved('') }}>Noches L–V <small>18:30–20:00 y 20:30–22:00</small></button>
+        <button type="button" className="btn-mini" onClick={() => { setRows([{ key: nextKey++, start: '09:00', end: '12:00', days: WEEKDAYS }]); setSaved('') }}>Mañanas L–V <small>09:00–12:00</small></button>
+      </div>
+      <div className="av-foot">
+        <span className="muted">{rows.length ? `${rowsToWindows(rows).length} franja(s) por semana` : 'Horario libre'}</span>
+        <div className="row-actions">
+          {saved && <span className="av-saved" role="status"><CheckCircle2 size={14} aria-hidden="true" /> {saved}</span>}
+          <button type="button" className="primary" onClick={save} disabled={saving || invalid}>{saving ? 'Guardando…' : 'Guardar franjas'}</button>
+        </div>
+      </div>
+      {invalid && <p className="form-error">Cada franja necesita al menos un día y una hora de inicio menor que la de fin.</p>}
+      <ErrorNote message={error} />
+    </div>
+  )
+}
+const daysText = (days) => {
+  const sorted = ORDER.filter((d) => days.includes(d))
+  const runs = []
+  for (const d of sorted) { const last = runs.at(-1); if (last && ORDER.indexOf(d) === ORDER.indexOf(last.at(-1)) + 1) last.push(d); else runs.push([d]) }
+  return runs.map((r) => (r.length > 2 ? `${SHORT[r[0]]}–${SHORT[r.at(-1)]}` : r.map((d) => SHORT[d]).join(', '))).join(', ')
+}
+
 function LockedNote({ children }) {
   return <p className="sch-locked" role="status"><Lock size={15} aria-hidden="true" /> <span>{children}</span></p>
 }
@@ -70,7 +155,72 @@ function LockedNote({ children }) {
 // ===================================================================
 // Editor de disponibilidad de un profesor en un programa (lo usan el
 // profesor, el admin y el super admin). locked = horario cerrado: solo lectura.
-export function AvailabilityEditor({ token, instructorId, programId, initialBlocks, onSaved, locked }) {
+export function AvailabilityEditor({ token, instructorId, programId, initialBlocks, onSaved, locked, windows = [] }) {
+  if (windows.length && !locked) return <WindowAvailability token={token} instructorId={instructorId} programId={programId} initialBlocks={initialBlocks} onSaved={onSaved} windows={windows} />
+  return <FreeAvailability token={token} instructorId={instructorId} programId={programId} initialBlocks={initialBlocks} onSaved={onSaved} locked={locked} />
+}
+
+// Con franjas de clase: el profesor marca en cuales puede (no hay horas libres).
+function WindowAvailability({ token, instructorId, programId, initialBlocks, onSaved, windows }) {
+  const covered = (w) => (initialBlocks || []).some((b) => b.weekday === w.weekday && b.start <= w.start && b.end >= w.end)
+  const [picked, setPicked] = useState(() => windows.filter(covered))
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const [saved, setSaved] = useState('')
+  const isOn = (w) => picked.some((p) => sameWindow(p, w))
+  const toggle = (w) => { setPicked((list) => (list.some((p) => sameWindow(p, w)) ? list.filter((p) => !sameWindow(p, w)) : [...list, w])); setSaved('') }
+
+  async function save() {
+    setSaving(true)
+    setError('')
+    setSaved('')
+    try {
+      await apiRequest(`/api/availability/${instructorId}`, { method: 'PUT', token, body: { programId, blocks: picked.map(({ weekday, start, end }) => ({ weekday, start, end })) } })
+      setSaved('Disponibilidad guardada.')
+      onSaved?.(picked)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const days = DAYS.filter((d) => windows.some((w) => w.weekday === d.weekday))
+  return (
+    <div className="av-editor">
+      <p className="muted av-window-help">Marca las franjas de clase del programa en las que puedes dictar.</p>
+      <div className="av-presets">
+        <button type="button" className="btn-mini" onClick={() => { setPicked(windows); setSaved('') }}>Marcar todas</button>
+        {picked.length > 0 && <button type="button" className="btn-mini av-clear" onClick={() => { setPicked([]); setSaved('') }}>Vaciar</button>}
+      </div>
+      <ul className="av-days">
+        {days.map((d) => (
+          <li key={d.weekday} className={windows.some((w) => w.weekday === d.weekday && isOn(w)) ? 'av-day on' : 'av-day'}>
+            <span className="av-day-name">{d.label}</span>
+            <div className="av-blocks">
+              {windows.filter((w) => w.weekday === d.weekday).map((w) => (
+                <label key={windowLabel(w)} className={isOn(w) ? 'av-window on' : 'av-window'}>
+                  <input type="checkbox" checked={isOn(w)} onChange={() => toggle(w)} />
+                  <span>{windowLabel(w)}</span>
+                </label>
+              ))}
+            </div>
+          </li>
+        ))}
+      </ul>
+      <div className="av-foot">
+        <span className="muted">{picked.length ? `${picked.length} de ${windows.length} franjas` : 'Sin franjas marcadas: el generador no podrá programar sus grupos.'}</span>
+        <div className="row-actions">
+          {saved && <span className="av-saved" role="status"><CheckCircle2 size={14} aria-hidden="true" /> {saved}</span>}
+          <button type="button" className="primary" onClick={save} disabled={saving}>{saving ? 'Guardando…' : 'Guardar disponibilidad'}</button>
+        </div>
+      </div>
+      <ErrorNote message={error} />
+    </div>
+  )
+}
+
+function FreeAvailability({ token, instructorId, programId, initialBlocks, onSaved, locked }) {
   const [blocks, setBlocks] = useState(() => (initialBlocks || []).map((b, i) => ({ ...b, key: i })))
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -191,8 +341,8 @@ export function MyAvailabilityPanel({ session }) {
           : !programs.length ? <p className="muted">Aún no te asignaron cursos. Cuando el administrador te asigne uno, aquí registras tu disponibilidad para ese programa.</p>
           : current && (
             <>
-              <p className="sch-program-line"><strong>{current.programName}</strong> <span className="muted">· {current.groupCount} grupo{current.groupCount === 1 ? '' : 's'} a tu cargo</span></p>
-              <AvailabilityEditor key={current.programId} token={token} instructorId={profile.id} programId={current.programId} initialBlocks={current.blocks} locked={current.locked} onSaved={load} />
+              <p className="sch-program-line"><strong>{current.programName}</strong> <span className="muted">· {current.groupCount} grupo{current.groupCount === 1 ? '' : 's'} a tu cargo{current.windows?.length ? ' · clases solo en las franjas del programa' : ''}</span></p>
+              <AvailabilityEditor key={current.programId} token={token} instructorId={profile.id} programId={current.programId} initialBlocks={current.blocks} locked={current.locked} windows={current.windows || []} onSaved={load} />
             </>
           )}
       </section>
@@ -403,7 +553,12 @@ export function SchedulePlannerPanel({ session }) {
                 {!instructors.length && <p className="muted sch-note">Este tenant aún no tiene profesores. Créalos en Usuarios.</p>}
               </li>
               <li>
-                <h4><span className="sch-step-n">2</span> Disponibilidad de los profesores para este programa</h4>
+                <h4><span className="sch-step-n">2</span> Días y horas de clase del programa</h4>
+                <WindowsEditor key={`${programId}-${(data.windows || []).length}-${closed ? 1 : 0}`} token={token} programId={Number(programId)} windows={data.windows || []} locked={Boolean(closed)} onSaved={() => { load(); setPreview(null) }} />
+                <p className="muted sch-note">Las clases y la disponibilidad de los profesores solo caerán en estas franjas. Cada clase dura lo que su franja.</p>
+              </li>
+              <li>
+                <h4><span className="sch-step-n">3</span> Disponibilidad de los profesores para este programa</h4>
                 {withoutAvailability.length > 0 && !closed && <p className="sch-warn"><AlertTriangle size={15} aria-hidden="true" /> Falta la disponibilidad de {withoutAvailability.map((i) => i.instructorName).join(', ')}.</p>}
                 <ul className="sch-instructors">
                   {instructors.map((i) => (
@@ -419,15 +574,15 @@ export function SchedulePlannerPanel({ session }) {
                 <p className="muted sch-note">Cada profesor también la registra desde su sección “Mi disponibilidad”. Al cerrar el horario, ya nadie puede cambiarla.</p>
               </li>
               <li>
-                <h4><span className="sch-step-n">3</span> Reglas del horario</h4>
+                <h4><span className="sch-step-n">4</span> Reglas del horario</h4>
                 <div className="admin-form sch-options">
                   <label>Fecha de inicio<input type="date" value={options.startDate} onChange={setOpt('startDate')} disabled={Boolean(closed)} /></label>
                   <label>Clases por semana
                     <select value={options.sessionsPerWeek} onChange={setOpt('sessionsPerWeek')} disabled={Boolean(closed)}>{[1, 2, 3, 4, 5, 6].map((n) => <option key={n} value={n}>{n}</option>)}</select>
                   </label>
-                  <label>Duración de cada clase
+                  {!data.windows?.length && <label>Duración de cada clase
                     <select value={options.sessionMinutes} onChange={setOpt('sessionMinutes')} disabled={Boolean(closed)}>{[60, 90, 120, 150, 180, 240].map((n) => <option key={n} value={n}>{n / 60} h</option>)}</select>
-                  </label>
+                  </label>}
                   <label>Componentes
                     <select value={options.mode} onChange={setOpt('mode')} disabled={Boolean(closed)}>
                       <option value="sequence">Uno tras otro</option>
@@ -438,7 +593,7 @@ export function SchedulePlannerPanel({ session }) {
                 <p className="muted sch-note">Sin cruces: un profesor nunca dicta dos clases el mismo día (en ningún programa), dos componentes del programa nunca coinciden a la misma hora y ninguna clase cae en feriado.</p>
               </li>
               <li>
-                <h4><span className="sch-step-n">4</span> Vista previa, generación y cierre</h4>
+                <h4><span className="sch-step-n">5</span> Vista previa, generación y cierre</h4>
                 <div className="sch-actions">
                   <button type="button" className="btn-mini sch-preview" onClick={runPreview} disabled={busy !== '' || Boolean(closed)}><CalendarCog size={15} aria-hidden="true" /> {busy === 'preview' ? 'Calculando…' : 'Ver vista previa'}</button>
                   <button type="button" className="primary sch-apply" onClick={apply} disabled={!preview || !preview.totals.ready || busy !== '' || Boolean(closed)}><Wand2 size={16} aria-hidden="true" /> {busy === 'apply' ? 'Generando…' : 'Generar horarios y fechas'}</button>
@@ -515,7 +670,7 @@ export function SchedulePlannerPanel({ session }) {
       </section>
       {editing && (
         <Modal title={`Disponibilidad de ${editing.instructorName}`} onClose={() => setEditing(null)} wide>
-          <AvailabilityEditor token={token} instructorId={editing.instructorId} programId={Number(programId)} initialBlocks={editing.blocks} locked={Boolean(closed)} onSaved={() => { load(); setPreview(null) }} />
+          <AvailabilityEditor token={token} instructorId={editing.instructorId} programId={Number(programId)} initialBlocks={editing.blocks} locked={Boolean(closed)} windows={data?.windows || []} onSaved={() => { load(); setPreview(null) }} />
         </Modal>
       )}
     </div>

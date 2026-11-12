@@ -52,6 +52,8 @@ const ERROR_MESSAGES = {
   schedule_closed: 'El horario de este programa está cerrado. Reábrelo para volver a generarlo.',
   availability_locked: 'El horario de este programa ya se cerró: la disponibilidad no se puede cambiar.',
   plan_incomplete: 'El plan no cubre todos los temas. Vuelve a calcular la vista previa.',
+  windows_overlap: 'Dos franjas del mismo día se pisan. Ajusta las horas.',
+  availability_outside_window: 'La disponibilidad debe estar dentro de las franjas de clase del programa.',
   plan_conflict: 'El plan cruza clases (mismo profesor el mismo día o dos componentes a la misma hora). Vuelve a calcular la vista previa.',
   student_invalid: 'El alumno seleccionado no es válido.',
   student_not_enrolled_in_program: 'El alumno no está inscrito en el programa.',

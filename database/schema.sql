@@ -519,6 +519,23 @@ CREATE TABLE IF NOT EXISTS instructor_availability (
   INDEX idx_avail_program (program_id, instructor_id)
 );
 
+-- Franjas de clase de un programa (p.ej. lun-vie 18:30-20:00 y 20:30-22:00).
+-- Si el programa tiene franjas, la disponibilidad de los profesores y las
+-- clases que arma el generador solo caen dentro de ellas.
+CREATE TABLE IF NOT EXISTS program_schedule_windows (
+  id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+  program_id BIGINT UNSIGNED NOT NULL,
+  weekday TINYINT UNSIGNED NOT NULL,
+  start_time TIME NOT NULL,
+  end_time TIME NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  created_by BIGINT UNSIGNED NULL,
+  CONSTRAINT fk_pwin_program FOREIGN KEY (program_id) REFERENCES training_programs(id),
+  CONSTRAINT chk_pwin_weekday CHECK (weekday BETWEEN 0 AND 6),
+  CONSTRAINT chk_pwin_times CHECK (start_time < end_time),
+  INDEX idx_pwin_program (program_id, weekday)
+);
+
 -- Incidencias, observaciones y mejoras que reporta cualquier usuario, con
 -- la captura de la pantalla desde donde reporta y una imagen opcional
 -- (archivos privados en el volumen). Las atiende el admin del tenant o el
@@ -844,6 +861,8 @@ DROP PROCEDURE IF EXISTS sp_migrate_program_type_v1;
 DROP PROCEDURE IF EXISTS sp_migrate_schedule_close_v1;
 DROP PROCEDURE IF EXISTS sp_programs_schedule_close;
 DROP PROCEDURE IF EXISTS sp_topics_apply_plan;
+DROP PROCEDURE IF EXISTS sp_program_windows_list;
+DROP PROCEDURE IF EXISTS sp_program_windows_set;
 DROP PROCEDURE IF EXISTS sp_programs_set_colors;
 DROP PROCEDURE IF EXISTS sp_components_set_colors;
 DROP PROCEDURE IF EXISTS sp_user_invitations_create;
@@ -5434,12 +5453,96 @@ BEGIN
   IF v_bad > 0 THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'invalid_schedule_day';
   END IF;
+  -- Con franjas de clase, cada bloque debe caer dentro de una franja de su dia.
+  IF EXISTS (SELECT 1 FROM program_schedule_windows WHERE program_id = p_program_id) THEN
+    SELECT COUNT(*) INTO v_bad
+    FROM JSON_TABLE(COALESCE(p_blocks, JSON_ARRAY()), '$[*]' COLUMNS (
+      weekday INT PATH '$.weekday', start_time TIME PATH '$.start', end_time TIME PATH '$.end')) jt
+    WHERE NOT EXISTS (SELECT 1 FROM program_schedule_windows w WHERE w.program_id = p_program_id
+      AND w.weekday = jt.weekday AND jt.start_time >= w.start_time AND jt.end_time <= w.end_time);
+    IF v_bad > 0 THEN
+      SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'availability_outside_window';
+    END IF;
+  END IF;
 
   DELETE FROM instructor_availability WHERE instructor_id = p_instructor_id AND program_id = p_program_id;
   INSERT INTO instructor_availability (instructor_id, program_id, weekday, start_time, end_time, created_by)
   SELECT p_instructor_id, p_program_id, jt.weekday, jt.start_time, jt.end_time, p_actor_user_id
   FROM JSON_TABLE(COALESCE(p_blocks, JSON_ARRAY()), '$[*]' COLUMNS (
     weekday INT PATH '$.weekday', start_time TIME PATH '$.start', end_time TIME PATH '$.end')) jt;
+END$$
+
+-- Franjas de clase del programa. Las ve cualquiera del tenant (el profesor
+-- las necesita para marcar su disponibilidad).
+CREATE PROCEDURE sp_program_windows_list(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED,
+  IN p_program_id BIGINT UNSIGNED
+)
+BEGIN
+  DECLARE v_tenant_id BIGINT UNSIGNED;
+  SELECT tenant_id INTO v_tenant_id FROM training_programs WHERE id = p_program_id AND is_deleted = FALSE;
+  IF v_tenant_id IS NULL THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'program_not_found';
+  END IF;
+  IF p_actor_role <> 'super_admin' AND NOT (v_tenant_id <=> p_actor_tenant_id) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
+  END IF;
+  SELECT weekday, TIME_FORMAT(start_time, '%H:%i') AS start_time, TIME_FORMAT(end_time, '%H:%i') AS end_time
+  FROM program_schedule_windows WHERE program_id = p_program_id
+  ORDER BY weekday, start_time;
+END$$
+
+-- Reemplaza las franjas del programa. p_windows = [{"weekday":1,"start":"18:30","end":"20:00"}, ...]
+-- (vacio = sin franjas: horario libre). Las franjas de un mismo dia no se
+-- pisan. La disponibilidad que quede fuera de las nuevas franjas se quita.
+CREATE PROCEDURE sp_program_windows_set(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED,
+  IN p_program_id BIGINT UNSIGNED, IN p_windows JSON
+)
+BEGIN
+  DECLARE v_tenant_id BIGINT UNSIGNED;
+  DECLARE v_closed DATETIME;
+  DECLARE v_bad INT;
+  SELECT tenant_id, schedule_closed_at INTO v_tenant_id, v_closed FROM training_programs WHERE id = p_program_id AND is_deleted = FALSE;
+  IF v_tenant_id IS NULL THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'program_not_found';
+  END IF;
+  IF p_actor_role = 'tenant_admin' AND NOT (v_tenant_id <=> p_actor_tenant_id) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
+  ELSEIF p_actor_role NOT IN ('tenant_admin', 'super_admin') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+  IF v_closed IS NOT NULL THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'schedule_closed';
+  END IF;
+  SELECT COUNT(*) INTO v_bad
+  FROM JSON_TABLE(COALESCE(p_windows, JSON_ARRAY()), '$[*]' COLUMNS (
+    weekday INT PATH '$.weekday', start_time TIME PATH '$.start', end_time TIME PATH '$.end')) jt
+  WHERE jt.weekday IS NULL OR jt.weekday < 0 OR jt.weekday > 6 OR jt.start_time IS NULL OR jt.end_time IS NULL OR jt.start_time >= jt.end_time;
+  IF v_bad > 0 THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'invalid_schedule_day';
+  END IF;
+  SELECT COUNT(*) INTO v_bad
+  FROM JSON_TABLE(COALESCE(p_windows, JSON_ARRAY()), '$[*]' COLUMNS (
+    n FOR ORDINALITY, weekday INT PATH '$.weekday', start_time TIME PATH '$.start', end_time TIME PATH '$.end')) a
+  JOIN JSON_TABLE(COALESCE(p_windows, JSON_ARRAY()), '$[*]' COLUMNS (
+    n FOR ORDINALITY, weekday INT PATH '$.weekday', start_time TIME PATH '$.start', end_time TIME PATH '$.end')) b
+    ON b.weekday = a.weekday AND b.n > a.n AND NOT (a.end_time <= b.start_time OR a.start_time >= b.end_time);
+  IF v_bad > 0 THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'windows_overlap';
+  END IF;
+
+  DELETE FROM program_schedule_windows WHERE program_id = p_program_id;
+  INSERT INTO program_schedule_windows (program_id, weekday, start_time, end_time, created_by)
+  SELECT p_program_id, jt.weekday, jt.start_time, jt.end_time, p_actor_user_id
+  FROM JSON_TABLE(COALESCE(p_windows, JSON_ARRAY()), '$[*]' COLUMNS (
+    weekday INT PATH '$.weekday', start_time TIME PATH '$.start', end_time TIME PATH '$.end')) jt;
+  DELETE a FROM instructor_availability a
+  WHERE a.program_id = p_program_id
+    AND EXISTS (SELECT 1 FROM program_schedule_windows w0 WHERE w0.program_id = p_program_id)
+    AND NOT EXISTS (SELECT 1 FROM program_schedule_windows w WHERE w.program_id = p_program_id
+      AND w.weekday = a.weekday AND a.start_time >= w.start_time AND a.end_time <= w.end_time);
+  SELECT ROW_COUNT() AS availability_removed;
 END$$
 
 -- Cierra (o reabre) el horario de un programa. Cerrado: no se regenera y la
