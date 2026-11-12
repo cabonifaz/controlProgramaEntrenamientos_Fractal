@@ -136,6 +136,12 @@ export function GuideTour({ role, steps: customSteps, onNavigate, onClose }) {
 const PANEL = '.content .panel, .content .admin-wrap > *'
 const SCREEN_GUIDES = {
   Inicio: {
+    admin: [
+      { selector: '.ah-head', title: 'Tu inicio', text: 'Datos reales de tu organización (el super admin puede elegir un tenant o ver todos).' },
+      { selector: '.ah-metrics', title: 'Indicadores', text: 'Programas y alumnos activos, profesores, clases de la semana y asistencia de los últimos 30 días. Toca uno para ir a su sección.' },
+      { selector: '.ah-grid .panel', title: 'Requiere tu atención', text: 'Lo pendiente: temas con fecha pasada, clases sin asistencia, grupos sin profesor, permisos, preinscripciones y soporte. Toca para atenderlo.' },
+      { selector: '.ah-grid .panel + .panel', title: 'Próximas clases', text: 'Las clases de hoy y los próximos 7 días, con hora, curso, profesor y cuántos alumnos tiene.' },
+    ],
     default: [
       { selector: '.cl-nextbar', title: 'Tu próxima clase', text: 'Siempre arriba, en todas las pantallas: cuándo es tu próxima clase y el botón para unirte a la reunión de Teams, Meet o Zoom.' },
       { selector: '.content .metrics, .content .panel', title: 'Tu resumen', text: 'Aquí ves de un vistazo lo más importante de tu día: indicadores y próximas clases.' },
@@ -404,6 +410,7 @@ const MANUALS = {
     label: 'Administrador de tenant',
     intro: 'Configurar programas, usuarios, calendario y horarios, y hacer seguimiento con indicadores.',
     sections: [
+      { id: 'inicio-admin', title: 'Inicio: tu tablero', nav: 'Inicio', body: 'Los números reales de tu organización y lo que necesita atención.', steps: ['Revisa los indicadores: programas y alumnos activos, profesores, clases de esta semana (y de hoy) y la asistencia de los últimos 30 días.', 'En “Requiere tu atención” toca cada pendiente para ir directo a resolverlo.', 'En “Próximas clases” ves hoy y los 7 días siguientes, con hora, curso, profesor y alumnos.'], tips: ['El super admin puede elegir un tenant arriba o ver todos juntos.'] },
       { id: 'programas', title: 'Programas, componentes, grupos y temas', nav: 'Programas', body: 'La estructura de cada programa.', steps: ['Crea el programa (nombre, cohorte, fechas, colores).', 'Ver componentes → crea cada componente (curso) en orden.', 'Ver grupos → crea los grupos y asigna el profesor de cada uno.', 'Ver temario → carga los temas a mano o con la plantilla de Excel.', 'Si cambias el profesor de un grupo, indica el motivo (renuncia, reasignación…): queda en el historial.'], tips: ['Un profesor no puede tener dos grupos en el mismo horario.'] },
       { id: 'usuarios', title: 'Usuarios e invitaciones', nav: 'Usuarios', body: 'Profesores y alumnos se crean sin contraseña.', steps: ['Crea el usuario: se genera un enlace de invitación para que cree su contraseña. Cópialo y compártelo.', 'Carga masiva por Excel para muchos usuarios a la vez.', 'Inscribe a los alumnos en los grupos desde Programas → grupos.'], tips: [] },
       { id: 'clave', title: 'Solicitudes de recuperación de clave', nav: 'Usuarios', body: 'Cuando alguien toca “¿Olvidaste tu contraseña?”, la solicitud aparece arriba en Usuarios y como alerta.', steps: ['Toca “Generar enlace”: se crea un enlace de un solo uso.', 'Cópialo y compártelo por un canal confiable.', 'Si la solicitud no es legítima, “Descartar”.'], tips: ['Por seguridad, el login nunca dice si un correo existe.'] },

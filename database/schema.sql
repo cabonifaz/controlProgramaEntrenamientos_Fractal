@@ -863,6 +863,8 @@ DROP PROCEDURE IF EXISTS sp_programs_schedule_close;
 DROP PROCEDURE IF EXISTS sp_topics_apply_plan;
 DROP PROCEDURE IF EXISTS sp_program_windows_list;
 DROP PROCEDURE IF EXISTS sp_auth_student_context;
+DROP PROCEDURE IF EXISTS sp_admin_dashboard;
+DROP PROCEDURE IF EXISTS sp_admin_dashboard_agenda;
 DROP PROCEDURE IF EXISTS sp_self_enroll_catalog;
 DROP PROCEDURE IF EXISTS sp_group_self_enroll;
 DROP PROCEDURE IF EXISTS sp_group_self_unenroll;
@@ -5659,6 +5661,108 @@ BEGIN
     UPDATE program_enrollments SET is_deleted = TRUE, deleted_at = NOW(), deleted_by = p_actor_user_id
     WHERE program_id = v_program_id AND student_id = p_actor_user_id AND is_deleted = FALSE;
   END IF;
+END$$
+
+-- Inicio del admin y del super admin: indicadores reales del tenant (super
+-- admin: de todos o de p_tenant_filter). Semana = lunes a domingo actual.
+CREATE PROCEDURE sp_admin_dashboard(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED, IN p_tenant_filter BIGINT UNSIGNED
+)
+BEGIN
+  DECLARE v_tenant BIGINT UNSIGNED;
+  DECLARE v_week_start DATE DEFAULT DATE_SUB(CURDATE(), INTERVAL WEEKDAY(CURDATE()) DAY);
+  IF p_actor_role NOT IN ('tenant_admin', 'super_admin') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+  SET v_tenant = IF(p_actor_role = 'super_admin', p_tenant_filter, p_actor_tenant_id);
+
+  SELECT
+    (SELECT COUNT(*) FROM tenants t JOIN master_catalog_values v ON v.id = t.status_id AND v.code = 'active'
+      WHERE (v_tenant IS NULL OR t.id = v_tenant)) AS tenants_active,
+    (SELECT COUNT(*) FROM training_programs p JOIN master_catalog_values v ON v.id = p.status_id AND v.code = 'active'
+      WHERE p.is_deleted = FALSE AND p.program_type = 'training' AND (v_tenant IS NULL OR p.tenant_id = v_tenant)) AS programs_active,
+    (SELECT COUNT(DISTINCT pe.student_id) FROM program_enrollments pe
+      JOIN training_programs p ON p.id = pe.program_id AND p.is_deleted = FALSE AND p.program_type = 'training'
+      JOIN master_catalog_values v ON v.id = p.status_id AND v.code = 'active'
+      JOIN users u ON u.id = pe.student_id AND u.is_deleted = FALSE AND u.is_active = TRUE
+      WHERE pe.is_deleted = FALSE AND (v_tenant IS NULL OR p.tenant_id = v_tenant)) AS students_active,
+    (SELECT COUNT(*) FROM users u JOIN master_catalog_values r ON r.id = u.role_id AND r.code = 'instructor'
+      WHERE u.is_deleted = FALSE AND u.is_active = TRUE AND (v_tenant IS NULL OR u.tenant_id = v_tenant)) AS instructors_active,
+    (SELECT COUNT(*) FROM topics t JOIN component_groups g ON g.id = t.group_id AND g.is_deleted = FALSE
+      JOIN components c ON c.id = g.component_id AND c.is_deleted = FALSE
+      JOIN training_programs p ON p.id = c.program_id AND p.is_deleted = FALSE
+      JOIN master_catalog_values ps ON ps.id = p.status_id AND ps.code IN ('draft', 'active', 'paused')
+      JOIN master_catalog_values ts ON ts.id = t.status_id AND ts.code <> 'cancelled'
+      WHERE t.is_deleted = FALSE AND t.scheduled_on = CURDATE() AND (v_tenant IS NULL OR p.tenant_id = v_tenant)) AS classes_today,
+    (SELECT COUNT(*) FROM topics t JOIN component_groups g ON g.id = t.group_id AND g.is_deleted = FALSE
+      JOIN components c ON c.id = g.component_id AND c.is_deleted = FALSE
+      JOIN training_programs p ON p.id = c.program_id AND p.is_deleted = FALSE
+      JOIN master_catalog_values ps ON ps.id = p.status_id AND ps.code IN ('draft', 'active', 'paused')
+      JOIN master_catalog_values ts ON ts.id = t.status_id AND ts.code <> 'cancelled'
+      WHERE t.is_deleted = FALSE AND t.scheduled_on BETWEEN v_week_start AND DATE_ADD(v_week_start, INTERVAL 6 DAY)
+        AND (v_tenant IS NULL OR p.tenant_id = v_tenant)) AS classes_this_week,
+    (SELECT ROUND(100 * SUM(av.code IN ('present', 'late')) / NULLIF(COUNT(*), 0)) FROM attendance a
+      JOIN master_catalog_values av ON av.id = a.attendance_status_id
+      JOIN topics t ON t.id = a.topic_id AND t.is_deleted = FALSE
+      JOIN component_groups g ON g.id = t.group_id JOIN components c ON c.id = g.component_id
+      JOIN training_programs p ON p.id = c.program_id AND p.is_deleted = FALSE
+      WHERE a.is_deleted = FALSE AND t.scheduled_on >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+        AND (v_tenant IS NULL OR p.tenant_id = v_tenant)) AS attendance_rate_30d,
+    (SELECT COUNT(*) FROM topics t JOIN component_groups g ON g.id = t.group_id AND g.is_deleted = FALSE
+      JOIN components c ON c.id = g.component_id AND c.is_deleted = FALSE
+      JOIN training_programs p ON p.id = c.program_id AND p.is_deleted = FALSE
+      JOIN master_catalog_values ps ON ps.id = p.status_id AND ps.code IN ('draft', 'active', 'paused')
+      JOIN master_catalog_values ts ON ts.id = t.status_id AND ts.code IN ('pending', 'scheduled', 'rescheduled', 'delayed')
+      WHERE t.is_deleted = FALSE AND t.scheduled_on < CURDATE() AND (v_tenant IS NULL OR p.tenant_id = v_tenant)) AS topics_overdue,
+    (SELECT COUNT(DISTINCT t.id) FROM topics t JOIN component_groups g ON g.id = t.group_id AND g.is_deleted = FALSE
+      JOIN components c ON c.id = g.component_id AND c.is_deleted = FALSE
+      JOIN training_programs p ON p.id = c.program_id AND p.is_deleted = FALSE
+      JOIN master_catalog_values ts ON ts.id = t.status_id AND ts.code = 'completed'
+      WHERE t.is_deleted = FALSE AND t.scheduled_on < CURDATE() AND (v_tenant IS NULL OR p.tenant_id = v_tenant)
+        AND EXISTS (SELECT 1 FROM group_enrollments ge WHERE ge.group_id = g.id AND ge.is_deleted = FALSE)
+        AND NOT EXISTS (SELECT 1 FROM attendance a WHERE a.topic_id = t.id AND a.is_deleted = FALSE)) AS attendance_missing,
+    (SELECT COUNT(*) FROM component_groups g JOIN components c ON c.id = g.component_id AND c.is_deleted = FALSE
+      JOIN training_programs p ON p.id = c.program_id AND p.is_deleted = FALSE AND p.program_type = 'training'
+      JOIN master_catalog_values ps ON ps.id = p.status_id AND ps.code IN ('draft', 'active', 'paused')
+      WHERE g.is_deleted = FALSE AND g.instructor_id IS NULL AND (v_tenant IS NULL OR p.tenant_id = v_tenant)) AS groups_without_instructor,
+    (SELECT COUNT(*) FROM leave_requests l JOIN master_catalog_values ls ON ls.id = l.status_id AND ls.code = 'pending'
+      JOIN users u ON u.id = l.student_id
+      WHERE l.is_deleted = FALSE AND (v_tenant IS NULL OR u.tenant_id = v_tenant)) AS leave_pending,
+    (SELECT COUNT(*) FROM pre_enrollments pr JOIN master_catalog_values st ON st.id = pr.status_id AND st.code = 'pending'
+      JOIN training_programs p ON p.id = pr.program_id
+      WHERE (v_tenant IS NULL OR p.tenant_id = v_tenant)) AS pre_enrollments_pending,
+    (SELECT COUNT(*) FROM support_tickets st WHERE st.status IN ('open', 'in_progress')
+      AND (p_actor_role = 'super_admin' OR st.tenant_id <=> p_actor_tenant_id)
+      AND (v_tenant IS NULL OR st.tenant_id <=> v_tenant)) AS tickets_open;
+END$$
+
+-- Proximas clases (hoy y los 7 dias siguientes) con hora, curso y profesor.
+CREATE PROCEDURE sp_admin_dashboard_agenda(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED, IN p_tenant_filter BIGINT UNSIGNED
+)
+BEGIN
+  DECLARE v_tenant BIGINT UNSIGNED;
+  IF p_actor_role NOT IN ('tenant_admin', 'super_admin') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+  SET v_tenant = IF(p_actor_role = 'super_admin', p_tenant_filter, p_actor_tenant_id);
+  SELECT t.id AS topic_id, t.title, t.scheduled_on, TIME_FORMAT(d.start_time, '%H:%i') AS start_time, TIME_FORMAT(d.end_time, '%H:%i') AS end_time,
+         g.id AS group_id, g.name AS group_name, c.name AS component_name, p.name AS program_name, tn.name AS tenant_name,
+         iu.full_name AS instructor_name,
+         (SELECT COUNT(*) FROM group_enrollments ge WHERE ge.group_id = g.id AND ge.is_deleted = FALSE) AS enrolled
+  FROM topics t
+  JOIN component_groups g ON g.id = t.group_id AND g.is_deleted = FALSE
+  JOIN components c ON c.id = g.component_id AND c.is_deleted = FALSE
+  JOIN training_programs p ON p.id = c.program_id AND p.is_deleted = FALSE
+  JOIN master_catalog_values ps ON ps.id = p.status_id AND ps.code IN ('draft', 'active', 'paused')
+  JOIN master_catalog_values ts ON ts.id = t.status_id AND ts.code <> 'cancelled'
+  JOIN tenants tn ON tn.id = p.tenant_id
+  LEFT JOIN users iu ON iu.id = g.instructor_id
+  LEFT JOIN component_group_schedule_days d ON d.group_id = g.id AND d.is_deleted = FALSE AND d.weekday = DAYOFWEEK(t.scheduled_on) - 1
+  WHERE t.is_deleted = FALSE AND t.scheduled_on BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 7 DAY)
+    AND (v_tenant IS NULL OR p.tenant_id = v_tenant)
+  ORDER BY t.scheduled_on, d.start_time, c.sort_order
+  LIMIT 30;
 END$$
 
 -- Modo alumno de un profesor, admin o super admin inscrito en algun
