@@ -4397,6 +4397,7 @@ BEGIN
   DECLARE v_tenant_id BIGINT UNSIGNED;
   DECLARE v_status_code VARCHAR(80);
   DECLARE v_email VARCHAR(190);
+  DECLARE v_corporate_email VARCHAR(190);
   DECLARE v_full_name VARCHAR(160);
   DECLARE v_user_id BIGINT UNSIGNED;
   DECLARE v_user_tenant_id BIGINT UNSIGNED;
@@ -4410,8 +4411,8 @@ BEGIN
     RESIGNAL;
   END;
 
-  SELECT pe.program_id, p.tenant_id, st.code, pe.email, pe.full_name
-    INTO v_program_id, v_tenant_id, v_status_code, v_email, v_full_name
+  SELECT pe.program_id, p.tenant_id, st.code, pe.email, NULLIF(TRIM(pe.corporate_email), ''), pe.full_name
+    INTO v_program_id, v_tenant_id, v_status_code, v_email, v_corporate_email, v_full_name
   FROM pre_enrollments pe
   JOIN training_programs p ON p.id = pe.program_id
   JOIN master_catalog_values st ON st.id = pe.status_id
@@ -4441,9 +4442,13 @@ BEGIN
       SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_inactive';
     END IF;
 
+    -- La persona puede tener ya cuenta con su correo corporativo o el personal:
+    -- se usa esa (primero la corporativa) en vez de crear un duplicado.
     SELECT u.id, u.tenant_id, v.code INTO v_user_id, v_user_tenant_id, v_user_role
     FROM users u JOIN master_catalog_values v ON v.id = u.role_id
-    WHERE u.email = v_email AND u.is_deleted = FALSE;
+    WHERE u.is_deleted = FALSE AND (u.email = v_email OR (v_corporate_email IS NOT NULL AND u.email = v_corporate_email))
+    ORDER BY (u.email <=> v_corporate_email) DESC, u.is_active DESC, u.id
+    LIMIT 1;
 
     IF v_user_id IS NOT NULL THEN
       -- El email ya es de otra persona/rol o de otro tenant: no se mezcla.
@@ -4465,6 +4470,20 @@ BEGIN
     INSERT INTO program_enrollments (program_id, student_id, created_by)
     VALUES (v_program_id, v_user_id, p_actor_user_id)
     ON DUPLICATE KEY UPDATE is_deleted = FALSE, deleted_at = NULL, deleted_by = NULL;
+
+    -- Y a un grupo de cada componente (el de menos inscritos), para que
+    -- aparezca en el temario y en la asistencia. Si ya esta en un grupo de
+    -- ese componente, se respeta.
+    INSERT INTO group_enrollments (group_id, student_id, created_by)
+    SELECT x.group_id, v_user_id, p_actor_user_id FROM (
+      SELECT g.id AS group_id, ROW_NUMBER() OVER (PARTITION BY g.component_id
+               ORDER BY (SELECT COUNT(*) FROM group_enrollments e WHERE e.group_id = g.id AND e.is_deleted = FALSE), g.id) AS rn
+      FROM component_groups g JOIN components c ON c.id = g.component_id AND c.is_deleted = FALSE
+      WHERE c.program_id = v_program_id AND g.is_deleted = FALSE
+        AND NOT EXISTS (SELECT 1 FROM group_enrollments ge JOIN component_groups g2 ON g2.id = ge.group_id
+                        WHERE g2.component_id = g.component_id AND ge.student_id = v_user_id AND ge.is_deleted = FALSE)
+    ) x WHERE x.rn = 1
+    ON DUPLICATE KEY UPDATE is_deleted = FALSE, deleted_at = NULL, deleted_by = NULL;
   END IF;
 
   UPDATE pre_enrollments
@@ -4476,7 +4495,8 @@ BEGIN
 
   COMMIT;
 
-  SELECT v_user_id AS student_id, v_account_created AS account_created, v_email AS email, v_full_name AS full_name;
+  SELECT v_user_id AS student_id, v_account_created AS account_created,
+         COALESCE((SELECT email FROM users WHERE id = v_user_id), v_email) AS email, v_full_name AS full_name;
 END$$
 
 -- ===================================================================
