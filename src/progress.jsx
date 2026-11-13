@@ -23,17 +23,19 @@ function writeStored(key, value) {
   try { sessionStorage.setItem(key, value) } catch { /* sin almacenamiento: no se recuerda */ }
 }
 
-export const PERIOD_LABEL = { current: 'En curso', upcoming: 'Próximo', past: 'Finalizado', undated: 'Sin fechas' }
+export const PERIOD_LABEL = { current: 'En curso', upcoming: 'Próximo', past: 'Finalizado', undated: 'Sin fechas', closed: 'Archivado' }
 export const programOptionLabel = (p) => `${p.name}${p.cohort ? ` · ${p.cohort}` : ''}${p.period ? ` — ${PERIOD_LABEL[p.period]}` : ''}`
 
 // Programas de la lista de admin (fechas del programa) ordenados igual que
-// el tablero: en curso, proximos y finalizados.
+// el tablero: en curso, proximos y finalizados. Los archivados o cancelados
+// van al final (nunca se abren por defecto).
 export function withPeriod(list, today) {
-  const order = { current: 0, upcoming: 1, past: 2, undated: 3 }
+  const order = { current: 0, upcoming: 1, past: 2, undated: 3, closed: 4 }
   return list.map((p) => {
     const first = p.starts_on ? String(p.starts_on).slice(0, 10) : null
     const last = p.ends_on ? String(p.ends_on).slice(0, 10) : null
-    const period = !first ? 'undated' : first > today ? 'upcoming' : last && last < today ? 'past' : 'current'
+    const period = ['archived', 'cancelled'].includes(p.status_code) ? 'closed'
+      : !first ? 'undated' : first > today ? 'upcoming' : last && last < today ? 'past' : 'current'
     return { id: p.id, name: p.name, cohort: p.cohort, firstDate: first, lastDate: last, period }
   }).sort((a, b) => order[a.period] - order[b.period]
     || (a.period === 'past' ? (b.lastDate || '').localeCompare(a.lastDate || '') : (a.firstDate || '').localeCompare(b.firstDate || '')))
