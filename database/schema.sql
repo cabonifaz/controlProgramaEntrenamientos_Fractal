@@ -5378,6 +5378,9 @@ BEGIN
       AND ((v_role IN ('student', 'instructor') AND v_tenant_id IS NOT NULL AND ar.code = 'tenant_admin' AND au.tenant_id = v_tenant_id)
         OR ((v_role IN ('tenant_admin', 'super_admin') OR v_tenant_id IS NULL) AND ar.code = 'super_admin'));
   END IF;
+  -- Quien pidio (NULL si el correo no existe o ya pidio hace poco): el servidor
+  -- le envia el enlace por correo si el correo esta activo.
+  SELECT v_user_id AS user_id, v_id AS request_id;
 END$$
 
 CREATE PROCEDURE sp_password_reset_requests_list(

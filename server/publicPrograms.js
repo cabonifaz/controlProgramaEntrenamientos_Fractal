@@ -264,6 +264,7 @@ export function registerPublicProgramRoutes(app) {
         data: {
           studentId: result?.student_id ?? null, email: result?.email, accountCreated,
           invitationUrl: invitation?.invitationUrl ?? null, invitationExpiresAt: invitation?.expiresAt ?? null,
+          emailSent: Boolean(invitation?.emailSent),
         },
       })
     } catch (err) {

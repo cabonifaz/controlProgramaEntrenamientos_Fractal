@@ -557,7 +557,8 @@ function InvitationLinkBox({ invitation, onClose }) {
         <strong>{isReset ? 'Enlace para crear una nueva contraseña' : 'Invitación lista'} · {email}</strong>
         {onClose && <button type="button" className="modal-close" onClick={onClose} aria-label="Cerrar">×</button>}
       </div>
-      <p className="muted small-note">Compártelo con la persona: al abrirlo crea su propia contraseña y entra. Es de un solo uso{expiresAt ? ` y vence el ${formatDateTime(expiresAt)}` : ''}.</p>
+      {invitation.emailSent && <p className="invitation-mailed">Se envió por correo a <strong>{invitation.emailTo || email}</strong>.</p>}
+      <p className="muted small-note">{invitation.emailSent ? 'También puedes copiarlo o compartirlo' : 'Compártelo con la persona'}: al abrirlo crea su propia contraseña y entra. Es de un solo uso{expiresAt ? ` y vence el ${formatDateTime(expiresAt)}` : ''}.</p>
       <div className="invitation-box-link">
         <code>{invitationUrl}</code>
         <button type="button" className="btn-mini" onClick={async () => setCopied(await copyText(invitationUrl))}>{copied ? '¡Copiado!' : 'Copiar enlace'}</button>
@@ -1511,7 +1512,7 @@ export function EnrollStudentModal({ session, group, programId, tenantId, studen
         })
         await enroll(data.userId)
         setSuccess(`${newPerson.fullName.trim()} se creó como alumno y quedó inscrito.`)
-        setInvitation({ invitationUrl: data.invitationUrl, email: data.email, fullName: newPerson.fullName.trim(), expiresAt: data.expiresAt })
+        setInvitation({ invitationUrl: data.invitationUrl, email: data.email, fullName: newPerson.fullName.trim(), expiresAt: data.expiresAt, emailSent: data.emailSent, emailTo: data.emailTo })
         setNewPerson({ fullName: '', email: '' })
       }
       onEnrolled?.()
@@ -2648,7 +2649,7 @@ export function PreEnrollmentsPanel({ session }) {
               ? <>Se creó su cuenta. Comparte su enlace de invitación para que cree su contraseña:</>
               : <>Ya tenía cuenta de alumno ({result.email}), así que mantiene su contraseña.</>}
             {result.accountCreated && result.invitationUrl && (
-              <InvitationLinkBox invitation={{ invitationUrl: result.invitationUrl, email: result.email, fullName: result.fullName, expiresAt: result.invitationExpiresAt }} />
+              <InvitationLinkBox invitation={{ invitationUrl: result.invitationUrl, email: result.email, fullName: result.fullName, expiresAt: result.invitationExpiresAt, emailSent: result.emailSent, emailTo: result.email }} />
             )}
           </div>
         )}

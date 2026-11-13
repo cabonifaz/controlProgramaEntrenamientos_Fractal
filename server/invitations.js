@@ -3,11 +3,12 @@ import { callProcedure } from './db.js'
 import { hashPassword } from './auth.js'
 import { authenticate } from './middleware/authenticate.js'
 import { mapStoredProcedureError } from './errors.js'
+import { invitationEmail, mailEnabled, sendMail } from './mailer.js'
 
 // Usuarios por invitacion: se crean sin contrasena y la persona crea la
-// suya con un enlace personal de un solo uso (/invitacion/<token>). No hay
-// servicio de correo: el admin copia el enlace y lo comparte. En la base
-// solo se guarda el sha256 del token.
+// suya con un enlace personal de un solo uso (/invitacion/<token>). Con el
+// correo activo (server/mailer.js) el enlace tambien se envia a la persona;
+// el admin igual lo ve para copiarlo. En la base solo se guarda el sha256.
 
 export const INVITATION_VALID_DAYS = 7
 // Marca de "sin contrasena todavia" en users.password_hash.
@@ -28,7 +29,27 @@ export async function createInvitation(req, userId) {
     p_actor_user_id: req.user.id, p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId,
     p_user_id: userId, p_token_hash: hashToken(token), p_valid_days: INVITATION_VALID_DAYS,
   })
-  return { invitationUrl: `${req.protocol}://${req.get('host')}/invitacion/${token}`, expiresAt: result?.expires_at ?? null }
+  const invitationUrl = `${req.protocol}://${req.get('host')}/invitacion/${token}`
+  const mail = await emailInvitation(token, invitationUrl)
+  return { invitationUrl, expiresAt: result?.expires_at ?? null, emailSent: mail.sent, emailTo: mail.to ?? null }
+}
+
+// Envia el enlace por correo a la persona (si el correo esta activo).
+async function emailInvitation(token, url) {
+  if (!mailEnabled()) return { sent: false }
+  try {
+    const [info] = await callProcedure('sp_user_invitations_get', { p_token_hash: hashToken(token) })
+    if (!info?.email) return { sent: false }
+    const mail = invitationEmail({
+      fullName: info.full_name, tenantName: info.tenant_name, url, isReset: Boolean(info.has_password),
+      expiresAt: info.expires_at, brandColor: info.tenant_brand_color,
+    })
+    const result = await sendMail({ to: info.email, ...mail })
+    return { sent: result.sent, to: info.email }
+  } catch (err) {
+    console.error('[mail] invitación sin enviar:', err.message)
+    return { sent: false }
+  }
 }
 
 // Reglas minimas de contrasena (las mismas que muestra la pagina).
@@ -45,8 +66,21 @@ export function registerInvitationRoutes(app) {
     const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : ''
     if (!email || email.length > 190 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ message: 'Invalid request format' })
     try {
-      await callProcedure('sp_password_reset_request', { p_email: email, p_ip_address: req.ip || null })
-      res.json({ ok: true })
+      const rows = await callProcedure('sp_password_reset_request', { p_email: email, p_ip_address: req.ip || null })
+      // Versiones previas del SP no devuelven fila: entonces no hay envio directo.
+      const request = Array.isArray(rows) ? rows[0] : null
+      // Con correo activo, el enlace le llega directo a la persona y la
+      // solicitud queda atendida (sin correo, la atiende un administrador).
+      if (mailEnabled() && request?.user_id) {
+        const system = { user: { id: request.user_id, roleCode: 'super_admin', tenantId: null }, protocol: req.protocol, get: (h) => req.get(h) }
+        const sent = await createInvitation(system, request.user_id).catch((err) => { console.error('[mail] reset:', err.message); return null })
+        if (sent?.emailSent) {
+          await callProcedure('sp_password_reset_requests_resolve', {
+            p_actor_user_id: request.user_id, p_actor_role: 'super_admin', p_actor_tenant_id: null, p_request_id: request.request_id, p_status: 'resolved',
+          }).catch(() => {})
+        }
+      }
+      res.json({ ok: true, emailEnabled: mailEnabled() })
     } catch (err) {
       sendError(res, err)
     }
