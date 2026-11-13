@@ -1470,7 +1470,7 @@ function GroupHorarioPanel({ session, group, onBack }) {
 // hace los dos pasos de forma transparente: inscribe al programa si hace
 // falta (ignora "already_enrolled", que solo significa que ya estaba) y
 // luego al grupo, en una sola accion.
-function EnrollStudentModal({ session, group, programId, tenantId, students, onClose, onEnrolled }) {
+export function EnrollStudentModal({ session, group, programId, tenantId, students, onClose, onEnrolled }) {
   const { token } = session
   const [mode, setMode] = useState('existing')
   const [studentId, setStudentId] = useState('')
@@ -1556,16 +1556,20 @@ function EnrollStudentModal({ session, group, programId, tenantId, students, onC
 // Pueden inscribirse como alumnos: alumnos, profesores, admins y super admins
 // (nunca en un componente que dictan; eso lo valida el SP).
 const PARTICIPANT_ROLE_TAG = { instructor: 'profesor', tenant_admin: 'admin', super_admin: 'super admin' }
+// Personas activas que pueden inscribirse en un programa del tenant (los super admins de cualquiera).
+export function participantOptions(users, tenantId) {
+  return users
+    .filter((u) => u.is_active && (u.role_code === 'student' || PARTICIPANT_ROLE_TAG[u.role_code])
+      && (u.role_code === 'super_admin' || !tenantId || String(u.tenant_id) === String(tenantId)))
+    .map((u) => (PARTICIPANT_ROLE_TAG[u.role_code] ? { ...u, full_name: `${u.full_name} (${PARTICIPANT_ROLE_TAG[u.role_code]})` } : u))
+}
 
 function GroupsPanel({ session, component, program, onBack }) {
   const { token } = session
   const { items, error, loading, reload } = useList(`/api/components/${component.id}/groups`, token)
   const { items: instructors } = useList('/api/users?role=instructor', token)
   const { items: allUsers } = useList('/api/users', token)
-  const students = useMemo(() => allUsers
-    .filter((u) => u.is_active && (u.role_code === 'student' || PARTICIPANT_ROLE_TAG[u.role_code])
-      && (u.role_code === 'super_admin' || !program?.tenant_id || String(u.tenant_id) === String(program.tenant_id)))
-    .map((u) => (PARTICIPANT_ROLE_TAG[u.role_code] ? { ...u, full_name: `${u.full_name} (${PARTICIPANT_ROLE_TAG[u.role_code]})` } : u)), [allUsers, program])
+  const students = useMemo(() => participantOptions(allUsers, program?.tenant_id), [allUsers, program])
   const [form, setForm] = useState({ name: '', instructorId: '' })
   const [formError, setFormError] = useState('')
   const [enrollingGroup, setEnrollingGroup] = useState(null)

@@ -1180,3 +1180,4 @@ p.sch-warn{margin:0 0 10px}
 .ah-who{text-align:right}
 .ah-warn{display:inline-flex;align-items:center;gap:4px;color:#a3281a;font-weight:600}
 @media (max-width:560px){.ah-day li{grid-template-columns:1fr}.ah-who{text-align:left}}
+.cc-enroll-others{display:inline-flex;align-items:center;gap:5px}

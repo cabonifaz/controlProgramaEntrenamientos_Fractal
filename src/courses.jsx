@@ -1,13 +1,14 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
-import { AlertTriangle, ArrowLeftRight, CheckCircle2, GraduationCap, Search } from 'lucide-react'
+import { AlertTriangle, ArrowLeftRight, CheckCircle2, GraduationCap, Search, UserPlus } from 'lucide-react'
 import { apiRequest } from './api'
-import { ErrorNote } from './admin.jsx'
+import { EnrollStudentModal, ErrorNote, participantOptions } from './admin.jsx'
 import { formatDay } from './progress.jsx'
 import { slotsText } from './schedules.jsx'
 
 // "Cursos": un profesor, admin o super admin se inscribe solo como alumno en
 // grupos de programas vigentes, sin cruzar lo que ya dicta o cursa (lo valida
-// el servidor). Luego cursa desde "Modo alumno".
+// el servidor). Luego cursa desde "Modo alumno". El admin y el super admin
+// ademas inscriben aqui a cualquier persona (registrada o nueva) en cada curso.
 export const STUDENT_MODE_REFRESH_EVENT = 'fractal:student-mode-refresh'
 export const STUDENT_MODE_REQUEST_EVENT = 'fractal:student-mode-request'
 
@@ -16,6 +17,9 @@ const day = (iso) => (iso ? formatDay(iso, { weekday: false }) : '—')
 export function CourseCatalogPanel({ session }) {
   const { token, profile } = session
   const isSuperAdmin = profile?.roleCode === 'super_admin'
+  const canEnrollOthers = isSuperAdmin || profile?.roleCode === 'tenant_admin'
+  const [enrollTarget, setEnrollTarget] = useState(null)
+  const [people, setPeople] = useState(null)
   const [items, setItems] = useState(null)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
@@ -34,6 +38,17 @@ export function CourseCatalogPanel({ session }) {
     }
   }, [token])
   useEffect(() => { load() }, [load])
+
+  async function openEnroll(item) {
+    setEnrollTarget(item)
+    if (people) return
+    try {
+      const { data } = await apiRequest('/api/users', { token })
+      setPeople(data || [])
+    } catch (err) {
+      setError(err.message)
+    }
+  }
 
   async function act(item, enroll) {
     if (!enroll && !window.confirm(`¿Darte de baja de ${item.componentName} · ${item.groupName}?`)) return
@@ -79,7 +94,7 @@ export function CourseCatalogPanel({ session }) {
         <div className="sch-head">
           <div>
             <h3>Cursos</h3>
-            <p className="muted">Inscríbete como alumno en los cursos de los programas vigentes. No aparecen los que dictas y no puedes inscribirte en uno que se cruce con tus clases (las que dictas o las que ya cursas).</p>
+            <p className="muted">{canEnrollOthers ? 'Inscribe a cualquier persona en un curso con “Inscribir personas” (alumnos, profesores, admins o alguien nuevo), o inscríbete tú como alumno. ' : ''}Para inscribirte tú: no aparecen los cursos que dictas y no puedes tomar uno que se cruce con tus clases.</p>
           </div>
           {enrolledCount > 0 && (
             <button type="button" className="secondary cc-go" onClick={() => window.dispatchEvent(new Event(STUDENT_MODE_REQUEST_EVENT))}>
@@ -114,6 +129,9 @@ export function CourseCatalogPanel({ session }) {
                       <span className="muted">{g.firstDate ? `${day(g.firstDate)} – ${day(g.lastDate)}` : 'Fechas por definir'} · {g.topicCount} tema{g.topicCount === 1 ? '' : 's'}</span>
                     </div>
                     <div className="cc-action">
+                      {canEnrollOthers && (
+                        <button type="button" className="btn-mini cc-enroll-others" onClick={() => openEnroll(g)}><UserPlus size={14} aria-hidden="true" /> Inscribir personas</button>
+                      )}
                       {g.enrolled ? (
                         <>
                           <span className="cc-chip ok"><CheckCircle2 size={14} aria-hidden="true" /> Inscrito</span>
@@ -135,6 +153,19 @@ export function CourseCatalogPanel({ session }) {
             </div>
           ))}
       </section>
+      {enrollTarget && (
+        people === null ? null : (
+          <EnrollStudentModal
+            session={session}
+            group={{ id: enrollTarget.groupId, name: `${enrollTarget.componentName} · ${enrollTarget.groupName}` }}
+            programId={enrollTarget.programId}
+            tenantId={enrollTarget.tenantId}
+            students={participantOptions(people, enrollTarget.tenantId)}
+            onClose={() => setEnrollTarget(null)}
+            onEnrolled={load}
+          />
+        )
+      )}
     </div>
   )
 }
