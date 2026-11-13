@@ -5558,14 +5558,14 @@ BEGIN
     weekday INT PATH '$.weekday', start_time TIME PATH '$.start', end_time TIME PATH '$.end')) jt;
 END$$
 
--- Cursos a los que un profesor, admin o super admin puede inscribirse solo:
+-- Cursos a los que un alumno, profesor, admin o super admin puede inscribirse solo:
 -- grupos de programas vigentes de su tenant (super admin: todos), sin los
 -- componentes que dicta. clashes = choca con algo que ya dicta o cursa.
 CREATE PROCEDURE sp_self_enroll_catalog(
   IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED
 )
 BEGIN
-  IF p_actor_role NOT IN ('instructor', 'tenant_admin', 'super_admin') THEN
+  IF p_actor_role NOT IN ('student', 'instructor', 'tenant_admin', 'super_admin') THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
   END IF;
   SELECT p.id AS program_id, p.name AS program_name, p.cohort, p.starts_on, p.ends_on, p.tenant_id, tn.name AS tenant_name,
@@ -5613,7 +5613,7 @@ BEGIN
   DECLARE v_program_id BIGINT UNSIGNED;
   DECLARE v_tenant_id BIGINT UNSIGNED;
   DECLARE v_component_id BIGINT UNSIGNED;
-  IF p_actor_role NOT IN ('instructor', 'tenant_admin', 'super_admin') THEN
+  IF p_actor_role NOT IN ('student', 'instructor', 'tenant_admin', 'super_admin') THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
   END IF;
   SELECT p.id, p.tenant_id, c.id INTO v_program_id, v_tenant_id, v_component_id
@@ -5667,7 +5667,7 @@ CREATE PROCEDURE sp_group_self_unenroll(
 )
 BEGIN
   DECLARE v_program_id BIGINT UNSIGNED;
-  IF p_actor_role NOT IN ('instructor', 'tenant_admin', 'super_admin') THEN
+  IF p_actor_role NOT IN ('student', 'instructor', 'tenant_admin', 'super_admin') THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
   END IF;
   SELECT c.program_id INTO v_program_id FROM component_groups g JOIN components c ON c.id = g.component_id WHERE g.id = p_group_id;

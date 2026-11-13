@@ -14,6 +14,7 @@ const GUIDES = {
     { title: '¡Bienvenido a tu espacio de entrenamiento!', text: 'Te mostramos en un minuto dónde está cada cosa. Puedes saltar la guía y volver a verla cuando quieras desde Ayuda.' },
     { nav: 'Mi horario', title: 'Mi horario', text: 'Tu calendario de esta semana, del mes o de todo el programa. Abre por defecto en tus clases más cercanas. Toca una clase para ver el detalle.' },
     { nav: 'Mis temas', title: 'Mis temas', text: 'Los programas, componentes y temas en los que estás, con lo que el profesor ya dictó y tu avance. Aquí calificas cada clase y dejas comentarios.' },
+    { nav: 'Cursos', title: 'Cursos', text: 'Inscríbete tú mismo en los cursos de los programas vigentes, sin cruces con tus otras clases.' },
     { nav: 'Asistencia', title: 'Asistencia', text: 'Tu récord por componente y tus inasistencias. Si no podrás ir a una clase, avísalo aquí: le llega a tu profesor y puedes adjuntar una imagen de evidencia.' },
     { nav: 'Mi perfil', title: 'Mi perfil', text: 'Deja tu GitHub, LinkedIn y datos de contacto, y sube tu foto. Tus profesores los ven; tu teléfono solo lo ve el administrador.' },
     { nav: 'Soporte', title: '¿Algo no funciona?', text: 'Usa “Reportar” arriba desde la pantalla donde está el problema: se adjunta una captura automáticamente. Sigue las respuestas en Soporte.' },
@@ -238,6 +239,11 @@ const SCREEN_GUIDES = {
     ],
   },
   Cursos: {
+    student: [
+      { selector: '.cc-filters', title: 'Buscar', text: 'Busca por curso, programa o profesor, o mira solo los cursos en que ya estás.' },
+      { selector: '.cc-list', title: 'Inscribirte', text: '“Inscribirme” te anota en el curso. Si se cruza con otra clase tuya a la misma fecha y hora, no se puede. “Darme de baja” te retira.' },
+      { selector: '.sch-head', title: 'Después', text: 'Tus cursos aparecen en “Mis temas” y en “Mi horario”.' },
+    ],
     admin: [
       { selector: '.cc-filters', title: 'Buscar el curso', text: 'Filtra por curso, programa o profesor (el super admin también elige el tenant).' },
       { selector: '.cc-enroll-others', title: 'Inscribir personas', text: 'Inscribe en ese curso a quien quieras: alumnos, profesores, admins o una persona nueva (se crea su usuario y te damos su enlace).' },
@@ -369,6 +375,7 @@ const ALERTS_SECTION = { id: 'alertas', title: 'Alertas', nav: 'Alertas', body: 
 const HELP_SECTION = { id: 'ayuda', title: 'Ayuda y guías', nav: 'Ayuda', body: 'Este manual y las guías paso a paso.', steps: ['“Ver la guía” repite el recorrido de bienvenida.', 'Busca cualquier tema en el buscador o salta a una sección desde el índice.', 'En cualquier pantalla, el botón “Guía” de arriba explica esa pantalla paso a paso.'] }
 const ACCOUNT_SECTION = { id: 'cuenta', title: 'Mi cuenta y contraseña', nav: 'Mi cuenta', body: 'Cambia tu contraseña.', steps: ['Escribe tu contraseña actual y la nueva (mínimo 8 caracteres, con letras y números).', 'Guarda los cambios.'], tips: ['Si la olvidaste, en el login toca “¿Olvidaste tu contraseña?”: tu administrador te enviará un enlace para crear una nueva.'] }
 const COURSES_SECTION = { id: 'cursos', title: 'Cursos: inscribirte como alumno', nav: 'Cursos', body: 'Puedes cursar como alumno los cursos de los programas vigentes.', steps: ['Busca el curso por nombre, programa o profesor (o marca “Solo mis cursos”).', 'Toca “Inscribirme”. Si dice “Se cruza con tu horario”, choca a la misma fecha y hora con una clase que dictas o que ya cursas.', '“Darme de baja” te retira del curso.', 'Para cursar, toca “Modo alumno” arriba (o “Cursar en modo alumno”); “Volver a mi rol” te regresa.'], tips: ['No aparecen los cursos que dictas: nadie cursa lo que enseña.', 'Mismo día y hora pero en otra fecha sí se puede: solo se bloquea el cruce real.'] }
+const STUDENT_COURSES_SECTION = { id: 'cursos-alumno', title: 'Cursos: inscribirte', nav: 'Cursos', body: 'Inscríbete tú mismo en los cursos de los programas vigentes.', steps: ['Busca el curso por nombre, programa o profesor.', 'Toca “Inscribirme”. Si dice “Se cruza con tu horario”, coincide a la misma fecha y hora con otra clase tuya.', 'El curso aparece en “Mis temas” y en “Mi horario”. “Darme de baja” te retira.'] }
 const REPORTS_SECTION = { id: 'reportes', title: 'Reportes', nav: 'Reportes', body: 'Reportes listos para revisar la operación.', steps: ['Elige el reporte: inasistencias justificadas y no justificadas, avance por programa o por componente, cumplimiento de profesores, temas atrasados o adelantados y resumen de permisos.', 'Para el comparativo por periodo, elige las fechas desde y hasta.', 'Revisa la tabla con los resultados.'] }
 
 
@@ -389,6 +396,7 @@ const MANUALS = {
       ALERTS_SECTION,
       HELP_SECTION,
       ACCOUNT_SECTION,
+      STUDENT_COURSES_SECTION,
     ],
   },
   instructor: {

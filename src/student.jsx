@@ -41,8 +41,9 @@ const isUpcoming = (t) => (t.column === 'scheduled' || t.column === 'in_progress
 const percent = (part, whole) => (whole > 0 ? Math.round((100 * part) / whole) : 0)
 
 // Programa elegido (si el alumno esta en varios) y sus componentes.
-function useProgramFilter(board) {
-  const [programId, setProgramId] = useState(null)
+// preferredId: programa con el que se llega (p. ej. desde Cursos tras inscribirse).
+function useProgramFilter(board, preferredId = null) {
+  const [programId, setProgramId] = useState(preferredId ? Number(preferredId) : null)
   const programs = board?.programs || []
   const current = programs.find((p) => p.id === programId) || programs[0] || null
   const components = useMemo(() => (board && current ? board.components.filter((c) => c.programId === current.id) : []), [board, current])
@@ -484,9 +485,9 @@ function ComponentSection({ token, component, today, onOpen, defaultOpen }) {
   )
 }
 
-export function StudentTopicsOverview({ session }) {
+export function StudentTopicsOverview({ session, navParams }) {
   const { board, error, reload } = useStudentBoard(session.token)
-  const { programs, current, setProgramId } = useProgramFilter(board)
+  const { programs, current, setProgramId } = useProgramFilter(board, navParams?.programId)
   const allTopics = useMemo(() => (board ? flattenTopics(board.components) : []), [board])
   const { topic: openTopic, openClass, close } = useOpenClass(allTopics)
 

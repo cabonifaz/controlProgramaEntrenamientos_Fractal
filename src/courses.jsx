@@ -14,12 +14,14 @@ export const STUDENT_MODE_REQUEST_EVENT = 'fractal:student-mode-request'
 
 const day = (iso) => (iso ? formatDay(iso, { weekday: false }) : '—')
 
-export function CourseCatalogPanel({ session }) {
+export function CourseCatalogPanel({ session, navigate }) {
   const { token, profile } = session
   const isSuperAdmin = profile?.roleCode === 'super_admin'
   const canEnrollOthers = isSuperAdmin || profile?.roleCode === 'tenant_admin'
+  const isStudent = profile?.roleCode === 'student'
   const [enrollTarget, setEnrollTarget] = useState(null)
   const [people, setPeople] = useState(null)
+  const [lastProgramId, setLastProgramId] = useState(null)
   const [items, setItems] = useState(null)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
@@ -56,9 +58,9 @@ export function CourseCatalogPanel({ session }) {
     setError('')
     setNotice('')
     try {
-      if (enroll) await apiRequest('/api/me/enrollments', { method: 'POST', token, body: { groupId: item.groupId } })
+      if (enroll) { await apiRequest('/api/me/enrollments', { method: 'POST', token, body: { groupId: item.groupId } }); setLastProgramId(item.programId) }
       else await apiRequest(`/api/me/enrollments/${item.groupId}`, { method: 'DELETE', token })
-      setNotice(enroll ? `Te inscribiste en ${item.componentName} · ${item.groupName}. Para cursarlo usa “Modo alumno”.` : `Te diste de baja de ${item.componentName} · ${item.groupName}.`)
+      setNotice(enroll ? `Te inscribiste en ${item.componentName} · ${item.groupName}. ${isStudent ? 'Ya aparece en “Mis temas” y en “Mi horario”.' : 'Para cursarlo usa “Modo alumno”.'}` : `Te diste de baja de ${item.componentName} · ${item.groupName}.`)
       window.dispatchEvent(new Event(STUDENT_MODE_REFRESH_EVENT))
       await load()
     } catch (err) {
@@ -94,13 +96,17 @@ export function CourseCatalogPanel({ session }) {
         <div className="sch-head">
           <div>
             <h3>Cursos</h3>
-            <p className="muted">{canEnrollOthers ? 'Inscribe a cualquier persona en un curso con “Inscribir personas” (alumnos, profesores, admins o alguien nuevo), o inscríbete tú como alumno. ' : ''}Para inscribirte tú: no aparecen los cursos que dictas y no puedes tomar uno que se cruce con tus clases.</p>
+            <p className="muted">{canEnrollOthers ? 'Inscribe a cualquier persona en un curso con “Inscribir personas” (alumnos, profesores, admins o alguien nuevo), o inscríbete tú como alumno. ' : ''}{isStudent ? 'Inscríbete en los cursos de los programas vigentes. Si un curso se cruza con otra clase tuya a la misma fecha y hora, no se puede.' : 'Para inscribirte tú: no aparecen los cursos que dictas y no puedes tomar uno que se cruce con tus clases.'}</p>
           </div>
-          {enrolledCount > 0 && (
+          {enrolledCount > 0 && (isStudent ? (
+            <button type="button" className="secondary cc-go" onClick={() => navigate?.('Mis temas', { programId: lastProgramId || (items || []).find((i) => i.enrolled)?.programId })}>
+              <GraduationCap size={16} aria-hidden="true" /> Ir a mis temas
+            </button>
+          ) : (
             <button type="button" className="secondary cc-go" onClick={() => window.dispatchEvent(new Event(STUDENT_MODE_REQUEST_EVENT))}>
               <ArrowLeftRight size={16} aria-hidden="true" /> Cursar en modo alumno
             </button>
-          )}
+          ))}
         </div>
         <div className="cc-filters">
           {isSuperAdmin && tenants.length > 1 && (
