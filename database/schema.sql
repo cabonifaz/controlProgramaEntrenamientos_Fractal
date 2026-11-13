@@ -1992,7 +1992,7 @@ BEGIN
 
   SELECT g.id, g.component_id, g.name, g.instructor_id, iu.full_name AS instructor_name,
          gs.code AS status_code, gs.label AS status_label,
-         (SELECT COUNT(*) FROM group_enrollments ge WHERE ge.group_id = g.id AND ge.is_deleted = FALSE) AS enrolled_students
+         (SELECT COUNT(*) FROM group_enrollments ge WHERE ge.group_id = g.id AND ge.is_deleted = FALSE AND EXISTS (SELECT 1 FROM users ux WHERE ux.id = ge.student_id AND ux.is_active = TRUE AND ux.is_deleted = FALSE)) AS enrolled_students
   FROM component_groups g
   JOIN master_catalog_values gs ON gs.id = g.status_id
   LEFT JOIN users iu ON iu.id = g.instructor_id
@@ -2019,7 +2019,7 @@ BEGIN
 
   SELECT g.id AS group_id, g.name AS group_name, c.id AS component_id, c.name AS component_name,
          g.instructor_id, iu.full_name AS instructor_name,
-         (SELECT COUNT(*) FROM group_enrollments ge WHERE ge.group_id = g.id AND ge.is_deleted = FALSE) AS enrolled_students
+         (SELECT COUNT(*) FROM group_enrollments ge WHERE ge.group_id = g.id AND ge.is_deleted = FALSE AND EXISTS (SELECT 1 FROM users ux WHERE ux.id = ge.student_id AND ux.is_active = TRUE AND ux.is_deleted = FALSE)) AS enrolled_students
   FROM component_groups g
   JOIN components c ON c.id = g.component_id
   LEFT JOIN users iu ON iu.id = g.instructor_id
@@ -3062,7 +3062,7 @@ BEGIN
             AND (l.topic_id = t.id OR (l.topic_id IS NULL AND t.scheduled_on BETWEEN l.starts_on AND l.ends_on))
           ORDER BY ls.code = 'approved' DESC, l.created_at DESC LIMIT 1) AS leave_reason
   FROM group_enrollments ge
-  JOIN users su ON su.id = ge.student_id
+  JOIN users su ON su.id = ge.student_id AND su.is_active = TRUE AND su.is_deleted = FALSE
   JOIN topics t ON t.id = p_topic_id
   LEFT JOIN attendance a ON a.topic_id = p_topic_id AND a.student_id = ge.student_id AND a.is_deleted = FALSE
   LEFT JOIN master_catalog_values ast ON ast.id = a.attendance_status_id
@@ -3461,7 +3461,7 @@ BEGIN
 
   SELECT c.id AS component_id, c.name AS component_name, p.name AS program_name,
     (SELECT COUNT(*) FROM group_enrollments ge JOIN component_groups g2 ON g2.id = ge.group_id
-       WHERE g2.component_id = c.id AND ge.is_deleted = FALSE) AS enrolled_students,
+       WHERE g2.component_id = c.id AND ge.is_deleted = FALSE AND EXISTS (SELECT 1 FROM users ux WHERE ux.id = ge.student_id AND ux.is_active = TRUE AND ux.is_deleted = FALSE)) AS enrolled_students,
     COUNT(t.id) AS total_topics,
     SUM(ts.code = 'completed') AS completed_topics,
     ROUND(100 * SUM(ts.code = 'completed') / NULLIF(COUNT(t.id), 0), 1) AS progress_pct
@@ -3696,7 +3696,7 @@ BEGIN
          g.id AS group_id, g.name AS group_name,
          c.id AS component_id, c.name AS component_name,
          p.id AS program_id, p.name AS program_name,
-         (SELECT COUNT(*) FROM group_enrollments ge WHERE ge.group_id = g.id AND ge.is_deleted = FALSE) AS enrolled_students
+         (SELECT COUNT(*) FROM group_enrollments ge WHERE ge.group_id = g.id AND ge.is_deleted = FALSE AND EXISTS (SELECT 1 FROM users ux WHERE ux.id = ge.student_id AND ux.is_active = TRUE AND ux.is_deleted = FALSE)) AS enrolled_students
   FROM topics t
   JOIN component_groups g ON g.id = t.group_id
   JOIN components c ON c.id = g.component_id
@@ -3714,7 +3714,7 @@ BEGIN
 
   SELECT t.id AS topic_id, t.title, t.scheduled_on, t.duration_minutes, g.id AS group_id,
     p.name AS program_name, c.name AS component_name,
-    (SELECT COUNT(*) FROM group_enrollments ge WHERE ge.group_id = g.id AND ge.is_deleted = FALSE) AS enrolled_students,
+    (SELECT COUNT(*) FROM group_enrollments ge WHERE ge.group_id = g.id AND ge.is_deleted = FALSE AND EXISTS (SELECT 1 FROM users ux WHERE ux.id = ge.student_id AND ux.is_active = TRUE AND ux.is_deleted = FALSE)) AS enrolled_students,
     ts.code AS status_code, ts.label AS status_label
   FROM component_groups g
   JOIN components c ON c.id = g.component_id
@@ -4695,7 +4695,7 @@ BEGIN
          c.id AS component_id, c.name AS component_name, c.sort_order AS component_sort_order,
          c.color_primary, c.color_accent, cs.code AS component_status_code,
          g.id AS group_id, g.name AS group_name, iu.full_name AS instructor_name,
-         (SELECT COUNT(*) FROM group_enrollments ge WHERE ge.group_id = g.id AND ge.is_deleted = FALSE) AS enrolled_students,
+         (SELECT COUNT(*) FROM group_enrollments ge WHERE ge.group_id = g.id AND ge.is_deleted = FALSE AND EXISTS (SELECT 1 FROM users ux WHERE ux.id = ge.student_id AND ux.is_active = TRUE AND ux.is_deleted = FALSE)) AS enrolled_students,
          m.topic_file_count AS material_topic_file_count,
          t.id AS topic_id, t.title, t.description, t.sort_order, t.scheduled_on, t.actual_date, t.duration_minutes,
          COALESCE(NULLIF(t.meeting_url, ''), g.meeting_url) AS meeting_url, t.meeting_url AS topic_meeting_url,
@@ -4786,7 +4786,7 @@ BEGIN
   SELECT su.id AS student_id, su.full_name AS student_name, su.is_active AS student_is_active,
          a.topic_id, av.code AS status_code, av.label AS status_label
   FROM group_enrollments ge
-  JOIN users su ON su.id = ge.student_id
+  JOIN users su ON su.id = ge.student_id AND su.is_active = TRUE AND su.is_deleted = FALSE
   LEFT JOIN (
     SELECT a.topic_id, a.student_id, a.attendance_status_id
     FROM attendance a JOIN topics t ON t.id = a.topic_id
@@ -4875,7 +4875,7 @@ BEGIN
   LEFT JOIN training_programs ep ON ep.id = pe.program_id AND ep.is_deleted = FALSE
   WHERE u.is_deleted = FALSE
     AND (p_actor_role = 'super_admin' OR u.tenant_id <=> p_actor_tenant_id)
-    AND (p_actor_role <> 'instructor' OR u.is_active = TRUE)
+    AND u.is_active = TRUE
   GROUP BY u.id, u.full_name, u.email, u.is_active, r.code, u.public_headline, u.public_bio, u.photo_path,
            u.linkedin_url, u.github_url, u.portfolio_url, u.contact_email, u.city, u.phone, u.tenant_id, t.name
   HAVING p_actor_role <> 'instructor' OR COUNT(c.id) > 0
@@ -5322,7 +5322,7 @@ BEGIN
     OR EXISTS (SELECT 1 FROM program_enrollments x WHERE x.student_id = su.id AND x.is_deleted = FALSE))
   LEFT JOIN attendance a ON a.student_id = su.id AND a.is_deleted = FALSE
   LEFT JOIN master_catalog_values av ON av.id = a.attendance_status_id
-  WHERE su.is_deleted = FALSE AND (p_actor_role = 'super_admin' OR su.tenant_id <=> p_actor_tenant_id)
+  WHERE su.is_deleted = FALSE AND su.is_active = TRUE AND (p_actor_role = 'super_admin' OR su.tenant_id <=> p_actor_tenant_id)
   GROUP BY su.id, su.full_name
   ORDER BY su.full_name;
 END$$
@@ -5772,7 +5772,7 @@ BEGIN
   SELECT t.id AS topic_id, t.title, t.scheduled_on, TIME_FORMAT(d.start_time, '%H:%i') AS start_time, TIME_FORMAT(d.end_time, '%H:%i') AS end_time,
          g.id AS group_id, g.name AS group_name, c.name AS component_name, p.name AS program_name, tn.name AS tenant_name,
          iu.full_name AS instructor_name,
-         (SELECT COUNT(*) FROM group_enrollments ge WHERE ge.group_id = g.id AND ge.is_deleted = FALSE) AS enrolled
+         (SELECT COUNT(*) FROM group_enrollments ge WHERE ge.group_id = g.id AND ge.is_deleted = FALSE AND EXISTS (SELECT 1 FROM users ux WHERE ux.id = ge.student_id AND ux.is_active = TRUE AND ux.is_deleted = FALSE)) AS enrolled
   FROM topics t
   JOIN component_groups g ON g.id = t.group_id AND g.is_deleted = FALSE
   JOIN components c ON c.id = g.component_id AND c.is_deleted = FALSE
