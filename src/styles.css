@@ -1236,3 +1236,6 @@ p.sch-warn{margin:0 0 10px}
 /* Ningun desplegable mas ancho que su espacio (nombres de programa largos en celular) */
 .content select{max-width:100%}
 .pg-program-select{grid-template-columns:minmax(0,1fr)}.pg-program-select select{width:100%;min-width:0;text-overflow:ellipsis}
+/* El texto solo para lectores de pantalla queda anclado a su elemento y no ensancha la pagina en celular */
+.pg-material,.pg-card,.at-row,.cc-item{position:relative}
+.sr-only{top:0;left:0}
