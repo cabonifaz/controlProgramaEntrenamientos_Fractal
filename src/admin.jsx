@@ -3272,6 +3272,16 @@ export function HolidaysPanel({ session }) {
 const DEFAULT_ATTENDANCE_STATUS = 'present'
 
 // embedded: abierto dentro de un modal (Avance), sin el enlace de volver.
+// Tono de cada estado de asistencia (para el chip activo y el resumen).
+const ATTENDANCE_TONE = { present: 'ok', late: 'warn', left_early: 'warn', absent: 'bad', justified_absent: 'info', approved_leave: 'info' }
+const ATTENDANCE_SUMMARY = [['present', 'Presentes'], ['late', 'Tarde'], ['left_early', 'Retirados'], ['absent', 'Ausentes'], ['justified_absent', 'Justificados'], ['approved_leave', 'Con permiso']]
+const longTopicDate = (iso) => {
+  if (!iso) return 'Sin fecha programada'
+  const d = new Date(`${String(iso).slice(0, 10)}T12:00:00`)
+  const s = d.toLocaleDateString('es-PE', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })
+  return s.charAt(0).toUpperCase() + s.slice(1)
+}
+
 export function InstructorAttendancePanel({ session, topic, onBack, embedded = false }) {
   const { token } = session
   const { items, error, loading, reload } = useList(`/api/topics/${topic.id}/attendance`, token)
@@ -3284,14 +3294,40 @@ export function InstructorAttendancePanel({ session, topic, onBack, embedded = f
   const [topicStatus, setTopicStatus] = useState(topic.status_code)
   const [completionSaving, setCompletionSaving] = useState(false)
   const [showMaterial, setShowMaterial] = useState(false)
+  const [query, setQuery] = useState('')
 
   function statusFor(row) {
     return draft[row.student_id]?.statusCode ?? row.status_code ?? DEFAULT_ATTENDANCE_STATUS
   }
 
   function patch(studentId, fields) {
+    setSaveResult('')
     setDraft((d) => ({ ...d, [studentId]: { ...d[studentId], ...fields } }))
   }
+
+  function setStatus(row, statusCode) {
+    patch(row.student_id, statusCode === 'present' ? { statusCode, reasonCode: '' } : { statusCode })
+  }
+
+  // Un cambio pendiente = difiere de lo guardado (o el alumno aun no tiene registro).
+  const isChanged = (row) => {
+    const d = draft[row.student_id]
+    if (!d) return false
+    return (d.statusCode !== undefined && d.statusCode !== (row.status_code ?? DEFAULT_ATTENDANCE_STATUS))
+      || (d.reasonCode !== undefined && (d.reasonCode || '') !== (row.reason_code || ''))
+      || (d.observations !== undefined && (d.observations || '') !== (row.observations || ''))
+  }
+  const neverSaved = items.filter((r) => !r.status_code).length
+  const pending = items.filter(isChanged).length
+  const counts = useMemo(() => {
+    const map = {}
+    for (const row of items) { const s = statusFor(row); map[s] = (map[s] || 0) + 1 }
+    return map
+  }, [items, draft])
+  const visible = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    return q ? items.filter((r) => (r.student_name || '').toLowerCase().includes(q)) : items
+  }, [items, query])
 
   async function saveAll() {
     setActionError('')
@@ -3308,7 +3344,8 @@ export function InstructorAttendancePanel({ session, topic, onBack, embedded = f
           },
         })
       }
-      setSaveResult(`Asistencia guardada para ${items.length} alumno(s).`)
+      setSaveResult(`Asistencia guardada para ${items.length} alumno${items.length === 1 ? '' : 's'}.`)
+      setDraft({})
       reload()
     } catch (err) {
       setActionError(err.message)
@@ -3333,65 +3370,97 @@ export function InstructorAttendancePanel({ session, topic, onBack, embedded = f
     }
   }
 
+  const statusLabel = (code) => statuses.find((s) => s.code === code)?.label || code
   return (
-    <div className="admin-wrap">
+    <div className={embedded ? 'at-wrap embedded' : 'admin-wrap at-wrap'}>
       {!embedded && <button className="text-button crumb-back" onClick={onBack}>← Volver al temario</button>}
-      <section className="panel">
-        <div className="panel-title-row">
-          <h3>Asistencia — {topic.title}</h3>
+      <section className="panel at-head">
+        <div className="at-head-row">
+          <div>
+            {!embedded && <h3>Asistencia — {topic.title}</h3>}
+            <p className="at-date"><Calendar size={15} aria-hidden="true" /> {longTopicDate(topic.scheduled_on)}</p>
+          </div>
           <button type="button" className="btn-mini" onClick={() => setShowMaterial(true)}>Ver material</button>
         </div>
-        <p className="muted">{topic.scheduled_on ? `Programado: ${topic.scheduled_on}` : 'Sin fecha programada'}</p>
-        <div className="completion-check">
+        <div className="at-completion" role="group" aria-label="¿Se completó el tema en la hora asignada?">
           <span>¿Se completó el tema en la hora asignada?</span>
-          <button type="button" className={topicStatus === 'completed' ? 'tab-button active' : 'tab-button'} disabled={completionSaving} onClick={() => markCompletion('completed')}>Sí, completo</button>
-          <button type="button" className={topicStatus === 'delayed' ? 'tab-button active' : 'tab-button'} disabled={completionSaving} onClick={() => markCompletion('delayed')}>No, quedó atrasado</button>
+          <div className="at-seg">
+            <button type="button" className={topicStatus === 'completed' ? 'on ok' : ''} aria-pressed={topicStatus === 'completed'} disabled={completionSaving} onClick={() => markCompletion('completed')}>Sí, completo</button>
+            <button type="button" className={topicStatus === 'delayed' ? 'on warn' : ''} aria-pressed={topicStatus === 'delayed'} disabled={completionSaving} onClick={() => markCompletion('delayed')}>No, quedó atrasado</button>
+          </div>
         </div>
       </section>
-      <section className="panel">
-        <p className="muted">Todos los alumnos empiezan como "Presente"; solo marca a los ausentes o ausentes parciales (tarde / retirado).</p>
+
+      <section className="panel at-list-panel">
         <ErrorNote message={error || actionError} />
-        {saveResult && <p className="temp-password-box">{saveResult}</p>}
         {loading ? <p className="muted">Cargando…</p> : items.length === 0 ? <p className="muted">No hay alumnos inscritos en este componente todavía.</p> : (
           <>
-            <div className="table-fit">
-            <table className="admin-table">
-              <thead><tr><th>Alumno</th><th>Estado</th><th>Motivo</th><th>Observaciones</th></tr></thead>
-              <tbody>
-                {items.map((row) => (
-                  <tr key={row.student_id}>
-                    <td>{row.student_name}{row.student_is_active === false && <span className="pill pill-inactive">Inactivo</span>}{row.leave_status_code && <span className="pill pill-leave" title={row.leave_reason ? `Motivo: ${row.leave_reason}` : undefined}>Avisó inasistencia{row.leave_status_code === 'approved' ? ' · aprobada' : ''}</span>}</td>
-                    <td>
-                      <select
-                        value={statusFor(row)}
-                        onChange={(e) => {
-                          const statusCode = e.target.value
-                          patch(row.student_id, statusCode === 'present' ? { statusCode, reasonCode: '' } : { statusCode })
-                        }}
-                      >
-                        {statuses.map((s) => <option key={s.code} value={s.code}>{s.label}</option>)}
-                      </select>
-                    </td>
-                    <td>
-                      <select
-                        value={draft[row.student_id]?.reasonCode ?? row.reason_code ?? ''}
-                        onChange={(e) => patch(row.student_id, { reasonCode: e.target.value })}
-                        disabled={statusFor(row) === 'present'}
-                      >
-                        <option value="">—</option>
-                        {reasons.map((r) => <option key={r.code} value={r.code}>{r.label}</option>)}
-                      </select>
-                    </td>
-                    <td><input placeholder="Opcional" value={draft[row.student_id]?.observations ?? row.observations ?? ''} onChange={(e) => patch(row.student_id, { observations: e.target.value })} /></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <div className="at-summary" aria-live="polite">
+              {ATTENDANCE_SUMMARY.filter(([code]) => code === 'present' || counts[code]).map(([code, label]) => (
+                <span key={code} className={`at-count ${ATTENDANCE_TONE[code]}`}><strong>{counts[code] || 0}</strong> {label}</span>
+              ))}
+              <span className="at-total muted">de {items.length} alumno{items.length === 1 ? '' : 's'}</span>
             </div>
-            <button className="primary" disabled={saving} onClick={saveAll}>{saving ? 'Guardando…' : 'Guardar asistencia'}</button>
+            <div className="at-tools">
+              {items.length > 6 && (
+                <label className="cc-search at-search"><span className="sr-only">Buscar alumno</span>
+                  <input type="search" placeholder="Buscar alumno…" value={query} onChange={(e) => setQuery(e.target.value)} />
+                </label>
+              )}
+              <button type="button" className="btn-mini" onClick={() => items.forEach((r) => setStatus(r, 'present'))}>Todos presentes</button>
+            </div>
+            <p className="muted at-hint">Todos empiezan como “Presente”: marca solo a quien llegó tarde, se retiró o faltó.{neverSaved ? ` ${neverSaved} alumno${neverSaved === 1 ? '' : 's'} sin registro guardado aún.` : ''}</p>
+            <ul className="at-list">
+              {visible.map((row) => {
+                const current = statusFor(row)
+                const absentLike = current !== 'present'
+                return (
+                  <li key={row.student_id} className={`at-row ${ATTENDANCE_TONE[current] || ''}${isChanged(row) ? ' changed' : ''}`}>
+                    <div className="at-person">
+                      <strong>{row.student_name}</strong>
+                      <span className="at-tags">
+                        {row.student_is_active === false && <span className="pill pill-inactive">Inactivo</span>}
+                        {row.leave_status_code && <span className="pill pill-leave" title={row.leave_reason ? `Motivo: ${row.leave_reason}` : undefined}>Avisó inasistencia{row.leave_status_code === 'approved' ? ' · aprobada' : ''}</span>}
+                        {isChanged(row) && <span className="at-dot">Sin guardar</span>}
+                      </span>
+                    </div>
+                    <div className="at-status" role="radiogroup" aria-label={`Asistencia de ${row.student_name}`}>
+                      {statuses.map((s) => (
+                        <button key={s.code} type="button" role="radio" aria-checked={current === s.code}
+                          className={current === s.code ? `on ${ATTENDANCE_TONE[s.code] || ''}` : ''}
+                          onClick={() => setStatus(row, s.code)}>{s.label}</button>
+                      ))}
+                    </div>
+                    {absentLike && (
+                      <div className="at-extra">
+                        <label><span>Motivo</span>
+                          <select value={draft[row.student_id]?.reasonCode ?? row.reason_code ?? ''} onChange={(e) => patch(row.student_id, { reasonCode: e.target.value })}>
+                            <option value="">Sin motivo</option>
+                            {reasons.map((r) => <option key={r.code} value={r.code}>{r.label}</option>)}
+                          </select>
+                        </label>
+                        <label className="at-obs"><span>Observación</span>
+                          <input placeholder={`Opcional (${statusLabel(current).toLowerCase()})`} value={draft[row.student_id]?.observations ?? row.observations ?? ''} onChange={(e) => patch(row.student_id, { observations: e.target.value })} maxLength={500} />
+                        </label>
+                      </div>
+                    )}
+                  </li>
+                )
+              })}
+              {!visible.length && <li className="muted at-empty">Ningún alumno coincide con “{query}”.</li>}
+            </ul>
           </>
         )}
       </section>
+
+      {items.length > 0 && (
+        <div className="at-footer">
+          <span className={pending || neverSaved ? 'at-pending' : 'muted'} role="status">
+            {saveResult || (pending ? `${pending} cambio${pending === 1 ? '' : 's'} sin guardar` : neverSaved ? 'Asistencia aún no registrada' : 'Todo guardado')}
+          </span>
+          <button className="primary" disabled={saving} onClick={saveAll}>{saving ? 'Guardando…' : 'Guardar asistencia'}</button>
+        </div>
+      )}
       {showMaterial && <MaterialViewer session={session} topic={topic} onClose={() => setShowMaterial(false)} />}
     </div>
   )
