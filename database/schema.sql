@@ -882,6 +882,7 @@ DROP PROCEDURE IF EXISTS sp_class_reminder_tenants;
 DROP PROCEDURE IF EXISTS sp_class_reminders_due;
 DROP PROCEDURE IF EXISTS sp_class_reminders_claim;
 DROP PROCEDURE IF EXISTS sp_class_reminders_release;
+DROP PROCEDURE IF EXISTS sp_mail_redirect_targets;
 DROP PROCEDURE IF EXISTS sp_programs_schedule_close;
 DROP PROCEDURE IF EXISTS sp_topics_apply_plan;
 DROP PROCEDURE IF EXISTS sp_program_windows_list;
@@ -4596,7 +4597,7 @@ BEGIN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'invitation_expired';
   END IF;
 
-  SELECT u.full_name, u.email, r.code AS role_code, r.label AS role_label, i.expires_at,
+  SELECT u.full_name, u.email, u.tenant_id, r.code AS role_code, r.label AS role_label, i.expires_at,
          u.password_hash <> '' AS has_password,
          t.name AS tenant_name, t.slug AS tenant_slug, t.logo_path AS tenant_logo_path, t.brand_color AS tenant_brand_color
   FROM user_invitations i
@@ -6809,6 +6810,18 @@ END$$
 CREATE PROCEDURE sp_class_reminders_release(IN p_topic_id BIGINT UNSIGNED, IN p_user_id BIGINT UNSIGNED, IN p_kind VARCHAR(20), IN p_date DATE)
 BEGIN
   DELETE FROM class_reminders WHERE topic_id = p_topic_id AND user_id = p_user_id AND kind = p_kind AND class_date = p_date;
+END$$
+
+-- Modo redirect (staging): a quien llegan los correos de prueba de un
+-- tenant. Sus administradores activos con correo real (se omiten dominios
+-- de prueba como example.com o .test). Vacio = el servidor usa MAIL_REDIRECT_TO.
+CREATE PROCEDURE sp_mail_redirect_targets(IN p_tenant_id BIGINT UNSIGNED)
+BEGIN
+  SELECT u.email
+  FROM users u JOIN master_catalog_values r ON r.id = u.role_id AND r.code = 'tenant_admin'
+  WHERE u.tenant_id = p_tenant_id AND u.is_active = TRUE AND u.is_deleted = FALSE
+    AND u.email NOT REGEXP '@(example\\.(com|org|net)|[^@]*\\.(test|invalid|local|example))$'
+  ORDER BY u.id;
 END$$
 
 CREATE PROCEDURE sp_dashboard_get(IN p_user_id BIGINT, IN p_role VARCHAR(80), IN p_tenant_id BIGINT)

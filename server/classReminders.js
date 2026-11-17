@@ -61,7 +61,7 @@ async function remindTenant(tenant, date, kind, afterTime) {
         meetingUrl: c.meeting_url, instructorName: c.instructor_name, role: c.recipient_role,
       })),
     })
-    const result = await sendMail({ to: user.email, ...mail })
+    const result = await sendMail({ to: user.email, tenantId: tenant.id, ...mail })
     if (result.sent) sent += 1
     else for (const c of claimed) await callProcedure('sp_class_reminders_release', { p_topic_id: c.topic_id, p_user_id: user.user_id, p_kind: kind, p_date: date })
   }

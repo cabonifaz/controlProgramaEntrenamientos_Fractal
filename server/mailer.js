@@ -3,11 +3,15 @@
 //
 // MAIL_MODE:
 //   off      -> no envia nada (por defecto).
-//   redirect -> todo va a MAIL_REDIRECT_TO, con el destinatario real en el
-//               asunto. Es el modo de staging: con datos reales de produccion
-//               nadie recibe correos de prueba. Sin MAIL_REDIRECT_TO no envia.
+//   redirect -> el correo va a los administradores del tenant de la persona
+//               (con el destinatario real en el asunto); si el tenant no
+//               tiene admins con correo real, a MAIL_REDIRECT_TO. Es el modo
+//               de staging: con datos reales de produccion, alumnos y
+//               profesores no reciben correos de prueba.
 //   live     -> envia a los destinatarios reales (produccion).
 // MAIL_FROM: remitente de un dominio verificado en Resend.
+
+import { callProcedure } from './db.js'
 
 const RESEND_URL = 'https://api.resend.com/emails'
 
@@ -19,12 +23,29 @@ export function mailEnabled() {
   return m === 'live' || (m === 'redirect' && Boolean(process.env.MAIL_REDIRECT_TO))
 }
 
-export async function sendMail({ to, subject, html, text }) {
+// Destino en modo redirect: los admins del tenant o, si no hay, MAIL_REDIRECT_TO.
+async function redirectTargets(tenantId) {
+  if (tenantId) {
+    try {
+      const rows = await callProcedure('sp_mail_redirect_targets', { p_tenant_id: tenantId })
+      const emails = (rows || []).map((r) => r.email).filter(Boolean)
+      if (emails.length) return emails
+    } catch (err) {
+      console.error('[mail] admins del tenant no disponibles:', err.message)
+    }
+  }
+  return process.env.MAIL_REDIRECT_TO ? [process.env.MAIL_REDIRECT_TO] : []
+}
+
+// tenantId: tenant de la persona (en modo redirect decide a que admins llega).
+export async function sendMail({ to, subject, html, text, tenantId = null }) {
   if (!to || !mailEnabled()) return { sent: false, reason: 'disabled' }
   const redirect = mode() === 'redirect'
+  const recipients = redirect ? await redirectTargets(tenantId) : [to]
+  if (!recipients.length) return { sent: false, reason: 'disabled' }
   const body = {
     from: process.env.MAIL_FROM,
-    to: [redirect ? process.env.MAIL_REDIRECT_TO : to],
+    to: recipients,
     subject: redirect ? `[Prueba → ${to}] ${subject}` : subject,
     html,
     text,
@@ -39,7 +60,7 @@ export async function sendMail({ to, subject, html, text }) {
       console.error('[mail] Resend respondió', res.status, (await res.text()).slice(0, 300))
       return { sent: false, reason: 'provider_error' }
     }
-    return { sent: true, redirected: redirect }
+    return { sent: true, redirected: redirect, deliveredTo: recipients }
   } catch (err) {
     console.error('[mail] no se pudo enviar:', err.message)
     return { sent: false, reason: 'network_error' }

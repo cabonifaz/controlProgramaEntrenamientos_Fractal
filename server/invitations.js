@@ -44,7 +44,7 @@ async function emailInvitation(token, url) {
       fullName: info.full_name, tenantName: info.tenant_name, url, isReset: Boolean(info.has_password),
       expiresAt: info.expires_at, brandColor: info.tenant_brand_color,
     })
-    const result = await sendMail({ to: info.email, ...mail })
+    const result = await sendMail({ to: info.email, tenantId: info.tenant_id, ...mail })
     return { sent: result.sent, to: info.email }
   } catch (err) {
     console.error('[mail] invitación sin enviar:', err.message)
