@@ -1250,3 +1250,28 @@ p.sch-warn{margin:0 0 10px}
 .reminders-panel .rem-stats{margin-top:14px;font-size:13px}
 .rem-warning{margin:12px 0 0;background:#fff3d6;border:1px solid #f4d98a;border-radius:8px;padding:10px 12px;font-size:13px;color:#5a4300}
 .reminders-panel .checkbox-field span{font-weight:400}.reminders-panel .checkbox-field strong{font-weight:700}
+/* Inducción → Alumnos: buscador con selección múltiple */
+.ie-search{display:grid;gap:6px}
+.ie-label{font-size:12px;font-weight:700;color:#4f616b}
+.ie-input{display:flex;align-items:center;gap:8px;height:42px;border:1px solid var(--line);border-radius:8px;background:#fff;padding:0 12px;color:#4f616b}
+.ie-input:focus-within{border-color:var(--blue);box-shadow:0 0 0 3px color-mix(in srgb,var(--blue) 18%,transparent)}
+.ie-input input{flex:1;min-width:0;border:0;outline:0;height:100%;font:inherit;font-size:14px;background:transparent;color:var(--ink)}
+.ie-count{margin:0;font-size:13px}
+.ie-results{list-style:none;margin:0;padding:0;border:1px solid var(--line);border-radius:10px;max-height:340px;overflow-y:auto;background:#fff}
+.ie-results li+li{border-top:1px solid #edf1f2}
+.ie-row{display:grid;grid-template-columns:auto minmax(0,1fr) minmax(0,1fr);align-items:center;gap:12px;min-height:44px;padding:8px 14px;cursor:pointer;font-size:14px;margin:0}
+.ie-row:hover{background:#f6f9fa}
+.ie-row.on{background:var(--soft)}
+.ie-row input{width:18px;height:18px;margin:0;accent-color:var(--blue)}
+.ie-name{font-weight:600;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ie-mail{color:#4f616b;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ie-empty{margin:0;padding:16px;border:1px dashed var(--line);border-radius:10px;text-align:center;color:#4f616b;font-size:13px}
+.ie-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.ie-enrolled{margin-top:8px;padding-top:14px;border-top:1px solid var(--line);display:grid;gap:8px}
+.ie-enrolled-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.ie-enrolled-head h4{margin:0;font-size:14px;color:var(--deep)}
+.ie-enrolled-head input{height:36px;border:1px solid var(--line);border-radius:7px;padding:0 10px;font:inherit;font-size:13px;min-width:0;width:220px;max-width:100%}
+.ie-enrolled-list{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:6px}
+.ie-enrolled-list li{display:grid;gap:2px;padding:8px 12px;border:1px solid #edf1f2;border-radius:8px;background:#fafcfc;min-width:0}
+@media (max-width:640px){.ie-row{grid-template-columns:auto minmax(0,1fr);row-gap:2px}.ie-row .ie-mail{grid-column:2}}
+.ie-row{font-weight:400;color:var(--ink)}.ie-row .ie-mail,.ie-enrolled-list .ie-mail{font-weight:400}.ie-enrolled-list .ie-name{font-size:14px}

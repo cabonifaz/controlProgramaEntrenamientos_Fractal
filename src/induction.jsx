@@ -420,35 +420,100 @@ function PathEditor({ token, programId, data, reload }) {
   )
 }
 
+// Inscribir: buscador por nombre o correo con seleccion multiple (nunca un
+// combo: puede haber cientos de personas). Debajo, quienes ya estan inscritos.
+const MAX_RESULTS = 50
 function EnrollTab({ token, programId, students, reload }) {
-  const [all, setAll] = useState([])
-  const [pick, setPick] = useState('')
+  const [all, setAll] = useState(null)
+  const [query, setQuery] = useState('')
+  const [picked, setPicked] = useState(() => new Set())
+  const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
-  useEffect(() => { apiRequest('/api/users?role=student', { token }).then(({ data }) => setAll(data || [])).catch(() => {}) }, [token])
+  const [done, setDone] = useState('')
+  const [enrolledQuery, setEnrolledQuery] = useState('')
+  useEffect(() => { apiRequest('/api/users?role=student', { token }).then(({ data }) => setAll(data || [])).catch((err) => { setAll([]); setError(err.message) }) }, [token])
   const enrolledIds = new Set(students.map((s) => s.id))
-  const available = all.filter((u) => !enrolledIds.has(u.id) && u.is_active !== 0)
-  async function enroll(e) {
-    e.preventDefault()
-    setError('')
-    try {
-      await apiRequest(`/api/programs/${programId}/students`, { method: 'POST', token, body: { studentId: Number(pick) } })
-      setPick('')
-      reload()
-    } catch (err) {
-      setError(err.message)
-    }
+  const norm = (v) => String(v || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+  const q = norm(query.trim())
+  const available = (all || []).filter((u) => !enrolledIds.has(u.id) && u.is_active !== 0)
+  const matches = q ? available.filter((u) => norm(u.full_name).includes(q) || norm(u.email).includes(q)) : available
+  const shown = matches.slice(0, MAX_RESULTS)
+  const eq = norm(enrolledQuery.trim())
+  const enrolledShown = students.filter((s) => !eq || norm(s.name).includes(eq) || norm(s.email).includes(eq))
+
+  function toggle(id) {
+    setPicked((prev) => { const next = new Set(prev); if (next.has(id)) next.delete(id); else next.add(id); return next })
   }
+  async function enroll() {
+    setSaving(true); setError(''); setDone('')
+    const ids = [...picked]
+    let ok = 0
+    const failed = []
+    for (const id of ids) {
+      try {
+        await apiRequest(`/api/programs/${programId}/students`, { method: 'POST', token, body: { studentId: id } })
+        ok += 1
+      } catch (err) {
+        failed.push(`${(all || []).find((u) => u.id === id)?.full_name || id}: ${err.message}`)
+      }
+    }
+    setPicked(new Set())
+    setSaving(false)
+    if (ok) setDone(`${ok} persona${ok === 1 ? '' : 's'} inscrita${ok === 1 ? '' : 's'}.`)
+    if (failed.length) setError(failed.join(' · '))
+    reload()
+  }
+
   return (
     <div className="ij-enroll">
-      <form className="ij-new-stage" onSubmit={enroll}>
-        <select value={pick} onChange={(e) => setPick(e.target.value)} aria-label="Persona a inscribir" required>
-          <option value="">Elige a quién inscribir…</option>
-          {available.map((u) => <option key={u.id} value={u.id}>{u.full_name} · {u.email}</option>)}
-        </select>
-        <button type="submit" className="primary btn-compact" disabled={!pick}>Inscribir</button>
-      </form>
+      <div className="ie-search">
+        <label className="ie-label" htmlFor="ie-query">Buscar a quién inscribir</label>
+        <div className="ie-input">
+          <Search size={16} aria-hidden="true" />
+          <input id="ie-query" type="search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Nombre o correo" autoComplete="off" />
+        </div>
+      </div>
+      {all === null ? <p className="muted">Cargando personas…</p> : (
+        <>
+          <p className="muted ie-count" aria-live="polite">
+            {q ? `${matches.length} resultado${matches.length === 1 ? '' : 's'}` : `${available.length} persona${available.length === 1 ? '' : 's'} sin inscribir`}
+            {matches.length > MAX_RESULTS ? ` · se muestran ${MAX_RESULTS}, escribe para afinar` : ''}
+          </p>
+          {shown.length > 0 ? (
+            <ul className="ie-results" aria-label="Personas para inscribir">
+              {shown.map((u) => (
+                <li key={u.id}>
+                  <label className={picked.has(u.id) ? 'ie-row on' : 'ie-row'}>
+                    <input type="checkbox" checked={picked.has(u.id)} onChange={() => toggle(u.id)} />
+                    <span className="ie-name">{u.full_name}</span>
+                    <span className="ie-mail">{u.email}</span>
+                  </label>
+                </li>
+              ))}
+            </ul>
+          ) : <p className="ie-empty">{q ? 'Nadie coincide con la búsqueda.' : 'Todas las personas ya están inscritas.'}</p>}
+          <div className="ie-actions">
+            <button type="button" className="primary btn-compact" disabled={!picked.size || saving} onClick={enroll}>
+              {saving ? 'Inscribiendo…' : picked.size ? `Inscribir ${picked.size} persona${picked.size === 1 ? '' : 's'}` : 'Inscribir'}
+            </button>
+            {picked.size > 0 && !saving && <button type="button" className="btn-mini" onClick={() => setPicked(new Set())}>Quitar selección</button>}
+          </div>
+        </>
+      )}
+      {done && <p className="temp-password-box" role="status">{done}</p>}
       <ErrorNote message={error} />
-      <p className="muted">{students.length} persona{students.length === 1 ? '' : 's'} inscrita{students.length === 1 ? '' : 's'}. Para crear usuarios nuevos usa la sección Usuarios.</p>
+      <div className="ie-enrolled">
+        <div className="ie-enrolled-head">
+          <h4>Inscritos ({students.length})</h4>
+          {students.length > 8 && <input type="search" value={enrolledQuery} onChange={(e) => setEnrolledQuery(e.target.value)} placeholder="Buscar inscrito" aria-label="Buscar entre los inscritos" />}
+        </div>
+        {students.length === 0 ? <p className="muted">Todavía no hay nadie inscrito.</p> : (
+          <ul className="ie-enrolled-list">
+            {enrolledShown.map((s) => <li key={s.id}><span className="ie-name">{s.name}</span><span className="ie-mail">{s.email}</span></li>)}
+          </ul>
+        )}
+        <p className="muted">¿No aparece alguien? Créalo primero en la sección Usuarios.</p>
+      </div>
     </div>
   )
 }
