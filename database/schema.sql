@@ -6714,14 +6714,14 @@ BEGIN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_not_found';
   END IF;
   SELECT t.id AS tenant_id, t.name AS tenant_name, t.reminder_day_before, t.reminder_same_day, t.timezone,
-    (SELECT COUNT(*) FROM class_reminders r JOIN topics tp ON tp.id = r.topic_id
+    (SELECT COUNT(DISTINCT r.user_id, r.class_date, r.kind) FROM class_reminders r JOIN topics tp ON tp.id = r.topic_id
        JOIN component_groups g ON g.id = tp.group_id JOIN components c ON c.id = g.component_id
        JOIN training_programs p ON p.id = c.program_id
      WHERE p.tenant_id = t.id AND r.sent_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)) AS sent_last_7_days,
-    (SELECT MAX(r.sent_at) FROM class_reminders r JOIN topics tp ON tp.id = r.topic_id
+    (SELECT TIMESTAMPDIFF(MINUTE, MAX(r.sent_at), NOW()) FROM class_reminders r JOIN topics tp ON tp.id = r.topic_id
        JOIN component_groups g ON g.id = tp.group_id JOIN components c ON c.id = g.component_id
        JOIN training_programs p ON p.id = c.program_id
-     WHERE p.tenant_id = t.id) AS last_sent_at
+     WHERE p.tenant_id = t.id) AS last_sent_minutes_ago
   FROM tenants t WHERE t.id = p_tenant_id;
 END$$
 

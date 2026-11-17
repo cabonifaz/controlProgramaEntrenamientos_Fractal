@@ -3869,7 +3869,8 @@ function ClassRemindersSettings({ session }) {
     }
   }
 
-  const lastSent = data?.lastSentAt ? new Date(String(data.lastSentAt).replace(' ', 'T')).toLocaleString('es-PE', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : null
+  const ago = data?.lastSentMinutesAgo
+  const lastSent = ago === null || ago === undefined ? null : ago < 1 ? 'hace un momento' : ago < 60 ? `hace ${ago} min` : ago < 1440 ? `hace ${Math.round(ago / 60)} h` : `hace ${Math.round(ago / 1440)} días`
   return (
     <section className="panel admin-form-panel reminders-panel">
       <h3>Recordatorios de clase por correo</h3>
@@ -3893,7 +3894,7 @@ function ClassRemindersSettings({ session }) {
             <input type="checkbox" checked={data.sameDay} disabled={saving} onChange={(e) => save({ ...data, sameDay: e.target.checked })} />
             <span><strong>El mismo día</strong> · desde las {data.sameDayFromHour}:00 se avisan las clases de hoy que aún no empiezan</span>
           </label>
-          <p className="muted rem-stats">Horas de {data.timezone === 'America/Lima' ? 'Perú' : data.timezone}. Enviados en los últimos 7 días: <strong>{data.sentLast7Days}</strong>{lastSent ? ` · último: ${lastSent}` : ''}</p>
+          <p className="muted rem-stats">Horas de {data.timezone === 'America/Lima' ? 'Perú' : data.timezone}. Correos enviados en los últimos 7 días: <strong>{data.sentLast7Days}</strong>{lastSent ? ` · último: ${lastSent}` : ''}</p>
         </>
       )}
       {saved && <p className="temp-password-box" role="status">{saved}</p>}

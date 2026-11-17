@@ -100,7 +100,7 @@ export function startClassReminders() {
 
 const shape = (r) => r && ({
   tenantId: Number(r.tenant_id), tenantName: r.tenant_name, dayBefore: Boolean(r.reminder_day_before), sameDay: Boolean(r.reminder_same_day),
-  timezone: r.timezone, sentLast7Days: Number(r.sent_last_7_days) || 0, lastSentAt: r.last_sent_at || null,
+  timezone: r.timezone, sentLast7Days: Number(r.sent_last_7_days) || 0, lastSentMinutesAgo: r.last_sent_minutes_ago === null || r.last_sent_minutes_ago === undefined ? null : Number(r.last_sent_minutes_ago),
   mailEnabled: mailEnabled(), dayBeforeFromHour: DAY_BEFORE_FROM_HOUR, sameDayFromHour: SAME_DAY_FROM_HOUR,
 })
 
