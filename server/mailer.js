@@ -48,6 +48,12 @@ export async function sendMail({ to, subject, html, text }) {
 
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]))
 const HEX = /^#[0-9a-f]{6}$/i
+// Texto legible sobre el color de marca (oscuro sobre colores claros).
+function textOn(hex) {
+  const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255).map((c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4))
+  const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b
+  return (lum + 0.05) / 0.05 > 1.05 / (lum + 0.05) ? '#17232d' : '#ffffff'
+}
 
 function formatExpiry(value) {
   if (!value) return ''
@@ -73,11 +79,54 @@ export function invitationEmail({ fullName, tenantName, url, isReset, expiresAt,
 <tr><td style="padding:28px 28px 8px"><p style="margin:0 0 4px;font-size:12px;letter-spacing:1px;text-transform:uppercase;color:#5d6b74">${esc(org)} · Training</p>
 <h1 style="margin:0;font-size:22px;color:#06425e">${esc(action)}</h1></td></tr>
 <tr><td style="padding:12px 28px 4px;font-size:15px;line-height:1.55"><p style="margin:0 0 12px">${esc(hello)}</p><p style="margin:0 0 20px">${esc(lead)} Toca el botón para crear tu contraseña y entrar.</p>
-<p style="margin:0 0 24px"><a href="${esc(url)}" style="display:inline-block;background:${color};color:#ffffff;text-decoration:none;font-weight:bold;padding:12px 22px;border-radius:8px">${esc(action)}</a></p>
+<p style="margin:0 0 24px"><a href="${esc(url)}" style="display:inline-block;background:${color};color:${textOn(color)};text-decoration:none;font-weight:bold;padding:12px 22px;border-radius:8px">${esc(action)}</a></p>
 <p style="margin:0 0 8px;font-size:13px;color:#5d6b74">${esc(note)}</p>
 <p style="margin:0 0 20px;font-size:12px;color:#5d6b74;word-break:break-all">Si el botón no funciona, copia este enlace: ${esc(url)}</p></td></tr>
 <tr><td style="padding:16px 28px 24px;border-top:1px solid #dfe6e9;font-size:12px;color:#5d6b74">${isReset ? 'Si no pediste este cambio, ignora este correo: tu contraseña actual sigue funcionando.' : 'Si no esperabas este correo, puedes ignorarlo.'}</td></tr>
 </table></td></tr></table></body></html>`
   const text = `${hello}\n\n${lead}\n\n${action}: ${url}\n\n${note}`
+  return { subject, html, text }
+}
+
+// Recordatorio de las clases de hoy o de manana de una persona (alumno y/o
+// profesor). classes: [{ title, componentName, programName, start, end,
+// meetingUrl, instructorName, role: 'student'|'instructor' }]
+export function classReminderEmail({ fullName, tenantName, brandColor, when, dateLabel, classes, appUrl, timezone }) {
+  const zone = !timezone || timezone === 'America/Lima' ? 'hora de Perú' : `hora de ${timezone}`
+  const org = tenantName || 'Fractal'
+  const color = HEX.test(brandColor || '') ? brandColor : '#06425e'
+  const isToday = when === 'today'
+  const many = classes.length > 1
+  const teaches = classes.every((c) => c.role === 'instructor')
+  const first = classes[0]
+  const time = (c) => (c.start ? `${c.start}${c.end ? `–${c.end}` : ''}` : 'Hora por confirmar')
+  const dayWord = isToday ? 'hoy' : 'mañana'
+  const subject = many
+    ? `Recordatorio: tienes ${classes.length} clases ${dayWord} · ${org}`
+    : `Recordatorio: ${teaches ? 'dictas' : 'tienes clase'} ${dayWord}${first.start ? ` a las ${first.start}` : ''} · ${first.componentName}`
+  const hello = fullName ? `Hola ${fullName},` : 'Hola,'
+  const lead = `${many ? `Estas son tus clases de ${dayWord}` : `Te recordamos tu clase de ${dayWord}`}, ${dateLabel}.`
+  const rows = classes.map((c) => `<tr><td style="padding:12px 0;border-top:1px solid #dfe6e9;vertical-align:top;width:110px;font-weight:bold;color:#06425e;font-size:14px">${esc(time(c))}</td>
+<td style="padding:12px 0 12px 12px;border-top:1px solid #dfe6e9;font-size:14px;line-height:1.45">
+<div style="font-weight:bold;color:#17232d">${esc(c.title)}</div>
+<div style="color:#5d6b74">${esc(c.componentName)} · ${esc(c.programName)}</div>
+<div style="color:#5d6b74">${c.role === 'instructor' ? 'Tú dictas esta clase' : `Profesor: ${esc(c.instructorName || 'por asignar')}`}</div>
+${c.meetingUrl ? `<div style="margin-top:6px"><a href="${esc(c.meetingUrl)}" style="color:#06425e;font-weight:bold;text-decoration:underline">Unirse a la clase</a></div>` : ''}
+</td></tr>`).join('')
+  const tip = teaches
+    ? 'Al terminar, marca el tema como dictado y registra la asistencia en la app.'
+    : 'Si no puedes asistir, avisa con anticipación pidiendo un permiso en la app.'
+  const html = `<!doctype html><html lang="es"><body style="margin:0;background:#f5f7f8;font-family:Arial,Helvetica,sans-serif;color:#17232d">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f5f7f8;padding:24px 12px"><tr><td align="center">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#ffffff;border-radius:12px;border:1px solid #dfe6e9">
+<tr><td style="padding:28px 28px 8px"><p style="margin:0 0 4px;font-size:12px;letter-spacing:1px;text-transform:uppercase;color:#5d6b74">${esc(org)} · Training</p>
+<h1 style="margin:0;font-size:22px;color:#06425e">${many ? `Tus clases de ${dayWord}` : `Tu clase de ${dayWord}`}</h1></td></tr>
+<tr><td style="padding:12px 28px 4px;font-size:15px;line-height:1.55"><p style="margin:0 0 12px">${esc(hello)}</p><p style="margin:0 0 12px">${esc(lead)}</p>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0">${rows}</table>
+${appUrl ? `<p style="margin:20px 0 20px"><a href="${esc(appUrl)}" style="display:inline-block;background:${color};color:${textOn(color)};text-decoration:none;font-weight:bold;padding:12px 22px;border-radius:8px">Abrir la app</a></p>` : ''}
+<p style="margin:0 0 20px;font-size:13px;color:#5d6b74">${esc(tip)}</p></td></tr>
+<tr><td style="padding:16px 28px 24px;border-top:1px solid #dfe6e9;font-size:12px;color:#5d6b74">Recibes este aviso porque estás inscrito o dictas en un programa de ${esc(org)}. Las horas están en ${esc(zone)}.</td></tr>
+</table></td></tr></table></body></html>`
+  const text = `${hello}\n\n${lead}\n\n${classes.map((c) => `- ${time(c)} · ${c.title} (${c.componentName}, ${c.programName})${c.role === 'instructor' ? ' · Tú dictas' : ''}${c.meetingUrl ? `\n  Unirse: ${c.meetingUrl}` : ''}`).join('\n')}\n\n${tip}${appUrl ? `\n\n${appUrl}` : ''}`
   return { subject, html, text }
 }

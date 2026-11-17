@@ -3827,6 +3827,81 @@ export function ReportsPanel({ session }) {
   )
 }
 
+// Recordatorios de clase por correo (la vispera y/o el mismo dia). El admin
+// configura su tenant; el super admin elige el tenant.
+function ClassRemindersSettings({ session }) {
+  const { token, profile } = session
+  const isSuper = profile.roleCode === 'super_admin'
+  const { items: tenants } = useList(isSuper ? '/api/tenants' : '', token)
+  const [tenantId, setTenantId] = useState(isSuper ? '' : profile.tenantId)
+  const [data, setData] = useState(null)
+  const [error, setError] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState('')
+
+  useEffect(() => {
+    if (isSuper && !tenantId && tenants.length) setTenantId(tenants[0].id)
+  }, [isSuper, tenantId, tenants])
+
+  useEffect(() => {
+    if (!tenantId) return
+    let cancelled = false
+    setData(null); setError(''); setSaved('')
+    apiRequest(`/api/tenants/${tenantId}/reminders`, { token })
+      .then((res) => { if (!cancelled) setData(res.data) })
+      .catch((err) => { if (!cancelled) setError(err.message) })
+    return () => { cancelled = true }
+  }, [tenantId, token])
+
+  async function save(next) {
+    const previous = data
+    setData(next)
+    setSaving(true); setError(''); setSaved('')
+    try {
+      const res = await apiRequest(`/api/tenants/${tenantId}/reminders`, { method: 'PUT', token, body: { dayBefore: next.dayBefore, sameDay: next.sameDay } })
+      setData(res.data)
+      setSaved(next.dayBefore || next.sameDay ? 'Guardado. Los recordatorios se envían solos.' : 'Guardado. Recordatorios apagados.')
+    } catch (err) {
+      setData(previous)
+      setError(err.message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const lastSent = data?.lastSentAt ? new Date(String(data.lastSentAt).replace(' ', 'T')).toLocaleString('es-PE', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : null
+  return (
+    <section className="panel admin-form-panel reminders-panel">
+      <h3>Recordatorios de clase por correo</h3>
+      <p className="muted">Cada alumno y profesor recibe un correo con sus clases: el horario, el curso y el enlace para unirse. Un solo correo por persona y día, aunque tenga varias clases.</p>
+      {isSuper && (
+        <label>Tenant
+          <select value={tenantId} onChange={(e) => setTenantId(Number(e.target.value))}>
+            {tenants.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+          </select>
+        </label>
+      )}
+      {!data && !error && <p className="muted">Cargando…</p>}
+      {data && (
+        <>
+          {!data.mailEnabled && <p className="rem-warning">El envío de correos no está activo en este ambiente: la configuración se guarda, pero no saldrá ningún correo hasta activarlo.</p>}
+          <label className="checkbox-field">
+            <input type="checkbox" checked={data.dayBefore} disabled={saving} onChange={(e) => save({ ...data, dayBefore: e.target.checked })} />
+            <span><strong>Un día antes</strong> · desde las {data.dayBeforeFromHour}:00 se avisan las clases de mañana</span>
+          </label>
+          <label className="checkbox-field">
+            <input type="checkbox" checked={data.sameDay} disabled={saving} onChange={(e) => save({ ...data, sameDay: e.target.checked })} />
+            <span><strong>El mismo día</strong> · desde las {data.sameDayFromHour}:00 se avisan las clases de hoy que aún no empiezan</span>
+          </label>
+          <p className="muted rem-stats">Horas de {data.timezone === 'America/Lima' ? 'Perú' : data.timezone}. Enviados en los últimos 7 días: <strong>{data.sentLast7Days}</strong>{lastSent ? ` · último: ${lastSent}` : ''}</p>
+        </>
+      )}
+      {saved && <p className="temp-password-box" role="status">{saved}</p>}
+      <ErrorNote message={error} />
+    </section>
+  )
+}
+
 export function ChangePasswordPanel({ session }) {
   const { token, profile } = session
   const isTenantAdmin = profile.roleCode === 'tenant_admin'
@@ -3878,9 +3953,10 @@ export function ChangePasswordPanel({ session }) {
           <TenantLoginLink slug={tenant.slug} />
         </section>
       )}
+      {(isTenantAdmin || profile.roleCode === 'super_admin') && <ClassRemindersSettings session={session} />}
       <section className="panel admin-form-panel">
         <h3>Cambiar mi contraseña</h3>
-        <p className="muted">Necesitas tu contraseña actual. No hay recuperación por correo: si la perdiste, pide a un administrador que te la resetee.</p>
+        <p className="muted">Necesitas tu contraseña actual. Si la olvidaste, usa “¿Olvidaste tu contraseña?” en la pantalla de ingreso o pide a un administrador un enlace nuevo.</p>
         <form className="admin-form" onSubmit={handleSubmit}>
           <label>Contraseña actual<input type="password" value={form.currentPassword} onChange={(e) => setForm({ ...form, currentPassword: e.target.value })} required /></label>
           <label>Nueva contraseña<input type="password" minLength={8} value={form.newPassword} onChange={(e) => setForm({ ...form, newPassword: e.target.value })} required /></label>

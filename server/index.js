@@ -20,6 +20,7 @@ import { registerPeruHolidayRoutes } from './holidaysPeru.js'
 import { registerSchedulePlannerRoutes } from './schedulePlanner.js'
 import { registerSelfEnrollRoutes } from './selfEnroll.js'
 import { registerAdminDashboardRoutes } from './adminDashboard.js'
+import { registerClassReminderRoutes, startClassReminders } from './classReminders.js'
 import { registerSupportRoutes } from './support.js'
 import { registerAiReportRoutes } from './aiReports.js'
 import { registerClassRoutes } from './classes.js'
@@ -282,6 +283,7 @@ registerPeruHolidayRoutes(app)
 registerSchedulePlannerRoutes(app)
 registerSelfEnrollRoutes(app)
 registerAdminDashboardRoutes(app)
+registerClassReminderRoutes(app)
 registerSupportRoutes(app)
 registerAiReportRoutes(app)
 registerClassRoutes(app)
@@ -2265,4 +2267,5 @@ if (process.env.NODE_ENV === 'production') {
   app.use((_req, res) => res.set('Cache-Control', NO_CACHE).sendFile(path.join(dist, 'index.html')))
 }
 
+startClassReminders()
 app.listen(port, () => console.log(`Training monolith listening on http://localhost:${port}`))

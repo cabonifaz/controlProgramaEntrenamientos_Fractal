@@ -353,6 +353,22 @@ CREATE TABLE IF NOT EXISTS leave_requests (
   CONSTRAINT fk_leave_resolver FOREIGN KEY (resolved_by) REFERENCES users(id)
 );
 
+-- Recordatorios de clase enviados por correo (uno por tema, persona y tipo:
+-- 'day_before' = la vispera, 'same_day' = el mismo dia) y fecha de la clase:
+-- la clave unica evita reenviar, y si la clase cambia de fecha se avisa de nuevo.
+CREATE TABLE IF NOT EXISTS class_reminders (
+  id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+  topic_id BIGINT UNSIGNED NOT NULL,
+  user_id BIGINT UNSIGNED NOT NULL,
+  kind VARCHAR(20) NOT NULL,
+  class_date DATE NOT NULL,
+  sent_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_class_reminder (topic_id, user_id, kind, class_date),
+  KEY ix_class_reminders_sent (sent_at),
+  CONSTRAINT fk_class_reminder_topic FOREIGN KEY (topic_id) REFERENCES topics(id),
+  CONSTRAINT fk_class_reminder_user FOREIGN KEY (user_id) REFERENCES users(id)
+);
+
 -- source_type/source_id identifican la entidad que origino la alerta (p.ej.
 -- 'topic'/123) para poder evitar duplicados mientras siga abierta.
 CREATE TABLE IF NOT EXISTS alerts (
@@ -859,6 +875,13 @@ DROP PROCEDURE IF EXISTS sp_migrate_onboarding_v1;
 DROP PROCEDURE IF EXISTS sp_migrate_class_links_v1;
 DROP PROCEDURE IF EXISTS sp_migrate_program_type_v1;
 DROP PROCEDURE IF EXISTS sp_migrate_schedule_close_v1;
+DROP PROCEDURE IF EXISTS sp_migrate_class_reminders_v1;
+DROP PROCEDURE IF EXISTS sp_tenant_reminders_get;
+DROP PROCEDURE IF EXISTS sp_tenant_reminders_set;
+DROP PROCEDURE IF EXISTS sp_class_reminder_tenants;
+DROP PROCEDURE IF EXISTS sp_class_reminders_due;
+DROP PROCEDURE IF EXISTS sp_class_reminders_claim;
+DROP PROCEDURE IF EXISTS sp_class_reminders_release;
 DROP PROCEDURE IF EXISTS sp_programs_schedule_close;
 DROP PROCEDURE IF EXISTS sp_topics_apply_plan;
 DROP PROCEDURE IF EXISTS sp_program_windows_list;
@@ -1264,6 +1287,18 @@ BEGIN
         WHERE g.is_deleted = FALSE AND c.is_deleted = FALSE AND g.instructor_id IS NOT NULL) x ON x.instructor_id = a.instructor_id
   WHERE a.program_id IS NULL;
   DELETE FROM instructor_availability WHERE program_id IS NULL;
+END$$
+
+-- Recordatorios de clase por correo: cada tenant decide si se envian la
+-- vispera y/o el mismo dia. Apagados por defecto.
+CREATE PROCEDURE sp_migrate_class_reminders_v1()
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+    WHERE table_schema = DATABASE() AND table_name = 'tenants' AND column_name = 'reminder_day_before') THEN
+    ALTER TABLE tenants
+      ADD COLUMN reminder_day_before BOOLEAN NOT NULL DEFAULT FALSE,
+      ADD COLUMN reminder_same_day BOOLEAN NOT NULL DEFAULT FALSE;
+  END IF;
 END$$
 
 -- El contacto del tenant pasa a ser un usuario (contact_user_id).
@@ -6658,6 +6693,122 @@ BEGIN
   FROM program_enrollments pe JOIN users u ON u.id = pe.student_id AND u.is_deleted = FALSE
   WHERE pe.program_id = p_program_id AND pe.is_deleted = FALSE
   ORDER BY u.full_name;
+END$$
+
+-- ===================================================================
+-- Recordatorios de clase por correo. El servidor corre cada pocos minutos:
+-- por cada tenant con recordatorios activos calcula "hoy" y "manana" en su
+-- zona horaria y pide las clases pendientes de avisar.
+-- ===================================================================
+CREATE PROCEDURE sp_tenant_reminders_get(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED,
+  IN p_tenant_id BIGINT UNSIGNED
+)
+BEGIN
+  IF p_actor_role NOT IN ('super_admin', 'tenant_admin') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  ELSEIF p_actor_role = 'tenant_admin' AND NOT (p_tenant_id <=> p_actor_tenant_id) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM tenants WHERE id = p_tenant_id AND is_deleted = FALSE) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_not_found';
+  END IF;
+  SELECT t.id AS tenant_id, t.name AS tenant_name, t.reminder_day_before, t.reminder_same_day, t.timezone,
+    (SELECT COUNT(*) FROM class_reminders r JOIN topics tp ON tp.id = r.topic_id
+       JOIN component_groups g ON g.id = tp.group_id JOIN components c ON c.id = g.component_id
+       JOIN training_programs p ON p.id = c.program_id
+     WHERE p.tenant_id = t.id AND r.sent_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)) AS sent_last_7_days,
+    (SELECT MAX(r.sent_at) FROM class_reminders r JOIN topics tp ON tp.id = r.topic_id
+       JOIN component_groups g ON g.id = tp.group_id JOIN components c ON c.id = g.component_id
+       JOIN training_programs p ON p.id = c.program_id
+     WHERE p.tenant_id = t.id) AS last_sent_at
+  FROM tenants t WHERE t.id = p_tenant_id;
+END$$
+
+CREATE PROCEDURE sp_tenant_reminders_set(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED,
+  IN p_tenant_id BIGINT UNSIGNED, IN p_day_before BOOLEAN, IN p_same_day BOOLEAN
+)
+BEGIN
+  IF p_actor_role NOT IN ('super_admin', 'tenant_admin') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  ELSEIF p_actor_role = 'tenant_admin' AND NOT (p_tenant_id <=> p_actor_tenant_id) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM tenants WHERE id = p_tenant_id AND is_deleted = FALSE) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_not_found';
+  END IF;
+  UPDATE tenants SET reminder_day_before = COALESCE(p_day_before, FALSE), reminder_same_day = COALESCE(p_same_day, FALSE),
+    updated_at = NOW(), updated_by = p_actor_user_id
+  WHERE id = p_tenant_id;
+END$$
+
+-- Tenants activos con algun recordatorio encendido (para el proceso).
+CREATE PROCEDURE sp_class_reminder_tenants()
+BEGIN
+  SELECT t.id, t.name, t.slug, t.timezone, t.brand_color, t.reminder_day_before, t.reminder_same_day
+  FROM tenants t JOIN master_catalog_values ts ON ts.id = t.status_id AND ts.code = 'active'
+  WHERE t.is_deleted = FALSE AND (t.reminder_day_before = TRUE OR t.reminder_same_day = TRUE);
+END$$
+
+-- Clases del dia p_date (fecha local del tenant) aun sin avisar con p_kind:
+-- una fila por clase y persona (alumnos inscritos activos y el profesor).
+-- p_after_time: si viene, solo clases que empiezan despues de esa hora
+-- (el aviso del mismo dia no se manda para una clase que ya empezo).
+CREATE PROCEDURE sp_class_reminders_due(
+  IN p_tenant_id BIGINT UNSIGNED, IN p_date DATE, IN p_kind VARCHAR(20), IN p_after_time TIME
+)
+BEGIN
+  SELECT x.* FROM (
+    SELECT t.id AS topic_id, u.id AS user_id, u.full_name, u.email, 'student' AS recipient_role,
+           t.title, c.name AS component_name, p.name AS program_name, g.name AS group_name,
+           TIME_FORMAT(d.start_time, '%H:%i') AS start_time, TIME_FORMAT(d.end_time, '%H:%i') AS end_time,
+           COALESCE(NULLIF(t.meeting_url, ''), NULLIF(g.meeting_url, '')) AS meeting_url,
+           iu.full_name AS instructor_name, d.start_time AS sort_time, c.sort_order
+    FROM topics t
+    JOIN component_groups g ON g.id = t.group_id AND g.is_deleted = FALSE
+    JOIN components c ON c.id = g.component_id AND c.is_deleted = FALSE
+    JOIN training_programs p ON p.id = c.program_id AND p.is_deleted = FALSE AND p.tenant_id = p_tenant_id AND p.program_type = 'training'
+    JOIN master_catalog_values ps ON ps.id = p.status_id AND ps.code IN ('draft', 'active', 'paused')
+    JOIN master_catalog_values ts ON ts.id = t.status_id AND ts.code NOT IN ('completed', 'cancelled')
+    JOIN group_enrollments ge ON ge.group_id = g.id AND ge.is_deleted = FALSE
+    JOIN users u ON u.id = ge.student_id AND u.is_active = TRUE AND u.is_deleted = FALSE
+    LEFT JOIN users iu ON iu.id = g.instructor_id
+    LEFT JOIN component_group_schedule_days d ON d.group_id = g.id AND d.is_deleted = FALSE AND d.weekday = DAYOFWEEK(t.scheduled_on) - 1
+    WHERE t.is_deleted = FALSE AND t.scheduled_on = p_date
+    UNION ALL
+    SELECT t.id AS topic_id, u.id AS user_id, u.full_name, u.email, 'instructor' AS recipient_role,
+           t.title, c.name AS component_name, p.name AS program_name, g.name AS group_name,
+           TIME_FORMAT(d.start_time, '%H:%i') AS start_time, TIME_FORMAT(d.end_time, '%H:%i') AS end_time,
+           COALESCE(NULLIF(t.meeting_url, ''), NULLIF(g.meeting_url, '')) AS meeting_url,
+           iu.full_name AS instructor_name, d.start_time AS sort_time, c.sort_order
+    FROM topics t
+    JOIN component_groups g ON g.id = t.group_id AND g.is_deleted = FALSE
+    JOIN components c ON c.id = g.component_id AND c.is_deleted = FALSE
+    JOIN training_programs p ON p.id = c.program_id AND p.is_deleted = FALSE AND p.tenant_id = p_tenant_id AND p.program_type = 'training'
+    JOIN master_catalog_values ps ON ps.id = p.status_id AND ps.code IN ('draft', 'active', 'paused')
+    JOIN master_catalog_values ts ON ts.id = t.status_id AND ts.code NOT IN ('completed', 'cancelled')
+    JOIN users u ON u.id = g.instructor_id AND u.is_active = TRUE AND u.is_deleted = FALSE
+    LEFT JOIN users iu ON iu.id = g.instructor_id
+    LEFT JOIN component_group_schedule_days d ON d.group_id = g.id AND d.is_deleted = FALSE AND d.weekday = DAYOFWEEK(t.scheduled_on) - 1
+    WHERE t.is_deleted = FALSE AND t.scheduled_on = p_date
+  ) x
+  WHERE (p_after_time IS NULL OR x.sort_time IS NULL OR x.sort_time > p_after_time)
+    AND NOT EXISTS (SELECT 1 FROM class_reminders r WHERE r.topic_id = x.topic_id AND r.user_id = x.user_id AND r.kind = p_kind AND r.class_date = p_date)
+  ORDER BY x.user_id, x.sort_time, x.sort_order;
+END$$
+
+-- Reserva el envio (evita duplicados si dos procesos corren a la vez).
+CREATE PROCEDURE sp_class_reminders_claim(IN p_topic_id BIGINT UNSIGNED, IN p_user_id BIGINT UNSIGNED, IN p_kind VARCHAR(20), IN p_date DATE)
+BEGIN
+  INSERT IGNORE INTO class_reminders (topic_id, user_id, kind, class_date) VALUES (p_topic_id, p_user_id, p_kind, p_date);
+  SELECT ROW_COUNT() AS claimed;
+END$$
+
+-- Si el correo fallo, se libera para reintentar en la siguiente vuelta.
+CREATE PROCEDURE sp_class_reminders_release(IN p_topic_id BIGINT UNSIGNED, IN p_user_id BIGINT UNSIGNED, IN p_kind VARCHAR(20), IN p_date DATE)
+BEGIN
+  DELETE FROM class_reminders WHERE topic_id = p_topic_id AND user_id = p_user_id AND kind = p_kind AND class_date = p_date;
 END$$
 
 CREATE PROCEDURE sp_dashboard_get(IN p_user_id BIGINT, IN p_role VARCHAR(80), IN p_tenant_id BIGINT)

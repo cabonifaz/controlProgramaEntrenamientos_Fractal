@@ -331,7 +331,10 @@ const SCREEN_GUIDES = {
   Tenants: { default: [{ selector: '.admin-form-panel', title: 'Nuevo tenant', text: 'Crea la organización con su slug y contacto.' }, { selector: '.admin-table', title: 'Tenants', text: 'Logo, color, enlace de acceso propio y acceso a sus usuarios.' }] },
   Reportes: { default: [{ selector: PANEL, title: 'Reportes', text: 'Elige un reporte (asistencia, avance, cumplimiento…) y revisa sus datos.' }] },
   'Mi cuenta': { default: [{ selector: '.admin-form', title: 'Tu contraseña', text: 'Cámbiala cuando quieras con tu contraseña actual. Si la olvidaste, usa “¿Olvidaste tu contraseña?” en el login.' }] },
-  Configuracion: { default: [{ selector: PANEL, title: 'Configuración', text: 'Marca de tu organización (logo, color, enlace de acceso) y tu contraseña.' }] },
+  Configuracion: { default: [
+    { selector: PANEL, title: 'Configuración', text: 'Marca de tu organización (logo, color, enlace de acceso) y tu contraseña.' },
+    { selector: '.reminders-panel', title: 'Recordatorios de clase', text: 'Activa el correo de aviso un día antes y/o el mismo día. Cada alumno y profesor recibe un solo correo con sus clases, la hora y el enlace para unirse.' },
+  ] },
 }
 const ROLE_KEY = { student: 'student', instructor: 'instructor', admin: 'admin', superAdmin: 'admin' }
 
@@ -441,7 +444,7 @@ const MANUALS = {
       COURSES_SECTION,
       { id: 'permisos-admin', title: 'Permisos y avisos de inasistencia', nav: 'Permisos', body: 'Las solicitudes de permiso y los avisos de inasistencia.', steps: ['Revisa cada solicitud con su motivo y fechas.', '“Ver evidencia” abre la imagen adjunta.', 'Apruébala o recházala: la persona ve la respuesta en sus alertas.'] },
       REPORTS_SECTION,
-      { id: 'configuracion', title: 'Configuración', nav: 'Configuracion', body: 'La marca de tu organización y tu contraseña.', steps: ['Sube el logo y elige el color de marca: se usan en el login, el material y la web pública.', 'Copia el link de acceso propio de tu tenant para compartirlo.', 'Cambia tu contraseña con tu contraseña actual.'] },
+      { id: 'configuracion', title: 'Configuración', nav: 'Configuracion', body: 'La marca de tu organización y tu contraseña.', steps: ['Sube el logo y elige el color de marca: se usan en el login, el material y la web pública.', 'Copia el link de acceso propio de tu tenant para compartirlo.', 'En “Recordatorios de clase por correo” marca “Un día antes” (sale desde las 9:00 con las clases de mañana) y/o “El mismo día” (sale desde las 7:00 con las clases de hoy que aún no empiezan).', 'Cambia tu contraseña con tu contraseña actual.'], tips: ['Cada persona recibe un solo correo por día con todas sus clases, como alumno y como profesor; nunca se repite.', 'Llegan a los alumnos inscritos activos y al profesor del grupo, solo de programas vigentes y temas no dictados.', 'Si cambias la fecha de una clase, el aviso sale para la nueva fecha.'] },
       ALERTS_SECTION,
       HELP_SECTION,
     ],
@@ -452,7 +455,7 @@ const MANUALS = {
     sections: [
       { id: 'tenants', title: 'Tenants', nav: 'Tenants', body: 'Cada organización es un tenant.', steps: ['Crea el tenant con su nombre, slug y contacto.', 'Configura logo y color de marca.', 'Comparte su enlace de acceso propio (/t/slug).', 'Desde el tenant puedes ir a sus usuarios.'], tips: [] },
       { id: 'usuarios', title: 'Usuarios y administradores', nav: 'Usuarios', body: 'Todos los usuarios de la plataforma.', steps: ['Crea administradores de tenant e invítalos.', 'Filtra por tenant y rol.', 'Atiende las solicitudes de recuperación de clave de los administradores.'], tips: [] },
-      { id: 'operacion', title: 'Operación de cualquier tenant', nav: 'Programas', body: 'Tienes las mismas herramientas que un administrador, sobre todos los tenants.', steps: ['Programas, Calendario (eligiendo el tenant), Horarios, Inasistencias y Satisfacción funcionan igual que para el administrador.'], tips: ['Consulta también el manual del administrador.'] },
+      { id: 'operacion', title: 'Operación de cualquier tenant', nav: 'Programas', body: 'Tienes las mismas herramientas que un administrador, sobre todos los tenants.', steps: ['Programas, Calendario (eligiendo el tenant), Horarios, Inasistencias y Satisfacción funcionan igual que para el administrador.', 'En Configuración eliges el tenant y activas sus recordatorios de clase por correo.'], tips: ['Consulta también el manual del administrador.'] },
       { id: 'soporte', title: 'Soporte global', nav: 'Soporte', body: 'Los reportes de todos los tenants llegan aquí y como alerta.', steps: ['Prioriza las incidencias (llegan con prioridad alta).', 'Responde y cambia el estado.'], tips: [] },
     ],
   },

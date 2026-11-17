@@ -1240,3 +1240,13 @@ p.sch-warn{margin:0 0 10px}
 .pg-material,.pg-card,.at-row,.cc-item{position:relative}
 .sr-only{top:0;left:0}
 .invitation-mailed{margin:6px 0 4px;font-size:13px;color:#1d5b34;background:#dff3e6;border-radius:8px;padding:6px 10px}
+/* Recordatorios de clase (Configuración) */
+.reminders-panel>label:not(.checkbox-field){display:grid;gap:6px;font-size:11px;font-weight:700;color:#4f616b;max-width:360px;margin:12px 0 4px}
+.reminders-panel>label select{height:40px;border:1px solid var(--line);border-radius:7px;padding:0 11px;background:#fff;color:var(--ink);max-width:100%}
+.reminders-panel .checkbox-field{display:flex;align-items:flex-start;gap:12px;margin:12px 0 0;padding:14px 16px;border:1px solid var(--line);border-radius:10px;background:#fff;font-size:14px;color:var(--ink);cursor:pointer;line-height:1.45;min-height:44px}
+.reminders-panel .checkbox-field:has(input:checked){border-color:var(--blue);background:var(--soft)}
+.reminders-panel .checkbox-field input{width:20px;height:20px;margin:1px 0 0;flex:none;accent-color:var(--blue)}
+.reminders-panel .checkbox-field strong{color:var(--deep)}
+.reminders-panel .rem-stats{margin-top:14px;font-size:13px}
+.rem-warning{margin:12px 0 0;background:#fff3d6;border:1px solid #f4d98a;border-radius:8px;padding:10px 12px;font-size:13px;color:#5a4300}
+.reminders-panel .checkbox-field span{font-weight:400}.reminders-panel .checkbox-field strong{font-weight:700}
