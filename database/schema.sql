@@ -4900,15 +4900,17 @@ BEGIN
          GROUP_CONCAT(DISTINCT CONCAT(ep.id, '|', ep.name) SEPARATOR ';;') AS enrolled_program_list
   FROM users u
   JOIN master_catalog_values r ON r.id = u.role_id AND (r.code = 'student'
-    OR EXISTS (SELECT 1 FROM program_enrollments x WHERE x.student_id = u.id AND x.is_deleted = FALSE))
+    OR EXISTS (SELECT 1 FROM program_enrollments x JOIN training_programs xp ON xp.id = x.program_id AND xp.program_type = 'training'
+               WHERE x.student_id = u.id AND x.is_deleted = FALSE))
   LEFT JOIN tenants t ON t.id = u.tenant_id
   LEFT JOIN group_enrollments ge ON ge.student_id = u.id AND ge.is_deleted = FALSE
   LEFT JOIN component_groups g ON g.id = ge.group_id AND g.is_deleted = FALSE
     AND (p_actor_role <> 'instructor' OR g.instructor_id = p_actor_user_id)
   LEFT JOIN components c ON c.id = g.component_id AND c.is_deleted = FALSE
-  LEFT JOIN training_programs p ON p.id = c.program_id AND p.is_deleted = FALSE
+  -- Las inducciones no son programas de entrenamiento: no se listan aqui.
+  LEFT JOIN training_programs p ON p.id = c.program_id AND p.is_deleted = FALSE AND p.program_type = 'training'
   LEFT JOIN program_enrollments pe ON pe.student_id = u.id AND pe.is_deleted = FALSE AND p_actor_role <> 'instructor'
-  LEFT JOIN training_programs ep ON ep.id = pe.program_id AND ep.is_deleted = FALSE
+  LEFT JOIN training_programs ep ON ep.id = pe.program_id AND ep.is_deleted = FALSE AND ep.program_type = 'training'
   WHERE u.is_deleted = FALSE
     AND (p_actor_role = 'super_admin' OR u.tenant_id <=> p_actor_tenant_id)
     AND u.is_active = TRUE

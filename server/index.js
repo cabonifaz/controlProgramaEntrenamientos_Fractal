@@ -477,12 +477,15 @@ app.get('/api/my/topics', authenticate, async (req, res) => {
   }
 })
 
+// Solo programas de entrenamiento: las inducciones tienen su propia pantalla
+// (/api/induction/programs). ?type=all las incluye.
 app.get('/api/programs', authenticate, async (req, res) => {
   const tenantIdFilter = req.query.tenantId ? Number(req.query.tenantId) : null
   try {
-    const data = await callProcedure('sp_programs_list', {
+    const rows = await callProcedure('sp_programs_list', {
       p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId, p_tenant_id_filter: tenantIdFilter,
     })
+    const data = req.query.type === 'all' ? rows : (rows || []).filter((p) => (p.program_type || 'training') === 'training')
     res.json({ data })
   } catch (err) {
     const { status, message } = mapStoredProcedureError(err)
