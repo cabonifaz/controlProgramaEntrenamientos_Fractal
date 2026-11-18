@@ -369,6 +369,30 @@ CREATE TABLE IF NOT EXISTS class_reminders (
   CONSTRAINT fk_class_reminder_user FOREIGN KEY (user_id) REFERENCES users(id)
 );
 
+-- Tokens de API para aplicaciones externas (p.ej. un tracker de horas que
+-- extrae las horas dictadas por los profesores). Solo se guarda el hash
+-- sha256 del token; el token en claro se muestra una sola vez al crearlo.
+-- tenant_id NULL = token de super admin (todos los tenants).
+CREATE TABLE IF NOT EXISTS api_tokens (
+  id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+  tenant_id BIGINT UNSIGNED NULL,
+  name VARCHAR(120) NOT NULL,
+  token_prefix VARCHAR(16) NOT NULL,
+  token_hash CHAR(64) NOT NULL,
+  scopes VARCHAR(200) NOT NULL DEFAULT 'instructor_hours:read',
+  expires_at DATETIME NULL,
+  last_used_at DATETIME NULL,
+  use_count INT UNSIGNED NOT NULL DEFAULT 0,
+  revoked_at DATETIME NULL,
+  revoked_by BIGINT UNSIGNED NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  created_by BIGINT UNSIGNED NULL,
+  UNIQUE KEY uq_api_token_hash (token_hash),
+  KEY ix_api_tokens_tenant (tenant_id),
+  CONSTRAINT fk_api_token_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(id),
+  CONSTRAINT fk_api_token_creator FOREIGN KEY (created_by) REFERENCES users(id)
+);
+
 -- source_type/source_id identifican la entidad que origino la alerta (p.ej.
 -- 'topic'/123) para poder evitar duplicados mientras siga abierta.
 CREATE TABLE IF NOT EXISTS alerts (
@@ -883,6 +907,12 @@ DROP PROCEDURE IF EXISTS sp_class_reminders_due;
 DROP PROCEDURE IF EXISTS sp_class_reminders_claim;
 DROP PROCEDURE IF EXISTS sp_class_reminders_release;
 DROP PROCEDURE IF EXISTS sp_mail_redirect_targets;
+DROP PROCEDURE IF EXISTS sp_api_tokens_create;
+DROP PROCEDURE IF EXISTS sp_api_tokens_list;
+DROP PROCEDURE IF EXISTS sp_api_tokens_revoke;
+DROP PROCEDURE IF EXISTS sp_api_token_resolve;
+DROP PROCEDURE IF EXISTS sp_external_programs;
+DROP PROCEDURE IF EXISTS sp_external_instructor_hours;
 DROP PROCEDURE IF EXISTS sp_programs_schedule_close;
 DROP PROCEDURE IF EXISTS sp_topics_apply_plan;
 DROP PROCEDURE IF EXISTS sp_program_windows_list;
@@ -6824,6 +6854,155 @@ BEGIN
   WHERE u.tenant_id = p_tenant_id AND u.is_active = TRUE AND u.is_deleted = FALSE
     AND u.email NOT REGEXP '@(example\\.(com|org|net)|[^@]*\\.(test|invalid|local|example))$'
   ORDER BY u.id;
+END$$
+
+-- ===================================================================
+-- Tokens de API e integraciones externas.
+-- ===================================================================
+CREATE PROCEDURE sp_api_tokens_create(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED,
+  IN p_tenant_id BIGINT UNSIGNED, IN p_name VARCHAR(120), IN p_token_prefix VARCHAR(16), IN p_token_hash CHAR(64),
+  IN p_expires_days INT
+)
+BEGIN
+  IF p_actor_role NOT IN ('super_admin', 'tenant_admin') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+  IF p_actor_role = 'tenant_admin' AND NOT (p_tenant_id <=> p_actor_tenant_id) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
+  END IF;
+  IF p_tenant_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM tenants WHERE id = p_tenant_id AND is_deleted = FALSE) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_not_found';
+  END IF;
+  IF p_name IS NULL OR TRIM(p_name) = '' THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'name_required';
+  END IF;
+  INSERT INTO api_tokens (tenant_id, name, token_prefix, token_hash, expires_at, created_by)
+  VALUES (p_tenant_id, TRIM(p_name), p_token_prefix, p_token_hash,
+          IF(p_expires_days IS NULL, NULL, DATE_ADD(NOW(), INTERVAL p_expires_days DAY)), p_actor_user_id);
+  SELECT LAST_INSERT_ID() AS token_id;
+END$$
+
+CREATE PROCEDURE sp_api_tokens_list(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED,
+  IN p_tenant_id BIGINT UNSIGNED
+)
+BEGIN
+  IF p_actor_role NOT IN ('super_admin', 'tenant_admin') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+  IF p_actor_role = 'tenant_admin' AND NOT (p_tenant_id <=> p_actor_tenant_id) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
+  END IF;
+  SELECT k.id, k.tenant_id, tn.name AS tenant_name, k.name, k.token_prefix, k.scopes, k.expires_at, k.last_used_at, k.use_count,
+         k.revoked_at, k.created_at, cu.full_name AS created_by_name,
+         CASE WHEN k.revoked_at IS NOT NULL THEN 'revoked' WHEN k.expires_at IS NOT NULL AND k.expires_at <= NOW() THEN 'expired' ELSE 'active' END AS status_code,
+         TIMESTAMPDIFF(MINUTE, k.last_used_at, NOW()) AS last_used_minutes_ago,
+         CEIL(TIMESTAMPDIFF(MINUTE, NOW(), k.expires_at) / 1440) AS expires_in_days
+  FROM api_tokens k
+  LEFT JOIN tenants tn ON tn.id = k.tenant_id
+  LEFT JOIN users cu ON cu.id = k.created_by
+  WHERE k.tenant_id <=> p_tenant_id
+  ORDER BY k.revoked_at IS NOT NULL, k.created_at DESC;
+END$$
+
+CREATE PROCEDURE sp_api_tokens_revoke(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED,
+  IN p_token_id BIGINT UNSIGNED
+)
+BEGIN
+  DECLARE v_tenant BIGINT UNSIGNED;
+  DECLARE v_found INT DEFAULT 0;
+  IF p_actor_role NOT IN ('super_admin', 'tenant_admin') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+  SELECT COUNT(*), MAX(tenant_id) INTO v_found, v_tenant FROM api_tokens WHERE id = p_token_id;
+  IF v_found = 0 THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'token_not_found';
+  END IF;
+  IF p_actor_role = 'tenant_admin' AND NOT (v_tenant <=> p_actor_tenant_id) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
+  END IF;
+  UPDATE api_tokens SET revoked_at = COALESCE(revoked_at, NOW()), revoked_by = COALESCE(revoked_by, p_actor_user_id) WHERE id = p_token_id;
+END$$
+
+-- Valida un token (por su hash) y registra el uso. Sin filas = invalido.
+CREATE PROCEDURE sp_api_token_resolve(IN p_token_hash CHAR(64))
+BEGIN
+  DECLARE v_id BIGINT UNSIGNED;
+  SELECT k.id INTO v_id FROM api_tokens k
+  LEFT JOIN tenants tn ON tn.id = k.tenant_id
+  LEFT JOIN master_catalog_values ts ON ts.id = tn.status_id
+  WHERE k.token_hash = p_token_hash AND k.revoked_at IS NULL AND (k.expires_at IS NULL OR k.expires_at > NOW())
+    AND (k.tenant_id IS NULL OR (tn.is_deleted = FALSE AND ts.code = 'active'))
+  LIMIT 1;
+  IF v_id IS NOT NULL THEN
+    UPDATE api_tokens SET last_used_at = NOW(), use_count = use_count + 1 WHERE id = v_id;
+    SELECT id, tenant_id, scopes, name FROM api_tokens WHERE id = v_id;
+  END IF;
+END$$
+
+-- Programas de entrenamiento visibles para el token (tenant NULL = todos).
+CREATE PROCEDURE sp_external_programs(IN p_tenant_id BIGINT UNSIGNED)
+BEGIN
+  SELECT p.id, p.name, p.cohort, DATE_FORMAT(p.starts_on, '%Y-%m-%d') AS starts_on, DATE_FORMAT(p.ends_on, '%Y-%m-%d') AS ends_on,
+         ps.code AS status_code, p.tenant_id, tn.name AS tenant_name
+  FROM training_programs p
+  JOIN master_catalog_values ps ON ps.id = p.status_id
+  JOIN tenants tn ON tn.id = p.tenant_id
+  WHERE p.is_deleted = FALSE AND p.program_type = 'training' AND (p_tenant_id IS NULL OR p.tenant_id = p_tenant_id)
+  ORDER BY p.starts_on DESC, p.name;
+END$$
+
+-- Clases DICTADAS (tema en estado completed) de un programa entre dos fechas
+-- (fecha real de la clase, o la programada si no se registro). Quien dicto:
+--  1) el reemplazo registrado en una inasistencia del profesor para ese tema;
+--  2) si no, el profesor a cargo del grupo en esa fecha (segun el historial
+--     de cambios de profesor; sin cambios posteriores, el actual).
+-- Minutos: el horario real del grupo ese dia (hora fin - hora inicio); si el
+-- grupo no tiene horario ese dia, la duracion planificada del tema.
+CREATE PROCEDURE sp_external_instructor_hours(
+  IN p_tenant_id BIGINT UNSIGNED, IN p_program_id BIGINT UNSIGNED, IN p_from DATE, IN p_to DATE
+)
+BEGIN
+  DECLARE v_program_tenant BIGINT UNSIGNED;
+  SELECT tenant_id INTO v_program_tenant FROM training_programs
+  WHERE id = p_program_id AND is_deleted = FALSE AND program_type = 'training';
+  IF v_program_tenant IS NULL OR (p_tenant_id IS NOT NULL AND v_program_tenant <> p_tenant_id) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'program_not_found';
+  END IF;
+
+  SELECT x.topic_id, DATE_FORMAT(x.class_date, '%Y-%m-%d') AS class_date, x.start_time, x.end_time, x.minutes, x.minutes_source, x.planned_minutes,
+         x.topic_title, x.component_id, x.component_name, x.group_id, x.group_name,
+         x.instructor_id, iu.full_name AS instructor_name, iu.email AS instructor_email,
+         x.assigned_instructor_id, x.is_substitute
+  FROM (
+    SELECT t.id AS topic_id, COALESCE(t.actual_date, t.scheduled_on) AS class_date,
+           TIME_FORMAT(d.start_time, '%H:%i') AS start_time, TIME_FORMAT(d.end_time, '%H:%i') AS end_time,
+           COALESCE(TIMESTAMPDIFF(MINUTE, d.start_time, d.end_time), t.duration_minutes) AS minutes,
+           CASE WHEN d.id IS NOT NULL THEN 'schedule' WHEN t.duration_minutes IS NOT NULL THEN 'planned' ELSE 'unknown' END AS minutes_source,
+           t.duration_minutes AS planned_minutes, t.title AS topic_title, c.id AS component_id, c.name AS component_name, c.sort_order,
+           g.id AS group_id, g.name AS group_name,
+           COALESCE(
+             (SELECT a.substitute_id FROM instructor_absences a WHERE a.topic_id = t.id AND a.is_deleted = FALSE AND a.substitute_id IS NOT NULL ORDER BY a.id DESC LIMIT 1),
+             (SELECT ch.previous_instructor_id FROM instructor_changes ch WHERE ch.group_id = g.id AND ch.effective_on > COALESCE(t.actual_date, t.scheduled_on) ORDER BY ch.effective_on, ch.id LIMIT 1),
+             g.instructor_id
+           ) AS instructor_id,
+           COALESCE(
+             (SELECT ch.previous_instructor_id FROM instructor_changes ch WHERE ch.group_id = g.id AND ch.effective_on > COALESCE(t.actual_date, t.scheduled_on) ORDER BY ch.effective_on, ch.id LIMIT 1),
+             g.instructor_id
+           ) AS assigned_instructor_id,
+           EXISTS (SELECT 1 FROM instructor_absences a WHERE a.topic_id = t.id AND a.is_deleted = FALSE AND a.substitute_id IS NOT NULL) AS is_substitute
+    FROM topics t
+    JOIN master_catalog_values ts ON ts.id = t.status_id AND ts.code = 'completed'
+    JOIN component_groups g ON g.id = t.group_id AND g.is_deleted = FALSE
+    JOIN components c ON c.id = g.component_id AND c.is_deleted = FALSE AND c.program_id = p_program_id
+    LEFT JOIN component_group_schedule_days d ON d.group_id = g.id AND d.is_deleted = FALSE
+      AND d.weekday = DAYOFWEEK(COALESCE(t.actual_date, t.scheduled_on)) - 1
+    WHERE t.is_deleted = FALSE AND COALESCE(t.actual_date, t.scheduled_on) BETWEEN p_from AND p_to
+  ) x
+  LEFT JOIN users iu ON iu.id = x.instructor_id
+  ORDER BY x.class_date, x.start_time, x.sort_order;
 END$$
 
 CREATE PROCEDURE sp_dashboard_get(IN p_user_id BIGINT, IN p_role VARCHAR(80), IN p_tenant_id BIGINT)

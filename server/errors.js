@@ -76,6 +76,8 @@ const STATUS_BY_SP_MESSAGE = {
   ai_failed: 502,
   no_comments: 400,
   too_many_resources: 409,
+  token_not_found: 404,
+  name_required: 400,
 }
 
 // Los procedimientos almacenados comunican decisiones de negocio con

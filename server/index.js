@@ -21,6 +21,7 @@ import { registerSchedulePlannerRoutes } from './schedulePlanner.js'
 import { registerSelfEnrollRoutes } from './selfEnroll.js'
 import { registerAdminDashboardRoutes } from './adminDashboard.js'
 import { registerClassReminderRoutes, startClassReminders } from './classReminders.js'
+import { registerExternalApiRoutes } from './externalApi.js'
 import { registerSupportRoutes } from './support.js'
 import { registerAiReportRoutes } from './aiReports.js'
 import { registerClassRoutes } from './classes.js'
@@ -284,6 +285,7 @@ registerSchedulePlannerRoutes(app)
 registerSelfEnrollRoutes(app)
 registerAdminDashboardRoutes(app)
 registerClassReminderRoutes(app)
+registerExternalApiRoutes(app)
 registerSupportRoutes(app)
 registerAiReportRoutes(app)
 registerClassRoutes(app)

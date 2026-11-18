@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AlertTriangle, ArrowRight, Calendar, ImagePlus, Paperclip, Users as UsersIcon } from 'lucide-react'
 import { apiBlob, apiDownload, apiRequest, apiUpload } from './api'
 import { CHANGE_REASONS, MyInstructorAbsences } from './indicators.jsx'
@@ -77,6 +77,8 @@ const ERROR_MESSAGES = {
   leave_already_requested: 'Ya avisaste que no asistirás a esa clase.',
   target_not_found: 'No se encontró el registro.',
   program_not_found: 'Programa no encontrado.',
+  token_not_found: 'El token ya no existe.',
+  name_required: 'Ponle un nombre al token (por ejemplo, la aplicación que lo usará).',
   component_not_found: 'Componente no encontrado.',
   group_not_found: 'Grupo no encontrado.',
   tenant_branding_unavailable: 'No se pudo cargar la marca del tenant.',
@@ -3912,6 +3914,152 @@ function ClassRemindersSettings({ session }) {
   )
 }
 
+// Tokens de API para aplicaciones externas (p.ej. el tracker que paga las
+// horas dictadas). El token se muestra una sola vez al crearlo.
+const TOKEN_EXPIRY_OPTIONS = [['90', '90 días'], ['365', '1 año'], ['', 'Sin vencimiento']]
+function relativeAgo(min) {
+  if (min === null || min === undefined) return 'Nunca'
+  if (min < 1) return 'Hace un momento'
+  if (min < 60) return `Hace ${min} min`
+  if (min < 1440) return `Hace ${Math.round(min / 60)} h`
+  return `Hace ${Math.round(min / 1440)} días`
+}
+function ApiTokensSettings({ session }) {
+  const { token, profile } = session
+  const isSuper = profile.roleCode === 'super_admin'
+  const { items: tenants } = useList(isSuper ? '/api/tenants' : '', token)
+  const [scope, setScope] = useState(isSuper ? '' : String(profile.tenantId))
+  const [list, setList] = useState(null)
+  const [form, setForm] = useState({ name: '', expires: '365' })
+  const [created, setCreated] = useState(null)
+  const [copied, setCopied] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const origin = typeof window !== 'undefined' ? window.location.origin : ''
+
+  useEffect(() => { if (isSuper && !scope && tenants.length) setScope(String(tenants[0].id)) }, [isSuper, scope, tenants])
+  const load = useCallback(() => {
+    if (!scope) return
+    apiRequest(`/api/api-tokens?tenantId=${scope}`, { token }).then((res) => setList(res.data || [])).catch((err) => setError(err.message))
+  }, [scope, token])
+  useEffect(() => { setList(null); setCreated(null); load() }, [load])
+
+  async function create(e) {
+    e.preventDefault()
+    setBusy(true); setError(''); setCopied(false)
+    try {
+      const res = await apiRequest('/api/api-tokens', { method: 'POST', token, body: { name: form.name.trim(), tenantId: scope === 'global' ? null : Number(scope), expiresInDays: form.expires ? Number(form.expires) : null } })
+      setCreated({ ...res.data, name: form.name.trim() })
+      setForm({ name: '', expires: '365' })
+      load()
+    } catch (err) { setError(err.message) } finally { setBusy(false) }
+  }
+  async function revoke(t) {
+    if (!window.confirm(`¿Revocar el token “${t.name}”? La aplicación que lo usa dejará de conectarse al instante.`)) return
+    setError('')
+    try { await apiRequest(`/api/api-tokens/${t.id}`, { method: 'DELETE', token }); load() } catch (err) { setError(err.message) }
+  }
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(created.token)
+      setCopied(true)
+    } catch {
+      // Respaldo para navegadores sin acceso al portapapeles.
+      const area = document.createElement('textarea')
+      area.value = created.token
+      area.setAttribute('readonly', '')
+      area.style.position = 'fixed'; area.style.opacity = '0'
+      document.body.appendChild(area)
+      area.select()
+      try { setCopied(document.execCommand('copy')) } catch { setCopied(false) }
+      area.remove()
+    }
+  }
+  const STATUS = { active: ['Activo', 'pill-ok'], expired: ['Vencido', 'pill-warn'], revoked: ['Revocado', 'pill-inactive'] }
+  const sample = `curl -H "Authorization: Bearer ${created?.token || 'ftk_…'}" \
+  "${origin}/api/external/v1/instructor-hours?programId=2&from=2026-11-01&to=2026-11-30"`
+
+  return (
+    <section className="panel admin-form-panel api-panel">
+      <h3>Integraciones: tokens de API</h3>
+      <p className="muted">Crea un token para que una aplicación externa (por ejemplo, el tracker de horas de trabajo) lea las <strong>horas dictadas por cada profesor</strong> en un programa y rango de fechas. Solo puede leer: no cambia nada en la plataforma.</p>
+      {isSuper && (
+        <label className="api-scope">Organización
+          <select value={scope} onChange={(e) => setScope(e.target.value)}>
+            {tenants.map((t) => <option key={t.id} value={String(t.id)}>{t.name}</option>)}
+            <option value="global">Todas las organizaciones (token global)</option>
+          </select>
+        </label>
+      )}
+      <form className="api-create" onSubmit={create}>
+        <label>Nombre del token<input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} maxLength={120} placeholder="Ej.: Tracker de horas" required /></label>
+        <label>Vence
+          <select value={form.expires} onChange={(e) => setForm({ ...form, expires: e.target.value })}>
+            {TOKEN_EXPIRY_OPTIONS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          </select>
+        </label>
+        <button className="primary" disabled={busy || !scope}>{busy ? 'Creando…' : 'Crear token'}</button>
+      </form>
+      {created && (
+        <div className="api-created" role="status">
+          <p><strong>Token “{created.name}” creado.</strong> Cópialo ahora y guárdalo en la aplicación externa: <strong>no se volverá a mostrar</strong>.</p>
+          <div className="api-token-box">
+            <code>{created.token}</code>
+            <button type="button" className="btn-mini" onClick={copy}>{copied ? 'Copiado' : 'Copiar'}</button>
+          </div>
+          <p className="muted">Ejemplo de uso:</p>
+          <pre className="api-code">{sample}</pre>
+        </div>
+      )}
+      <ErrorNote message={error} />
+      {list === null ? <p className="muted">Cargando tokens…</p> : list.length === 0 ? <p className="muted api-empty">Todavía no hay tokens.</p> : (
+        <div className="table-fit">
+          <table className="admin-table api-table">
+            <thead><tr><th>Nombre</th><th>Token</th><th>Estado</th><th>Último uso</th><th>Vence</th><th><span className="sr-only">Acciones</span></th></tr></thead>
+            <tbody>
+              {list.map((t) => (
+                <tr key={t.id}>
+                  <td data-label="Nombre"><strong>{t.name}</strong><small className="muted api-by">{t.createdBy ? `Creado por ${t.createdBy}` : ''}</small></td>
+                  <td data-label="Token"><code className="api-prefix">{t.prefix}…</code></td>
+                  <td data-label="Estado"><span className={`pill ${STATUS[t.status]?.[1] || ''}`}>{STATUS[t.status]?.[0] || t.status}</span></td>
+                  <td data-label="Último uso"><span>{relativeAgo(t.lastUsedMinutesAgo)}{t.useCount ? <small className="muted api-by">{t.useCount} consulta{t.useCount === 1 ? '' : 's'}</small> : null}</span></td>
+                  <td data-label="Vence">{t.expiresInDays === null ? 'Nunca' : t.expiresInDays < 0 ? 'Venció' : t.expiresInDays === 0 ? 'Hoy' : `En ${t.expiresInDays} días`}</td>
+                  <td className="api-actions">{t.status === 'active' && <button type="button" className="btn-mini btn-mini-danger" onClick={() => revoke(t)}>Revocar</button>}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <details className="api-docs">
+        <summary>Cómo usar la API (para quien conecta la aplicación)</summary>
+        <div className="api-docs-body">
+          <p>Envía el token en cada pedido con la cabecera <code>Authorization: Bearer ftk_…</code>. Máximo 120 pedidos por minuto.</p>
+          <h4>1. Programas disponibles</h4>
+          <pre className="api-code">{`GET ${origin}/api/external/v1/programs`}</pre>
+          <p>Devuelve el <code>id</code>, nombre, cohorte y fechas de cada programa de entrenamiento.</p>
+          <h4>2. Horas dictadas por profesor</h4>
+          <pre className="api-code">{`GET ${origin}/api/external/v1/instructor-hours?programId=2&from=2026-11-01&to=2026-11-30`}</pre>
+          <ul>
+            <li><code>programId</code> (obligatorio): el programa.</li>
+            <li><code>from</code> y <code>to</code> (obligatorios, AAAA-MM-DD, inclusive): rango de fechas de las clases; máximo 366 días.</li>
+            <li><code>instructorEmail</code> (opcional): solo las clases de ese profesor.</li>
+            <li><code>format=csv</code> (opcional): descarga en CSV en lugar de JSON.</li>
+          </ul>
+          <p>La respuesta trae <code>totals</code> (clases, minutos y horas), <code>instructors</code> (horas por profesor) y <code>classes</code> (cada clase con fecha, hora de inicio y fin, minutos, profesor, curso y tema).</p>
+          <h4>Cómo se calculan las horas</h4>
+          <ul>
+            <li>Solo cuentan las clases <strong>dictadas</strong> (temas marcados como dictados), por su fecha real.</li>
+            <li>Los minutos salen del <strong>horario real del grupo</strong> ese día (por ejemplo 18:30–20:00 = 90 min). Si el grupo no tiene horario ese día, se usa la duración planificada del tema y se indica con <code>minutesSource: "planned"</code>.</li>
+            <li>Si el profesor faltó y se registró un <strong>reemplazo</strong>, las horas son del reemplazo (<code>substitute: true</code>).</li>
+            <li>Si cambió el profesor del grupo, cada clase se asigna a quien lo tenía a cargo en esa fecha.</li>
+          </ul>
+        </div>
+      </details>
+    </section>
+  )
+}
+
 export function ChangePasswordPanel({ session }) {
   const { token, profile } = session
   const isTenantAdmin = profile.roleCode === 'tenant_admin'
@@ -3964,6 +4112,7 @@ export function ChangePasswordPanel({ session }) {
         </section>
       )}
       {(isTenantAdmin || profile.roleCode === 'super_admin') && <ClassRemindersSettings session={session} />}
+      {(isTenantAdmin || profile.roleCode === 'super_admin') && <ApiTokensSettings session={session} />}
       <section className="panel admin-form-panel">
         <h3>Cambiar mi contraseña</h3>
         <p className="muted">Necesitas tu contraseña actual. Si la olvidaste, usa “¿Olvidaste tu contraseña?” en la pantalla de ingreso o pide a un administrador un enlace nuevo.</p>
