@@ -2,6 +2,7 @@ import crypto from 'node:crypto'
 import { callProcedure } from './db.js'
 import { authenticate } from './middleware/authenticate.js'
 import { mapStoredProcedureError } from './errors.js'
+import { openApiSpec } from './externalApiDocs.js'
 
 // API para aplicaciones externas (p.ej. un tracker de horas de trabajo que
 // paga las horas dictadas por los profesores).
@@ -116,6 +117,12 @@ export function registerExternalApiRoutes(app) {
   })
 
   // ---- API externa v1 ----------------------------------------------------
+  // Especificacion OpenAPI (Swagger): solo con un token valido.
+  app.get('/api/external/v1/openapi.json', authenticateApiToken, (req, res) => {
+    res.set('Cache-Control', 'no-store')
+    res.json(openApiSpec(`${req.protocol}://${req.get('host')}`))
+  })
+
   app.get('/api/external/v1/programs', authenticateApiToken, requireScope('instructor_hours:read'), async (req, res) => {
     try {
       const rows = await callProcedure('sp_external_programs', { p_tenant_id: req.apiToken.tenantId })

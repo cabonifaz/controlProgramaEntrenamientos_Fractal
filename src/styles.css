@@ -1320,3 +1320,4 @@ p.sch-warn{margin:0 0 10px}
   .api-table td.api-actions::before{content:none}
   .api-table td.api-actions:empty{display:none}
 }
+.api-swagger{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.api-swagger .btn-mini{text-decoration:none;display:inline-flex;align-items:center;min-height:36px}.api-created a{color:#06425e;font-weight:700}

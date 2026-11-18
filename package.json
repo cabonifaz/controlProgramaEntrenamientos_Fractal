@@ -27,6 +27,7 @@
     "mysql2": "latest",
     "react": "latest",
     "react-dom": "latest",
+    "swagger-ui-dist": "5.17.14",
     "vite": "latest"
   }
 }

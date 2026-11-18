@@ -4007,6 +4007,7 @@ function ApiTokensSettings({ session }) {
             <code>{created.token}</code>
             <button type="button" className="btn-mini" onClick={copy}>{copied ? 'Copiado' : 'Copiar'}</button>
           </div>
+          <p>Para ver todos los endpoints y probarlos, abre la <a href="/api/external/docs" target="_blank" rel="noopener">documentación Swagger</a> e ingresa este token.</p>
           <p className="muted">Ejemplo de uso:</p>
           <pre className="api-code">{sample}</pre>
         </div>
@@ -4034,6 +4035,7 @@ function ApiTokensSettings({ session }) {
       <details className="api-docs">
         <summary>Cómo usar la API (para quien conecta la aplicación)</summary>
         <div className="api-docs-body">
+          <p className="api-swagger"><a className="btn-mini" href="/api/external/docs" target="_blank" rel="noopener">Abrir documentación Swagger</a> <span className="muted">Pide el token para entrar; ahí se pueden probar los endpoints.</span></p>
           <p>Envía el token en cada pedido con la cabecera <code>Authorization: Bearer ftk_…</code>. Máximo 120 pedidos por minuto.</p>
           <h4>1. Programas disponibles</h4>
           <pre className="api-code">{`GET ${origin}/api/external/v1/programs`}</pre>
