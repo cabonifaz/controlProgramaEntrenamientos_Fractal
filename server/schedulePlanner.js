@@ -19,6 +19,16 @@ import { mapStoredProcedureError } from './errors.js'
 // 20:30-22:00), la disponibilidad y las clases solo caen dentro de ellas y
 // cada clase dura su franja.
 //
+// Modo "fill" (llenar franjas sin huecos): recorre dia por dia desde la
+// fecha de inicio y en cada franja libre del programa pone una clase del
+// curso mas prioritario (orden de componentes) cuyo profesor este disponible
+// en esa franja. Cada curso tiene un horario semanal fijo (una franja por
+// dia de semana): la franja que toma la conserva hasta terminar y entonces
+// queda libre para otro curso. A un curso que ya tiene clases solo se le
+// agregan dias nuevos (nunca cambia la hora de un dia que ya tenia).
+// sessionsPerWeek es el maximo de clases por semana por curso (7 = sin
+// limite). La respuesta incluye las franjas que quedaron libres (huecos).
+//
 // Regenerar desde una fecha: solo se mueven los temas pendientes o
 // programados con fecha igual o posterior a la fecha de inicio (o sin
 // fecha). Lo anterior no se toca: clases dictadas y clases ya planificadas.
@@ -84,6 +94,7 @@ function createOccupancy() {
   const byDate = new Map()
   return {
     clashes: (date, slot, componentId) => (byDate.get(date) || []).some((o) => o.componentId !== componentId && overlaps(o, slot)),
+    used: (date, slot) => (byDate.get(date) || []).some((o) => overlaps(o, slot)),
     add: (date, slot, componentId) => { if (!byDate.has(date)) byDate.set(date, []); byDate.get(date).push({ start: slot.start, end: slot.end, componentId }) },
   }
 }
@@ -165,6 +176,8 @@ export function planProgram({ groups, availability, busyDates, holidays, fixedTo
     if (slot) occupancy.add(date, slot, g.component_id)
   }
 
+  if (mode === 'fill') return planFill({ groups, availability, holidays, windows, options, takenFor, occupancy, startDate })
+
   const plan = []
   let cursor = startDate
   for (const c of components) {
@@ -208,6 +221,109 @@ export function planProgram({ groups, availability, busyDates, holidays, fixedTo
   return plan
 }
 
+function planFill({ groups, availability, holidays, windows, options, takenFor, occupancy, startDate }) {
+  const cap = options.sessionsPerWeek >= 7 ? 7 : options.sessionsPerWeek
+  const state = groups.map((g) => {
+    const currentSchedule = parseSchedule(g.schedule)
+    const keepSchedule = Boolean(g.keptLast) && currentSchedule.length > 0
+    const earliest = g.keptLast && g.keptLast >= startDate ? nextDay(g.keptLast) : startDate
+    const item = {
+      groupId: g.group_id, groupName: g.group_name, componentId: g.component_id, componentName: g.component_name,
+      instructorId: g.instructor_id, instructorName: g.instructor_name, topicsToPlan: Number(g.topics_to_plan) || 0,
+      topicIds: g.replanIds || [], keptUntil: g.keptLast || null, keptSchedule: keepSchedule,
+      startDate: earliest, slots: [], dates: [], problems: [],
+    }
+    const blocks = availability.get(g.instructor_id) || []
+    if (!item.topicsToPlan) item.problems.push(item.keptUntil ? 'No tiene temas por programar desde esa fecha.' : 'No tiene temas por programar.')
+    else if (!g.instructor_id) item.problems.push('Sin profesor asignado: asígnale uno para programarlo.')
+    else if (!windows.length) item.problems.push('Define los días y horas de clase del programa (paso 2) para llenar las franjas.')
+    else if (!keepSchedule && !blocks.length) item.problems.push(`${g.instructor_name} no registró su disponibilidad para este programa.`)
+    else if (!keepSchedule && !windows.some((w) => blocks.some((b) => covers(b, w)))) item.problems.push(`La disponibilidad de ${g.instructor_name} no cubre ninguna franja de clase del programa.`)
+    const active = item.problems.length === 0
+    return { g, item, blocks, active, remaining: active ? item.topicIds.length : 0, slots: new Map(keepSchedule ? currentSchedule.map((sl) => [sl.weekday, sl]) : []) }
+  })
+  const live = () => state.filter((st) => st.remaining > 0)
+  // Franjas semanales en que puede dictar cada profesor (disponibilidad
+  // dentro de las franjas del programa, mas los horarios que se conservan).
+  const weeklyCapacity = new Map()
+  for (const st of state) {
+    const keys = weeklyCapacity.has(st.g.instructor_id) ? null : new Set()
+    if (!keys) continue
+    for (const w of windows) if (st.blocks.some((b) => covers(b, w))) keys.add(`${w.weekday}|${w.start}`)
+    for (const o of state) if (o.g.instructor_id === st.g.instructor_id) for (const sl of o.slots.values()) keys.add(`${sl.weekday}|${sl.start}`)
+    weeklyCapacity.set(st.g.instructor_id, keys.size)
+  }
+  const assign = (st, slot, date) => {
+    st.item.dates.push(date)
+    st.remaining -= 1
+    takenFor(st.g.instructor_id).add(date)
+    occupancy.add(date, slot, st.g.component_id)
+  }
+  // Franjas sin clase en el periodo planificado (huecos).
+  const gaps = []
+  let lastDate = null
+  let cursor = startDate
+  for (let guard = 0; live().length && guard < 3650; guard += 1, cursor = nextDay(cursor)) {
+    if (holidays.has(cursor)) continue
+    const w = weekdayOf(cursor)
+    const busyToday = new Set()
+    const sameSlot = (a, b) => a.start === b.start && a.end === b.end
+    // Franjas del dia: las del programa y las de los horarios que se conservan.
+    const daySlots = windows.filter((x) => x.weekday === w)
+    for (const st of live()) { const sl = st.slots.get(w); if (sl && !daySlots.some((x) => sameSlot(x, sl))) daySlots.push(sl) }
+    daySlots.sort((a, b) => toMinutes(a.start) - toMinutes(b.start))
+    // Cada franja libre es del primer curso (orden de componentes) que pueda
+    // dictarla: el que ya la tiene en su horario o uno que pueda tomarla.
+    for (const win of daySlots) {
+      if (occupancy.used(cursor, win)) continue
+      const candidates = live().filter((st) => {
+        if (cursor < st.item.startDate || busyToday.has(st.g.instructor_id) || takenFor(st.g.instructor_id).has(cursor)) return false
+        if (occupancy.clashes(cursor, win, st.g.component_id)) return false
+        const own = st.slots.get(w)
+        if (own) return sameSlot(own, win)
+        return st.slots.size < cap && st.blocks.some((b) => covers(b, win))
+          && !live().some((o) => o !== st && o.g.instructor_id === st.g.instructor_id && o.slots.has(w))
+      })
+      // El profesor mas presionado primero: mas temas pendientes por cada
+      // franja semanal en que puede dictar. Empate: orden de componentes.
+      const pressure = (st) => {
+        const load = live().filter((o) => o.g.instructor_id === st.g.instructor_id).reduce((n, o) => n + o.remaining, 0)
+        return load / Math.max(1, weeklyCapacity.get(st.g.instructor_id) || 1)
+      }
+      const candidate = candidates.reduce((best, st) => (!best || pressure(st) > pressure(best) + 1e-9 ? st : best), null)
+      if (!candidate) continue
+      if (!candidate.slots.has(w)) candidate.slots.set(w, { weekday: win.weekday, start: win.start, end: win.end })
+      assign(candidate, win, cursor)
+      busyToday.add(candidate.g.instructor_id)
+    }
+    if (busyToday.size) lastDate = cursor
+  }
+  // Huecos entre la fecha de inicio y la ultima clase planificada.
+  if (lastDate) {
+    for (let d = startDate; d <= lastDate; d = nextDay(d)) {
+      if (holidays.has(d)) continue
+      for (const win of windows.filter((x) => x.weekday === weekdayOf(d))) {
+        if (!occupancy.used(d, win)) gaps.push({ date: d, start: win.start, end: win.end })
+      }
+    }
+  }
+  const plan = state.map((st) => {
+    const { item } = st
+    // Horario semanal: los dias que ya tenia (sus clases anteriores dependen
+    // de ellos) y los nuevos que si se usaron.
+    const usedDays = new Set(item.dates.map(weekdayOf))
+    const keptDays = new Set(item.keptSchedule ? parseSchedule(st.g.schedule).map((sl) => sl.weekday) : [])
+    item.slots = [...st.slots.values()].filter((sl) => keptDays.has(sl.weekday) || usedDays.has(sl.weekday)).sort((a, b) => a.weekday - b.weekday)
+    if (st.active && st.remaining > 0) item.problems.push('No se encontraron suficientes fechas en los próximos 10 años.')
+    if (st.active && !item.dates.length && item.topicsToPlan) item.problems.push('No quedó ninguna franja libre en la que su profesor esté disponible.')
+    item.firstDate = item.dates[0] || null
+    item.lastDate = item.dates.at(-1) || null
+    return item
+  })
+  plan.gaps = gaps
+  return plan
+}
+
 // ===================================================================
 function sendError(res, err) {
   const { status, message } = mapStoredProcedureError(err)
@@ -238,7 +354,7 @@ function readOptions(body, fallbackStart) {
   const sessionsPerWeek = Number(body?.sessionsPerWeek ?? 3)
   const sessionMinutes = Number(body?.sessionMinutes ?? 180)
   const startDate = typeof body?.startDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(body.startDate) ? body.startDate : fallbackStart
-  const mode = body?.mode === 'parallel' ? 'parallel' : 'sequence'
+  const mode = ['parallel', 'fill'].includes(body?.mode) ? body.mode : 'sequence'
   const includeOverdue = body?.includeOverdue === true
   if (!Number.isInteger(sessionsPerWeek) || sessionsPerWeek < 1 || sessionsPerWeek > 7
     || !Number.isInteger(sessionMinutes) || sessionMinutes < 30 || sessionMinutes > 600) return null
@@ -294,6 +410,7 @@ function planResponse(data, options) {
     options, plan, lastDate, windows: data.windows,
     unassigned: unassignedComponents(groupsFromDate),
     kept: { groups: plan.filter((p) => p.keptUntil).length, schedules: plan.filter((p) => p.keptSchedule).length },
+    gaps: plan.gaps ? { count: plan.gaps.length, sample: plan.gaps.slice(0, 12) } : null,
     missingHolidayYears: years.filter((y) => !data.holidayYears.includes(y)),
     totals: { groups: plan.length, ready: plan.filter(isReady).length, topics: plan.reduce((n, p) => n + p.dates.length, 0) },
   }

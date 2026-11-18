@@ -465,7 +465,7 @@ export function SchedulePlannerPanel({ session }) {
   const [tenantId, setTenantId] = useState('')
   const [programId, setProgramId] = useState('')
   const [data, setData] = useState(null)
-  const [options, setOptions] = useState({ startDate: '', sessionsPerWeek: 3, sessionMinutes: 180, mode: 'sequence', includeOverdue: false })
+  const [options, setOptions] = useState({ startDate: '', sessionsPerWeek: 7, sessionMinutes: 180, mode: 'fill', includeOverdue: false })
   const [preview, setPreview] = useState(null)
   const [applied, setApplied] = useState(null)
   const [busy, setBusy] = useState('')
@@ -505,7 +505,11 @@ export function SchedulePlannerPanel({ session }) {
       const { data: planner } = await apiRequest(`/api/schedule-planner/${programId}`, { token })
       if (currentProgram.current !== programId) return
       setData({ ...planner, programId })
-      setOptions((o) => ({ ...o, startDate: o.startDate || planner.defaultStart }))
+      setOptions((o) => {
+        const next = { ...o, startDate: o.startDate || planner.defaultStart }
+        if (!planner.windows?.length && o.mode === 'fill') return { ...next, mode: 'sequence', sessionsPerWeek: 3 }
+        return next
+      })
     } catch (err) {
       setError(err.message)
     }
@@ -590,7 +594,16 @@ export function SchedulePlannerPanel({ session }) {
   const instructors = useMemo(() => [...(data?.instructors || [])].sort((a, b) => (b.groupCount > 0) - (a.groupCount > 0) || a.instructorName.localeCompare(b.instructorName)), [data])
   const instructorOptions = useMemo(() => instructors.map((i) => ({ id: i.instructorId, full_name: i.instructorName })), [instructors])
   const resultFor = (groupId) => applied?.results.find((r) => r.groupId === groupId)
-  const setOpt = (k) => (e) => { setOptions({ ...options, [k]: k === 'includeOverdue' ? e.target.checked : k === 'startDate' || k === 'mode' ? e.target.value : Number(e.target.value) }); setPreview(null); setApplied(null) }
+  const setOpt = (k) => (e) => {
+    const value = k === 'includeOverdue' ? e.target.checked : k === 'startDate' || k === 'mode' ? e.target.value : Number(e.target.value)
+    const next = { ...options, [k]: value }
+    // Sin huecos usa "sin límite" por defecto; los otros modos, 3 por semana.
+    if (k === 'mode' && value === 'fill' && options.mode !== 'fill') next.sessionsPerWeek = 7
+    if (k === 'mode' && value !== 'fill' && options.sessionsPerWeek === 7) next.sessionsPerWeek = 3
+    setOptions(next); setPreview(null); setApplied(null)
+  }
+  const fillMode = options.mode === 'fill'
+  const hasWindows = Boolean(data?.windows?.length)
   const closed = data?.closed
   const unassigned = preview?.unassigned || data?.unassigned || []
   const withoutAvailability = instructors.filter((i) => i.groupCount > 0 && !i.blocks.length)
@@ -694,19 +707,24 @@ export function SchedulePlannerPanel({ session }) {
                 <h4><span className="sch-step-n">4</span> Reglas del horario</h4>
                 <div className="admin-form sch-options">
                   <label>Generar desde<input type="date" value={options.startDate} onChange={setOpt('startDate')} disabled={Boolean(closed)} aria-describedby="sch-from-help" /></label>
-                  <label>Clases por semana
-                    <select value={options.sessionsPerWeek} onChange={setOpt('sessionsPerWeek')} disabled={Boolean(closed)}>{[1, 2, 3, 4, 5, 6].map((n) => <option key={n} value={n}>{n}</option>)}</select>
-                  </label>
-                  {!data.windows?.length && <label>Duración de cada clase
-                    <select value={options.sessionMinutes} onChange={setOpt('sessionMinutes')} disabled={Boolean(closed)}>{[60, 90, 120, 150, 180, 240].map((n) => <option key={n} value={n}>{n / 60} h</option>)}</select>
-                  </label>}
                   <label>Componentes
                     <select value={options.mode} onChange={setOpt('mode')} disabled={Boolean(closed)}>
+                      <option value="fill" disabled={!hasWindows}>Llenar franjas sin huecos{hasWindows ? '' : ' (define las franjas)'}</option>
                       <option value="sequence">Uno tras otro</option>
                       <option value="parallel">Todos a la vez</option>
                     </select>
                   </label>
+                  <label>{fillMode ? 'Máximo de clases por semana por curso' : 'Clases por semana'}
+                    <select value={options.sessionsPerWeek} onChange={setOpt('sessionsPerWeek')} disabled={Boolean(closed)}>
+                      {[1, 2, 3, 4, 5, 6].map((n) => <option key={n} value={n}>{n}</option>)}
+                      {fillMode && <option value={7}>Sin límite</option>}
+                    </select>
+                  </label>
+                  {!data.windows?.length && <label>Duración de cada clase
+                    <select value={options.sessionMinutes} onChange={setOpt('sessionMinutes')} disabled={Boolean(closed)}>{[60, 90, 120, 150, 180, 240].map((n) => <option key={n} value={n}>{n / 60} h</option>)}</select>
+                  </label>}
                 </div>
+                {fillMode && <p className="sch-from"><strong>Sin huecos:</strong> día por día, cada franja libre se asigna al primer curso (en el orden de los componentes) cuyo profesor esté disponible a esa hora. Cada curso mantiene su día y hora por semana; cuando termina, sus franjas pasan al siguiente.</p>}
                 <p className="sch-from" id="sch-from-help"><strong>Las clases antes de esta fecha no se tocan</strong> (las dictadas y las ya planificadas). Solo se mueven los temas desde esa fecha o sin fecha; los grupos que ya tienen clases mantienen su horario semanal y sus temas siguen después de la última clase.</p>
                 <label className="checkbox-field sch-overdue"><input type="checkbox" checked={options.includeOverdue} onChange={setOpt('includeOverdue')} disabled={Boolean(closed)} /> <span>Mover también las clases <strong>atrasadas</strong> (con fecha pasada y sin marcar como dictadas)</span></label>
                 <p className="muted sch-note">Sin cruces: un profesor nunca dicta dos clases el mismo día (en ningún programa), dos componentes del programa nunca coinciden a la misma hora y ninguna clase cae en feriado.</p>
@@ -735,6 +753,9 @@ export function SchedulePlannerPanel({ session }) {
                 )}
                 {preview && (
                   <>
+                    {preview.gaps && (preview.gaps.count === 0
+                      ? <p className="st-done sch-gaps" role="status"><CheckCircle2 size={15} aria-hidden="true" /> Sin huecos: todas las franjas quedan ocupadas hasta la última clase.</p>
+                      : <div className="sch-warn sch-gaps" role="status"><AlertTriangle size={16} aria-hidden="true" /><span>Quedan <strong>{preview.gaps.count} franja{preview.gaps.count === 1 ? '' : 's'} libre{preview.gaps.count === 1 ? '' : 's'}</strong> porque ningún profesor con cursos pendientes está disponible a esa hora (o ya tiene clase ese día): {preview.gaps.sample.map((g) => `${day(g.date)} ${g.start}`).join(', ')}{preview.gaps.count > preview.gaps.sample.length ? '…' : ''}. Para cubrirlas, amplía la disponibilidad de algún profesor.</span></div>)}
                     <p className="muted sch-summary">{preview.totals.ready} de {preview.totals.groups} grupos listos · {preview.totals.topics} temas a mover desde el {day(preview.options.startDate)}{preview.lastDate ? ` · termina el ${day(preview.lastDate)}` : ''}{preview.kept?.groups ? ` · ${preview.kept.groups} grupo${preview.kept.groups === 1 ? '' : 's'} conserva${preview.kept.groups === 1 ? '' : 'n'} sus clases anteriores` : ''}</p>
                     <div className="table-fit">
                       <table className="admin-table sch-table">

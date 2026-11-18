@@ -1375,3 +1375,5 @@ p.sch-warn{margin:0 0 10px}
 .sch-overdue{display:flex;align-items:flex-start;gap:8px;font-size:13px;color:var(--ink);margin:6px 0 8px}
 .sch-overdue input{width:18px;height:18px;margin:1px 0 0;flex:none;accent-color:var(--blue)}
 .sch-kept{display:block;font-size:11px;color:#1f5f7a;font-weight:600;margin-top:2px}
+.sch-gaps{margin:10px 0}.sch-gaps.st-done{display:flex;align-items:center;gap:6px}
+.sch-warn.sch-gaps{display:flex;flex-wrap:nowrap;align-items:flex-start;gap:8px}.sch-warn.sch-gaps svg{flex:none;margin-top:2px}
