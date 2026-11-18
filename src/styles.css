@@ -1275,3 +1275,9 @@ p.sch-warn{margin:0 0 10px}
 .ie-enrolled-list li{display:grid;gap:2px;padding:8px 12px;border:1px solid #edf1f2;border-radius:8px;background:#fafcfc;min-width:0}
 @media (max-width:640px){.ie-row{grid-template-columns:auto minmax(0,1fr);row-gap:2px}.ie-row .ie-mail{grid-column:2}}
 .ie-row{font-weight:400;color:var(--ink)}.ie-row .ie-mail,.ie-enrolled-list .ie-mail{font-weight:400}.ie-enrolled-list .ie-name{font-size:14px}
+/* Buscador de profesor (Inasistencias y Horarios) */
+.ind-field{display:grid;gap:0;align-content:start}
+.ind-field-label{font-size:11px;color:#4f616b;font-weight:700}
+.ind-field .search-select input{height:40px}
+.sch-assign-select .search-select{margin-top:0;min-width:200px}
+.sch-assign-select .search-select input:disabled{background:#f3f6f7;color:#4f616b;cursor:not-allowed}

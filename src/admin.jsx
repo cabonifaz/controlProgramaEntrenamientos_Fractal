@@ -948,7 +948,7 @@ function TopicsPanel({ session, group, onBack }) {
 
 // Combo con busqueda al escribir: reemplaza <select> para listas largas de
 // instructores/alumnos, donde desplazarse por un desplegable es mala UX.
-function SearchSelect({ options, value, onChange, placeholder, allowEmpty = true, emptyLabel = 'Sin asignar' }) {
+export function SearchSelect({ options, value, onChange, placeholder, allowEmpty = true, emptyLabel = 'Sin asignar', ariaLabel, disabled = false }) {
   const [query, setQuery] = useState('')
   const [open, setOpen] = useState(false)
   const containerRef = useRef(null)
@@ -980,16 +980,25 @@ function SearchSelect({ options, value, onChange, placeholder, allowEmpty = true
     <div className="search-select" ref={containerRef}>
       <input
         type="text"
+        role="combobox"
+        aria-expanded={open}
+        aria-autocomplete="list"
+        aria-label={ariaLabel}
+        disabled={disabled}
         placeholder={placeholder || 'Buscar…'}
         value={open ? query : (selected ? selected.full_name : '')}
         onFocus={() => setOpen(true)}
         onChange={(e) => { setQuery(e.target.value); setOpen(true) }}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') { setOpen(false); setQuery(''); e.currentTarget.blur() }
+          if (e.key === 'Enter' && open) { e.preventDefault(); if (filtered[0]) pick(String(filtered[0].id), e) }
+        }}
       />
-      {open && (
-        <div className="search-select-menu">
-          {allowEmpty && <div className="search-select-option muted" onClick={(e) => pick('', e)}>— {emptyLabel} —</div>}
+      {open && !disabled && (
+        <div className="search-select-menu" role="listbox">
+          {allowEmpty && <div className="search-select-option muted" role="option" aria-selected={!value} onClick={(e) => pick('', e)}>— {emptyLabel} —</div>}
           {filtered.map((o) => (
-            <div key={o.id} className="search-select-option" onClick={(e) => pick(String(o.id), e)}>
+            <div key={o.id} className="search-select-option" role="option" aria-selected={String(o.id) === String(value)} onClick={(e) => pick(String(o.id), e)}>
               {o.full_name}{o.email ? <small> · {o.email}</small> : null}
             </div>
           ))}

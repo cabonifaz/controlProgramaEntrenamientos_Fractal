@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AlertTriangle, CalendarCog, CheckCircle2, Clock, Lock, LockOpen, Plus, Trash2, UserCog, Wand2 } from 'lucide-react'
 import { apiRequest } from './api'
-import { ErrorNote, Modal } from './admin.jsx'
+import { ErrorNote, Modal, SearchSelect } from './admin.jsx'
 import { formatDay, programOptionLabel, withPeriod } from './progress.jsx'
 
 // Disponibilidad de los profesores POR PROGRAMA y generacion automatica de
@@ -588,6 +588,7 @@ export function SchedulePlannerPanel({ session }) {
 
   // Profesores del tenant: primero los que dictan en este programa.
   const instructors = useMemo(() => [...(data?.instructors || [])].sort((a, b) => (b.groupCount > 0) - (a.groupCount > 0) || a.instructorName.localeCompare(b.instructorName)), [data])
+  const instructorOptions = useMemo(() => instructors.map((i) => ({ id: i.instructorId, full_name: i.instructorName })), [instructors])
   const resultFor = (groupId) => applied?.results.find((r) => r.groupId === groupId)
   const setOpt = (k) => (e) => { setOptions({ ...options, [k]: k === 'startDate' || k === 'mode' ? e.target.value : Number(e.target.value) }); setPreview(null); setApplied(null) }
   const closed = data?.closed
@@ -648,12 +649,17 @@ export function SchedulePlannerPanel({ session }) {
                         <tr key={g.groupId} className={g.instructorId ? '' : 'sch-row-missing'}>
                           <td className="sch-name">{g.componentName}<small className="muted">{g.groupName}</small></td>
                           <td>
-                            <label className="sch-assign-select"><span className="sr-only">Profesor de {g.componentName} · {g.groupName}</span>
-                              <select value={g.instructorId ? String(g.instructorId) : ''} onChange={(e) => assign(g, e.target.value)} disabled={Boolean(closed) || assigning === g.groupId}>
-                                <option value="">— Sin profesor —</option>
-                                {instructors.map((i) => <option key={i.instructorId} value={String(i.instructorId)}>{i.instructorName}</option>)}
-                              </select>
-                            </label>
+                            <div className="sch-assign-select">
+                              <SearchSelect
+                                options={instructorOptions}
+                                value={g.instructorId ? String(g.instructorId) : ''}
+                                onChange={(id) => { if (String(id) !== String(g.instructorId || '')) assign(g, id) }}
+                                placeholder="Buscar profesor…"
+                                emptyLabel="Sin profesor"
+                                ariaLabel={`Profesor de ${g.componentName} · ${g.groupName}`}
+                                disabled={Boolean(closed) || assigning === g.groupId}
+                              />
+                            </div>
                           </td>
                           <td className="ind-n">{g.topicsTotal}</td>
                         </tr>

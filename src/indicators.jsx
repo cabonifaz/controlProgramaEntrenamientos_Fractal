@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import { CalendarX2, Plus, Search, UserX } from 'lucide-react'
 import { apiRequest } from './api'
-import { ErrorNote, Modal } from './admin.jsx'
+import { ErrorNote, Modal, SearchSelect } from './admin.jsx'
 import { formatDay } from './progress.jsx'
 
 // Indicadores de inasistencias: de alumnos (a partir del registro de
@@ -241,6 +241,8 @@ function RegisterAbsenceModal({ token, onClose, onSaved }) {
 
   async function save(e) {
     e.preventDefault()
+    if (!instructorId) { setError('Elige el profesor.'); return }
+    if (!form.topicId) { setError('Elige la clase a la que faltó.'); return }
     setBusy(true)
     setError('')
     try {
@@ -264,12 +266,17 @@ function RegisterAbsenceModal({ token, onClose, onSaved }) {
       {!classes && !error && <p className="muted">Cargando clases…</p>}
       {classes && (
         <form className="admin-form ind-form" onSubmit={save}>
-          <label>Profesor
-            <select value={instructorId} onChange={(e) => { setInstructorId(e.target.value); setForm({ ...form, topicId: '' }) }} required>
-              <option value="">Elige un profesor</option>
-              {instructors.map(([id, name]) => <option key={id} value={String(id)}>{name}</option>)}
-            </select>
-          </label>
+          <div className="ind-field">
+            <span className="ind-field-label" id="ind-prof-label">Profesor</span>
+            <SearchSelect
+              options={instructors.map(([id, name]) => ({ id, full_name: name }))}
+              value={instructorId}
+              onChange={(id) => { setInstructorId(String(id)); setForm({ ...form, topicId: '' }); setError('') }}
+              placeholder="Buscar profesor…"
+              allowEmpty={false}
+              ariaLabel="Profesor"
+            />
+          </div>
           <label>Clase a la que faltó
             <select value={form.topicId} onChange={(e) => setForm({ ...form, topicId: e.target.value })} required disabled={!instructorId}>
               <option value="">{instructorId ? 'Elige la clase' : 'Primero elige el profesor'}</option>
