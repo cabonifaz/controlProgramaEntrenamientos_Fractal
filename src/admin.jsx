@@ -5,6 +5,7 @@ import { CHANGE_REASONS, MyInstructorAbsences } from './indicators.jsx'
 import { formatDay } from './progress.jsx'
 import { ClassroomPanel, JoinButton } from './classroom.jsx'
 import { AiMaterialGenerator } from './aiMaterial.jsx'
+import { TopicsEditor } from './topicsEditor.jsx'
 import { buildMaterialPrompt, DEFAULT_PROMPT_OPTIONS, MATERIAL_LEVELS, SKILL_NAME, suggestedBatchSize } from './materialPrompt'
 import { BANNER_STYLES, buildBannerPrompt, DEFAULT_BANNER_OPTIONS } from './bannerPrompt'
 import { DEFAULT_ACCENT, PALETTE_PRESETS, readableTextOn, resolvePalette } from './palette'
@@ -78,6 +79,8 @@ const ERROR_MESSAGES = {
   target_not_found: 'No se encontró el registro.',
   program_not_found: 'Programa no encontrado.',
   token_not_found: 'El token ya no existe.',
+  topic_not_found: 'El tema ya no existe.',
+  topic_has_activity: 'No se puede quitar: el tema ya se dictó o tiene asistencia registrada. Si no se dará, cámbialo a Cancelado.',
   name_required: 'Ponle un nombre al token (por ejemplo, la aplicación que lo usará).',
   component_not_found: 'Componente no encontrado.',
   group_not_found: 'Grupo no encontrado.',
@@ -851,98 +854,19 @@ export function UsersPanel({ session, navParams }) {
   )
 }
 
-// Cada tema de un componente dura 45 min de forma fija (regla de negocio del
-// cliente): no se pide duracion en el formulario ni en la carga por Excel.
-const TOPIC_DURATION_MINUTES = 45
 
 function TopicsPanel({ session, group, onBack }) {
-  const { token } = session
-  const { items, error, loading, reload } = useList(`/api/groups/${group.id}/topics`, token)
-  const [form, setForm] = useState({ title: '', description: '', scheduledOn: '' })
-  const [formError, setFormError] = useState('')
-  const topicStatuses = useCatalog('TOPIC_STATUS', token)
-
-  async function handleCreate(e) {
-    e.preventDefault()
-    setFormError('')
-    try {
-      await apiRequest(`/api/groups/${group.id}/topics`, {
-        method: 'POST', token,
-        body: { ...form, durationMinutes: TOPIC_DURATION_MINUTES },
-      })
-      setForm({ title: '', description: '', scheduledOn: '' })
-      reload()
-    } catch (err) {
-      setFormError(err.message)
-    }
-  }
-
-  async function updateStatus(topic, statusCode) {
-    try {
-      await apiRequest(`/api/topics/${topic.id}/status`, {
-        method: 'POST', token,
-        body: { statusCode, actualDate: statusCode === 'completed' ? new Date().toISOString().slice(0, 10) : null },
-      })
-      reload()
-    } catch (err) {
-      setFormError(err.message)
-    }
-  }
-
-  async function reschedule(topic, newDate) {
-    if (!newDate) return
-    try {
-      await apiRequest(`/api/topics/${topic.id}/reschedule`, { method: 'POST', token, body: { newDate } })
-      reload()
-    } catch (err) {
-      setFormError(err.message)
-    }
-  }
-
+  const [reloadKey, setReloadKey] = useState(0)
   return (
     <div className="admin-wrap">
       <button className="text-button crumb-back" onClick={onBack}>← Volver a {group.name}</button>
-      <section className="panel admin-form-panel">
-        <h3>Nuevo tema — {group.name}</h3>
-        <form className="admin-form" onSubmit={handleCreate}>
-          <label>Título<input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} required /></label>
-          <label className="full-field">Descripción<textarea rows={3} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></label>
-          <label>Fecha programada (opcional)<input type="date" value={form.scheduledOn} onChange={(e) => setForm({ ...form, scheduledOn: e.target.value })} /></label>
-          <ErrorNote message={formError} />
-          <button className="primary">Crear tema</button>
-        </form>
+      <section className="panel te-panel">
+        <TopicsEditor key={reloadKey} session={session} group={group} heading={`Temario — ${group.name}`} />
       </section>
       <section className="panel admin-form-panel">
         <h3>Carga masiva</h3>
         <p className="muted">Todo el temario de {group.name} en un solo Excel. Cada tema dura 45 min; la fecha es opcional.</p>
-        <ExcelImportBox session={session} templateUrl="/api/templates/topics" importUrl={`/api/groups/${group.id}/topics/import`} onImported={reload} />
-      </section>
-      <section className="panel">
-        <h3>Temario</h3>
-        <ErrorNote message={error} />
-        {loading ? <p className="muted">Cargando…</p> : (
-          <div className="table-fit">
-          <table className="admin-table">
-            <thead><tr><th>Título</th><th>Programado</th><th>Estado</th><th>Actualizar</th><th>Reprogramar</th></tr></thead>
-            <tbody>
-              {items.map((t) => (
-                <tr key={t.id}>
-                  <td>{t.title}</td>
-                  <td>{t.scheduled_on || '—'}</td>
-                  <td><StatusPill label={t.status_label} /></td>
-                  <td>
-                    <select defaultValue="" onChange={(e) => { if (e.target.value) { updateStatus(t, e.target.value); e.target.value = '' } }}>
-                      <option value="">Cambiar a…</option>
-                      {topicStatuses.map((s) => <option key={s.code} value={s.code}>{s.label}</option>)}
-                    </select>
-                  </td>
-                  <td><input type="date" onChange={(e) => reschedule(t, e.target.value)} /></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          </div>
-        )}
+        <ExcelImportBox session={session} templateUrl="/api/templates/topics" importUrl={`/api/groups/${group.id}/topics/import`} onImported={() => setReloadKey((k) => k + 1)} />
       </section>
     </div>
   )

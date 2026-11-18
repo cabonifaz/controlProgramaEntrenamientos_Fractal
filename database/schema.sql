@@ -907,6 +907,9 @@ DROP PROCEDURE IF EXISTS sp_class_reminders_due;
 DROP PROCEDURE IF EXISTS sp_class_reminders_claim;
 DROP PROCEDURE IF EXISTS sp_class_reminders_release;
 DROP PROCEDURE IF EXISTS sp_mail_redirect_targets;
+DROP PROCEDURE IF EXISTS sp_topics_update;
+DROP PROCEDURE IF EXISTS sp_topics_delete;
+DROP PROCEDURE IF EXISTS sp_topics_move;
 DROP PROCEDURE IF EXISTS sp_api_tokens_create;
 DROP PROCEDURE IF EXISTS sp_api_tokens_list;
 DROP PROCEDURE IF EXISTS sp_api_tokens_revoke;
@@ -2336,7 +2339,7 @@ BEGIN
   FROM topics t
   JOIN master_catalog_values ts ON ts.id = t.status_id
   WHERE t.group_id = p_group_id AND t.is_deleted = FALSE
-  ORDER BY t.sort_order, t.scheduled_on;
+  ORDER BY t.sort_order, t.scheduled_on, t.id;
 END$$
 
 -- Todo el temario de TODOS los grupos de un programa en una sola llamada
@@ -2356,7 +2359,7 @@ BEGIN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
   END IF;
 
-  SELECT t.id, t.title, t.scheduled_on, t.duration_minutes, ts.code AS status_code, ts.label AS status_label,
+  SELECT t.id, t.title, t.scheduled_on, t.duration_minutes, t.sort_order, ts.code AS status_code, ts.label AS status_label,
          g.id AS group_id, g.name AS group_name, g.instructor_id, iu.full_name AS instructor_name,
          c.id AS component_id, c.name AS component_name
   FROM topics t
@@ -2402,8 +2405,11 @@ BEGIN
   SELECT v.id INTO v_status_id FROM master_catalog_values v JOIN master_catalogs c ON c.id = v.catalog_id
   WHERE c.code = 'TOPIC_STATUS' AND v.code = IF(p_scheduled_on IS NULL, 'pending', 'scheduled');
 
+  -- Sin orden (NULL o 0): al final del temario del grupo.
   INSERT INTO topics (group_id, title, description, sort_order, scheduled_on, duration_minutes, status_id, created_by)
-  VALUES (p_group_id, p_title, p_description, COALESCE(p_sort_order, 0), p_scheduled_on, p_duration_minutes, v_status_id, p_actor_user_id);
+  VALUES (p_group_id, p_title, p_description,
+          IF(COALESCE(p_sort_order, 0) = 0, (SELECT COALESCE(MAX(x.sort_order), 0) + 1 FROM topics x WHERE x.group_id = p_group_id AND x.is_deleted = FALSE), p_sort_order),
+          p_scheduled_on, p_duration_minutes, v_status_id, p_actor_user_id);
 
   SELECT LAST_INSERT_ID() AS topic_id;
 END$$
@@ -6028,10 +6034,26 @@ BEGIN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'group_not_found';
   END IF;
 
+  -- Los temas a mover vienen en el plan (topic_ids, en el orden de sus
+  -- fechas). Las clases anteriores a la fecha desde la que se regenera no
+  -- vienen y no se tocan.
   INSERT INTO tmp_plan_topics (topic_id, group_id, pos)
-  SELECT t.id, t.group_id, ROW_NUMBER() OVER (PARTITION BY t.group_id ORDER BY t.sort_order, t.id)
-  FROM topics t JOIN master_catalog_values ts ON ts.id = t.status_id
-  WHERE t.group_id IN (SELECT group_id FROM tmp_plan_groups) AND t.is_deleted = FALSE AND ts.code IN ('pending', 'scheduled');
+  SELECT jt.topic_id, jt.group_id, jt.pos FROM JSON_TABLE(p_plan, '$[*]' COLUMNS (
+    group_id BIGINT UNSIGNED PATH '$.group_id',
+    NESTED PATH '$.topic_ids[*]' COLUMNS (pos FOR ORDINALITY, topic_id BIGINT UNSIGNED PATH '$'))) jt
+  WHERE jt.topic_id IS NOT NULL;
+  -- Cada tema debe ser del grupo y estar pendiente o programado (nunca dictado).
+  SELECT COUNT(*) INTO v_count FROM tmp_plan_topics tt
+  LEFT JOIN topics t ON t.id = tt.topic_id AND t.group_id = tt.group_id AND t.is_deleted = FALSE
+  LEFT JOIN master_catalog_values ts ON ts.id = t.status_id AND ts.code IN ('pending', 'scheduled')
+  WHERE ts.id IS NULL;
+  IF v_count > 0 THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'plan_conflict';
+  END IF;
+  SELECT COUNT(*) INTO v_count FROM tmp_plan_dates pd LEFT JOIN tmp_plan_topics tt ON tt.group_id = pd.group_id AND tt.pos = pd.pos WHERE tt.topic_id IS NULL;
+  IF v_count > 0 THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'plan_incomplete';
+  END IF;
 
   -- Una fecha por tema, ni mas ni menos.
   SELECT COUNT(*) INTO v_count FROM tmp_plan_topics tt LEFT JOIN tmp_plan_dates pd ON pd.group_id = tt.group_id AND pd.pos = tt.pos WHERE pd.d IS NULL;
@@ -7003,6 +7025,101 @@ BEGIN
   ) x
   LEFT JOIN users iu ON iu.id = x.instructor_id
   ORDER BY x.class_date, x.start_time, x.sort_order;
+END$$
+
+-- ===================================================================
+-- Editor de temarios (admin / super admin): editar, quitar y reordenar.
+-- ===================================================================
+CREATE PROCEDURE sp_topics_update(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED,
+  IN p_topic_id BIGINT UNSIGNED, IN p_title VARCHAR(180), IN p_description TEXT
+)
+BEGIN
+  DECLARE v_tenant_id BIGINT UNSIGNED;
+  DECLARE v_group_id BIGINT UNSIGNED;
+  SELECT p.tenant_id, t.group_id INTO v_tenant_id, v_group_id
+  FROM topics t JOIN component_groups g ON g.id = t.group_id JOIN components c ON c.id = g.component_id JOIN training_programs p ON p.id = c.program_id
+  WHERE t.id = p_topic_id AND t.is_deleted = FALSE;
+  IF v_tenant_id IS NULL THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'topic_not_found';
+  END IF;
+  IF p_actor_role = 'tenant_admin' AND NOT (v_tenant_id <=> p_actor_tenant_id) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
+  ELSEIF p_actor_role NOT IN ('tenant_admin', 'super_admin') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+  IF p_title IS NULL OR TRIM(p_title) = '' THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'title_required';
+  END IF;
+  UPDATE topics SET title = TRIM(p_title), description = NULLIF(TRIM(COALESCE(p_description, '')), ''),
+    updated_at = NOW(), updated_by = p_actor_user_id
+  WHERE id = p_topic_id;
+END$$
+
+-- Quitar un tema: no si ya se dicto o tiene asistencia registrada (se
+-- perderia historia); en ese caso se puede marcar como cancelado.
+CREATE PROCEDURE sp_topics_delete(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED,
+  IN p_topic_id BIGINT UNSIGNED
+)
+BEGIN
+  DECLARE v_tenant_id BIGINT UNSIGNED;
+  DECLARE v_group_id BIGINT UNSIGNED;
+  SELECT p.tenant_id, t.group_id INTO v_tenant_id, v_group_id
+  FROM topics t JOIN component_groups g ON g.id = t.group_id JOIN components c ON c.id = g.component_id JOIN training_programs p ON p.id = c.program_id
+  WHERE t.id = p_topic_id AND t.is_deleted = FALSE;
+  IF v_tenant_id IS NULL THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'topic_not_found';
+  END IF;
+  IF p_actor_role = 'tenant_admin' AND NOT (v_tenant_id <=> p_actor_tenant_id) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
+  ELSEIF p_actor_role NOT IN ('tenant_admin', 'super_admin') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+  IF EXISTS (SELECT 1 FROM topics t JOIN master_catalog_values ts ON ts.id = t.status_id WHERE t.id = p_topic_id AND ts.code = 'completed')
+     OR EXISTS (SELECT 1 FROM attendance a WHERE a.topic_id = p_topic_id AND a.is_deleted = FALSE) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'topic_has_activity';
+  END IF;
+  UPDATE topics SET is_deleted = TRUE, deleted_at = NOW(), deleted_by = p_actor_user_id WHERE id = p_topic_id;
+END$$
+
+-- Subir o bajar un tema en el temario de su grupo (renumera 1..n).
+CREATE PROCEDURE sp_topics_move(
+  IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED,
+  IN p_topic_id BIGINT UNSIGNED, IN p_direction VARCHAR(10)
+)
+BEGIN
+  DECLARE v_tenant_id BIGINT UNSIGNED;
+  DECLARE v_group_id BIGINT UNSIGNED;
+  DECLARE v_pos INT;
+  DECLARE v_other BIGINT UNSIGNED;
+  SELECT p.tenant_id, t.group_id INTO v_tenant_id, v_group_id
+  FROM topics t JOIN component_groups g ON g.id = t.group_id JOIN components c ON c.id = g.component_id JOIN training_programs p ON p.id = c.program_id
+  WHERE t.id = p_topic_id AND t.is_deleted = FALSE;
+  IF v_tenant_id IS NULL THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'topic_not_found';
+  END IF;
+  IF p_actor_role = 'tenant_admin' AND NOT (v_tenant_id <=> p_actor_tenant_id) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
+  ELSEIF p_actor_role NOT IN ('tenant_admin', 'super_admin') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+  IF p_direction NOT IN ('up', 'down') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'invalid_direction';
+  END IF;
+  UPDATE topics t JOIN (
+    SELECT id, ROW_NUMBER() OVER (ORDER BY sort_order, scheduled_on, id) AS rn
+    FROM topics WHERE group_id = v_group_id AND is_deleted = FALSE
+  ) o ON o.id = t.id
+  SET t.sort_order = o.rn;
+  SELECT sort_order INTO v_pos FROM topics WHERE id = p_topic_id;
+  SELECT id INTO v_other FROM topics
+  WHERE group_id = v_group_id AND is_deleted = FALSE AND sort_order = IF(p_direction = 'up', v_pos - 1, v_pos + 1) LIMIT 1;
+  IF v_other IS NOT NULL THEN
+    UPDATE topics SET sort_order = IF(id = p_topic_id, IF(p_direction = 'up', v_pos - 1, v_pos + 1), v_pos),
+      updated_at = NOW(), updated_by = p_actor_user_id
+    WHERE id IN (p_topic_id, v_other);
+  END IF;
 END$$
 
 CREATE PROCEDURE sp_dashboard_get(IN p_user_id BIGINT, IN p_role VARCHAR(80), IN p_tenant_id BIGINT)

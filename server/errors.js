@@ -78,6 +78,9 @@ const STATUS_BY_SP_MESSAGE = {
   too_many_resources: 409,
   token_not_found: 404,
   name_required: 400,
+  topic_not_found: 404,
+  topic_has_activity: 409,
+  invalid_direction: 400,
 }
 
 // Los procedimientos almacenados comunican decisiones de negocio con

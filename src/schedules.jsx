@@ -465,7 +465,7 @@ export function SchedulePlannerPanel({ session }) {
   const [tenantId, setTenantId] = useState('')
   const [programId, setProgramId] = useState('')
   const [data, setData] = useState(null)
-  const [options, setOptions] = useState({ startDate: '', sessionsPerWeek: 3, sessionMinutes: 180, mode: 'sequence' })
+  const [options, setOptions] = useState({ startDate: '', sessionsPerWeek: 3, sessionMinutes: 180, mode: 'sequence', includeOverdue: false })
   const [preview, setPreview] = useState(null)
   const [applied, setApplied] = useState(null)
   const [busy, setBusy] = useState('')
@@ -590,7 +590,7 @@ export function SchedulePlannerPanel({ session }) {
   const instructors = useMemo(() => [...(data?.instructors || [])].sort((a, b) => (b.groupCount > 0) - (a.groupCount > 0) || a.instructorName.localeCompare(b.instructorName)), [data])
   const instructorOptions = useMemo(() => instructors.map((i) => ({ id: i.instructorId, full_name: i.instructorName })), [instructors])
   const resultFor = (groupId) => applied?.results.find((r) => r.groupId === groupId)
-  const setOpt = (k) => (e) => { setOptions({ ...options, [k]: k === 'startDate' || k === 'mode' ? e.target.value : Number(e.target.value) }); setPreview(null); setApplied(null) }
+  const setOpt = (k) => (e) => { setOptions({ ...options, [k]: k === 'includeOverdue' ? e.target.checked : k === 'startDate' || k === 'mode' ? e.target.value : Number(e.target.value) }); setPreview(null); setApplied(null) }
   const closed = data?.closed
   const unassigned = preview?.unassigned || data?.unassigned || []
   const withoutAvailability = instructors.filter((i) => i.groupCount > 0 && !i.blocks.length)
@@ -693,7 +693,7 @@ export function SchedulePlannerPanel({ session }) {
               <li>
                 <h4><span className="sch-step-n">4</span> Reglas del horario</h4>
                 <div className="admin-form sch-options">
-                  <label>Fecha de inicio<input type="date" value={options.startDate} onChange={setOpt('startDate')} disabled={Boolean(closed)} /></label>
+                  <label>Generar desde<input type="date" value={options.startDate} onChange={setOpt('startDate')} disabled={Boolean(closed)} aria-describedby="sch-from-help" /></label>
                   <label>Clases por semana
                     <select value={options.sessionsPerWeek} onChange={setOpt('sessionsPerWeek')} disabled={Boolean(closed)}>{[1, 2, 3, 4, 5, 6].map((n) => <option key={n} value={n}>{n}</option>)}</select>
                   </label>
@@ -707,6 +707,8 @@ export function SchedulePlannerPanel({ session }) {
                     </select>
                   </label>
                 </div>
+                <p className="sch-from" id="sch-from-help"><strong>Las clases antes de esta fecha no se tocan</strong> (las dictadas y las ya planificadas). Solo se mueven los temas desde esa fecha o sin fecha; los grupos que ya tienen clases mantienen su horario semanal y sus temas siguen después de la última clase.</p>
+                <label className="checkbox-field sch-overdue"><input type="checkbox" checked={options.includeOverdue} onChange={setOpt('includeOverdue')} disabled={Boolean(closed)} /> <span>Mover también las clases <strong>atrasadas</strong> (con fecha pasada y sin marcar como dictadas)</span></label>
                 <p className="muted sch-note">Sin cruces: un profesor nunca dicta dos clases el mismo día (en ningún programa), dos componentes del programa nunca coinciden a la misma hora y ninguna clase cae en feriado.</p>
               </li>
               <li>
@@ -733,7 +735,7 @@ export function SchedulePlannerPanel({ session }) {
                 )}
                 {preview && (
                   <>
-                    <p className="muted sch-summary">{preview.totals.ready} de {preview.totals.groups} grupos listos · {preview.totals.topics} temas con fecha{preview.lastDate ? ` · termina el ${day(preview.lastDate)}` : ''}</p>
+                    <p className="muted sch-summary">{preview.totals.ready} de {preview.totals.groups} grupos listos · {preview.totals.topics} temas a mover desde el {day(preview.options.startDate)}{preview.lastDate ? ` · termina el ${day(preview.lastDate)}` : ''}{preview.kept?.groups ? ` · ${preview.kept.groups} grupo${preview.kept.groups === 1 ? '' : 's'} conserva${preview.kept.groups === 1 ? '' : 'n'} sus clases anteriores` : ''}</p>
                     <div className="table-fit">
                       <table className="admin-table sch-table">
                         <thead><tr><th>Componente · grupo</th><th>Profesor</th><th>Días y hora</th><th>Desde – hasta</th><th>Temas</th><th>Estado</th></tr></thead>
@@ -745,8 +747,8 @@ export function SchedulePlannerPanel({ session }) {
                               <tr key={p.groupId}>
                                 <td className="sch-name">{p.componentName}<small className="muted">{p.groupName}</small></td>
                                 <td>{p.instructorName || <span className="sch-missing-name"><UserCog size={13} aria-hidden="true" /> Sin profesor</span>}</td>
-                                <td>{p.slots.length ? slotsText(p.slots) : '—'}</td>
-                                <td className="sch-dates">{p.firstDate ? `${day(p.firstDate)} – ${day(p.lastDate)}` : '—'}</td>
+                                <td>{p.slots.length ? slotsText(p.slots) : '—'}{p.keptSchedule && <small className="sch-kept">Mantiene su horario</small>}</td>
+                                <td className="sch-dates">{p.firstDate ? `${day(p.firstDate)} – ${day(p.lastDate)}` : '—'}{p.keptUntil && <small className="sch-kept">Conserva sus clases hasta el {day(p.keptUntil)}</small>}</td>
                                 <td className="ind-n">{p.dates.length}/{p.topicsToPlan}</td>
                                 <td>
                                   {r ? (r.ok ? <span className="ind-pill ind-advance">Generado</span> : <span className="ind-pill ind-unjustified">Omitido</span>)

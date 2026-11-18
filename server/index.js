@@ -815,9 +815,58 @@ app.post('/api/groups/:id/topics', authenticate, async (req, res) => {
     const [result] = await callProcedure('sp_topics_create', {
       p_actor_user_id: req.user.id, p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId,
       p_group_id: groupId, p_title: title, p_description: description || null,
-      p_sort_order: sortOrder ?? 0, p_scheduled_on: scheduledOn || null, p_duration_minutes: durationMinutes ?? null,
+      p_sort_order: sortOrder ?? null, p_scheduled_on: scheduledOn || null, p_duration_minutes: durationMinutes ?? null,
     })
     res.status(201).json({ data: result })
+  } catch (err) {
+    const { status, message } = mapStoredProcedureError(err)
+    res.status(status).json({ message })
+  }
+})
+
+// Editor de temarios (admin / super admin).
+app.put('/api/topics/:id', authenticate, async (req, res) => {
+  const topicId = Number(req.params.id)
+  const { title, description } = req.body || {}
+  if (!Number.isInteger(topicId) || typeof title !== 'string' || title.length > 180 || (description != null && typeof description !== 'string')) {
+    return res.status(400).json({ message: 'Invalid request format' })
+  }
+  try {
+    await callProcedure('sp_topics_update', {
+      p_actor_user_id: req.user.id, p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId,
+      p_topic_id: topicId, p_title: title, p_description: description ?? null,
+    })
+    res.json({ ok: true })
+  } catch (err) {
+    const { status, message } = mapStoredProcedureError(err)
+    res.status(status).json({ message })
+  }
+})
+
+app.delete('/api/topics/:id', authenticate, async (req, res) => {
+  const topicId = Number(req.params.id)
+  if (!Number.isInteger(topicId)) return res.status(400).json({ message: 'Invalid request format' })
+  try {
+    await callProcedure('sp_topics_delete', {
+      p_actor_user_id: req.user.id, p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId, p_topic_id: topicId,
+    })
+    res.json({ ok: true })
+  } catch (err) {
+    const { status, message } = mapStoredProcedureError(err)
+    res.status(status).json({ message })
+  }
+})
+
+app.post('/api/topics/:id/move', authenticate, async (req, res) => {
+  const topicId = Number(req.params.id)
+  const direction = req.body?.direction
+  if (!Number.isInteger(topicId) || !['up', 'down'].includes(direction)) return res.status(400).json({ message: 'Invalid request format' })
+  try {
+    await callProcedure('sp_topics_move', {
+      p_actor_user_id: req.user.id, p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId,
+      p_topic_id: topicId, p_direction: direction,
+    })
+    res.json({ ok: true })
   } catch (err) {
     const { status, message } = mapStoredProcedureError(err)
     res.status(status).json({ message })

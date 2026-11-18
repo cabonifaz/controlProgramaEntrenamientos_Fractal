@@ -19,6 +19,14 @@ import { mapStoredProcedureError } from './errors.js'
 // 20:30-22:00), la disponibilidad y las clases solo caen dentro de ellas y
 // cada clase dura su franja.
 //
+// Regenerar desde una fecha: solo se mueven los temas pendientes o
+// programados con fecha igual o posterior a la fecha de inicio (o sin
+// fecha). Lo anterior no se toca: clases dictadas y clases ya planificadas.
+// Un grupo que conserva clases mantiene su horario semanal (la hora de esas
+// clases sale de ese horario) y sus temas movidos van despues de la ultima
+// clase conservada. Con includeOverdue tambien se mueven las clases
+// atrasadas (fecha pasada y sin marcar como dictadas).
+//
 // Quien dicta cada grupo lo decide el admin; el generador no asigna
 // profesores, solo avisa que componentes quedan sin profesor. Con el
 // horario del programa cerrado no se regenera y la disponibilidad queda fija.
@@ -108,8 +116,28 @@ export function unassignedComponents(groups) {
   return [...list.values()]
 }
 
+// Por grupo: que temas se mueven (en orden del temario) y la ultima clase
+// que se conserva.
+export function classifyTopics(groups, topics, { startDate, includeOverdue, today }) {
+  const byGroup = new Map(groups.map((g) => [g.group_id, { replanIds: [], keptLast: null }]))
+  const sorted = [...topics].sort((a, b) => (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0) || (isoDay(a.scheduled_on) || '9999').localeCompare(isoDay(b.scheduled_on) || '9999') || a.id - b.id)
+  const replanSet = new Set()
+  for (const t of sorted) {
+    const info = byGroup.get(t.group_id)
+    if (!info) continue
+    const date = isoDay(t.scheduled_on)
+    const moves = PLANNABLE.has(t.status_code) && (!date || date >= startDate || (includeOverdue && date < today))
+    if (moves) { info.replanIds.push(t.id); replanSet.add(t.id) }
+    else if (date && t.status_code !== 'cancelled' && (!info.keptLast || date > info.keptLast)) info.keptLast = date
+  }
+  return { byGroup, replanSet }
+}
+
 export function planProgram({ groups, availability, busyDates, holidays, fixedTopics = [], windows = [], options }) {
   const { startDate, sessionsPerWeek, sessionMinutes, mode } = options
+  const today = options.today || new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Lima' }).format(new Date())
+  const { byGroup, replanSet } = classifyTopics(groups, fixedTopics, { startDate, includeOverdue: Boolean(options.includeOverdue), today })
+  groups = groups.map((g) => ({ ...g, ...(byGroup.get(g.group_id) || { replanIds: [], keptLast: null }), topics_to_plan: (byGroup.get(g.group_id)?.replanIds.length) || 0 }))
   const components = []
   for (const g of groups) {
     let c = components.find((x) => x.id === g.component_id)
@@ -123,14 +151,15 @@ export function planProgram({ groups, availability, busyDates, holidays, fixedTo
   const windowLoad = new Map()
 
   // Un grupo se replanifica si tiene profesor, disponibilidad y temas por programar.
-  const plannable = (g) => g.instructor_id && Number(g.topics_to_plan) > 0 && (availability.get(g.instructor_id) || []).length > 0
+  const plannable = (g) => g.instructor_id && Number(g.topics_to_plan) > 0
+    && ((g.keptLast && parseSchedule(g.schedule).length > 0) || (availability.get(g.instructor_id) || []).length > 0)
   // Lo que no se mueve (temas dictados y grupos que no se replanifican)
   // tambien ocupa al profesor y la hora de su componente.
   const groupById = new Map(groups.map((g) => [g.group_id, g]))
   for (const t of fixedTopics) {
     const g = groupById.get(t.group_id)
     const date = isoDay(t.scheduled_on)
-    if (!g || !date || (PLANNABLE.has(t.status_code) && plannable(g))) continue
+    if (!g || !date || t.status_code === 'cancelled' || (replanSet.has(t.id) && plannable(g))) continue
     if (g.instructor_id) takenFor(g.instructor_id).add(date)
     const slot = parseSchedule(g.schedule).find((s) => s.weekday === weekdayOf(date))
     if (slot) occupancy.add(date, slot, g.component_id)
@@ -142,22 +171,32 @@ export function planProgram({ groups, availability, busyDates, holidays, fixedTo
     const componentStart = mode === 'parallel' ? startDate : cursor
     let componentEnd = null
     for (const g of c.groups) {
+      // Los temas movidos van despues de la ultima clase que se conserva.
+      const groupStart = g.keptLast && g.keptLast >= componentStart ? nextDay(g.keptLast) : componentStart
+      const currentSchedule = parseSchedule(g.schedule)
+      const keepSchedule = Boolean(g.keptLast) && currentSchedule.length > 0
       const item = {
         groupId: g.group_id, groupName: g.group_name, componentId: c.id, componentName: c.name,
         instructorId: g.instructor_id, instructorName: g.instructor_name, topicsToPlan: Number(g.topics_to_plan) || 0,
-        startDate: componentStart, slots: [], dates: [], problems: [],
+        topicIds: g.replanIds || [], keptUntil: g.keptLast || null, keptSchedule: keepSchedule,
+        startDate: groupStart, slots: [], dates: [], problems: [],
       }
       plan.push(item)
-      if (!item.topicsToPlan) { item.problems.push('No tiene temas por programar.'); continue }
+      if (!item.topicsToPlan) { item.problems.push(item.keptUntil ? 'No tiene temas por programar desde esa fecha.' : 'No tiene temas por programar.'); continue }
       if (!g.instructor_id) { item.problems.push('Sin profesor asignado: asígnale uno para programarlo.'); continue }
       const blocks = availability.get(g.instructor_id) || []
-      if (!blocks.length) { item.problems.push(`${g.instructor_name} no registró su disponibilidad para este programa.`); continue }
-      item.slots = windows.length ? chooseWindowSlots(blocks, sessionsPerWeek, windows, windowLoad) : chooseSlots(blocks, sessionsPerWeek, sessionMinutes)
+      if (keepSchedule) {
+        // Conserva su horario semanal: las clases anteriores mantienen su hora.
+        item.slots = currentSchedule
+      } else {
+        if (!blocks.length) { item.problems.push(`${g.instructor_name} no registró su disponibilidad para este programa.`); continue }
+        item.slots = windows.length ? chooseWindowSlots(blocks, sessionsPerWeek, windows, windowLoad) : chooseSlots(blocks, sessionsPerWeek, sessionMinutes)
+      }
       if (!item.slots.length) { item.problems.push(windows.length ? `La disponibilidad de ${g.instructor_name} no cubre ninguna franja de clase del programa.` : `La disponibilidad de ${g.instructor_name} no tiene franjas de ${sessionMinutes} minutos.`); continue }
       item.slots.forEach((sl) => windowLoad.set(windowKey(sl), (windowLoad.get(windowKey(sl)) || 0) + 1))
-      if (item.slots.length < sessionsPerWeek) item.problems.push(`Solo hay ${item.slots.length} día(s) disponible(s) por semana; el componente durará más.`)
+      if (!keepSchedule && item.slots.length < sessionsPerWeek) item.problems.push(`Solo hay ${item.slots.length} día(s) disponible(s) por semana; el componente durará más.`)
       const busy = takenFor(g.instructor_id)
-      item.dates = simulateDates({ startDate: componentStart, slots: item.slots, count: item.topicsToPlan, holidays, busy, occupancy, componentId: c.id })
+      item.dates = simulateDates({ startDate: groupStart, slots: item.slots, count: item.topicsToPlan, holidays, busy, occupancy, componentId: c.id })
       if (item.dates.length < item.topicsToPlan) item.problems.push('No se encontraron suficientes fechas en los próximos 10 años.')
       item.dates.forEach((d) => busy.add(d))
       item.firstDate = item.dates[0] || null
@@ -200,9 +239,10 @@ function readOptions(body, fallbackStart) {
   const sessionMinutes = Number(body?.sessionMinutes ?? 180)
   const startDate = typeof body?.startDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(body.startDate) ? body.startDate : fallbackStart
   const mode = body?.mode === 'parallel' ? 'parallel' : 'sequence'
+  const includeOverdue = body?.includeOverdue === true
   if (!Number.isInteger(sessionsPerWeek) || sessionsPerWeek < 1 || sessionsPerWeek > 7
     || !Number.isInteger(sessionMinutes) || sessionMinutes < 30 || sessionMinutes > 600) return null
-  return { sessionsPerWeek, sessionMinutes, startDate, mode }
+  return { sessionsPerWeek, sessionMinutes, startDate, mode, includeOverdue }
 }
 
 const loadWindows = async (req, programId) => (await callProcedure('sp_program_windows_list', { ...actor(req), p_program_id: programId }))
@@ -245,12 +285,15 @@ const closedInfo = (groups) => (groups[0]?.schedule_closed_at
 
 function planResponse(data, options) {
   const plan = planProgram({ ...data, options })
+  const toPlan = new Map(plan.map((p) => [p.groupId, p.topicsToPlan]))
+  const groupsFromDate = data.groups.map((g) => ({ ...g, topics_to_plan: toPlan.get(g.group_id) ?? 0 }))
   const lastDate = plan.map((p) => p.lastDate).filter(Boolean).sort().at(-1) || null
   const years = []
   if (lastDate) for (let y = Number(options.startDate.slice(0, 4)); y <= Number(lastDate.slice(0, 4)); y += 1) years.push(y)
   return {
     options, plan, lastDate, windows: data.windows,
-    unassigned: unassignedComponents(data.groups),
+    unassigned: unassignedComponents(groupsFromDate),
+    kept: { groups: plan.filter((p) => p.keptUntil).length, schedules: plan.filter((p) => p.keptSchedule).length },
     missingHolidayYears: years.filter((y) => !data.holidayYears.includes(y)),
     totals: { groups: plan.length, ready: plan.filter(isReady).length, topics: plan.reduce((n, p) => n + p.dates.length, 0) },
   }
@@ -351,7 +394,7 @@ export function registerSchedulePlannerRoutes(app) {
       if (!ready.length) return res.status(409).json({ message: 'plan_incomplete' })
       const [r] = await callProcedure('sp_topics_apply_plan', {
         ...actor(req), p_program_id: programId,
-        p_plan: JSON.stringify(ready.map((p) => ({ group_id: p.groupId, days: p.slots, dates: p.dates }))),
+        p_plan: JSON.stringify(ready.map((p) => ({ group_id: p.groupId, days: p.slots, dates: p.dates, topic_ids: p.topicIds }))),
       })
       const results = plan.map((p) => (isReady(p)
         ? { groupId: p.groupId, ok: true, topicsScheduled: p.dates.length }

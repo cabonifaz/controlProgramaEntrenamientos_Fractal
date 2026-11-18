@@ -10,6 +10,7 @@ import { AbsencesPanel } from './indicators.jsx'
 import { MyAvailabilityPanel, SchedulePlannerPanel } from './schedules.jsx'
 import { ReportButton, SupportPanel } from './support.jsx'
 import { GuideTour, HelpPanel, ScreenGuideButton, screenGuideSteps, useFirstUseGuide } from './help.jsx'
+import { TopicsAdminPanel } from './topicsEditor.jsx'
 import { InstructorAttendanceOverview, InstructorSyllabusPanel } from './instructor.jsx'
 import { NextClassBar } from './classroom.jsx'
 import { MaterialJobsIndicator } from './aiMaterial.jsx'
@@ -36,7 +37,7 @@ const SUPER_ADMIN_EXTRA_NAV = new Set(['Calendario'])
 
 const roleKeyByCode = { student: 'student', instructor: 'instructor', tenant_admin: 'admin', super_admin: 'superAdmin' }
 
-const ADMIN_PANEL_BY_NAV = { Inicio: AdminHomePanel, Avance: ProgressPanel, Tenants: TenantsPanel, Usuarios: UsersPanel, Programas: ProgramsPanel, Inscripciones: PreEnrollmentsPanel, Calendario: HolidaysPanel, Horarios: SchedulePlannerPanel, Cursos: CourseCatalogPanel, 'Inducción': InductionAdminPanel, Alumnos: StudentDirectoryPanel, 'Satisfacción': SatisfactionPanel, Inasistencias: AbsencesPanel, Permisos: LeaveRequestsPanel, Alertas: AlertsPanel, Ayuda: HelpPanel, Soporte: SupportPanel, Reportes: ReportsPanel, Configuracion: ChangePasswordPanel }
+const ADMIN_PANEL_BY_NAV = { Inicio: AdminHomePanel, Avance: ProgressPanel, Tenants: TenantsPanel, Usuarios: UsersPanel, Programas: ProgramsPanel, Inscripciones: PreEnrollmentsPanel, Calendario: HolidaysPanel, Horarios: SchedulePlannerPanel, Cursos: CourseCatalogPanel, 'Inducción': InductionAdminPanel, Alumnos: StudentDirectoryPanel, 'Satisfacción': SatisfactionPanel, Inasistencias: AbsencesPanel, Permisos: LeaveRequestsPanel, Alertas: AlertsPanel, Ayuda: HelpPanel, Soporte: SupportPanel, Reportes: ReportsPanel, Configuracion: ChangePasswordPanel, Temarios: TopicsAdminPanel }
 const INSTRUCTOR_PANEL_BY_NAV = { Inicio: RealDashboard, Avance: ProgressPanel, 'Mis clases': InstructorClassesPanel, Temarios: InstructorSyllabusPanel, Asistencia: InstructorAttendanceOverview, 'Mis alumnos': StudentDirectoryPanel, 'Mi disponibilidad': MyAvailabilityPanel, Cursos: CourseCatalogPanel, Permisos: LeaveRequestsPanel, Alertas: AlertsPanel, Ayuda: HelpPanel, Soporte: SupportPanel, 'Mi cuenta': ChangePasswordPanel }
 const STUDENT_PANEL_BY_NAV = { Inicio: RealDashboard, Cursos: CourseCatalogPanel, Avance: ProgressPanel, 'Mi horario': StudentSchedulePanel, 'Mis temas': StudentTopicsOverview, 'Mi inducción': MyInductionPanel, Permisos: LeaveRequestsPanel, Asistencia: StudentAttendanceView, Alertas: AlertsPanel, 'Mi perfil': StudentProfilePanel, Ayuda: HelpPanel, Soporte: SupportPanel, 'Mi cuenta': ChangePasswordPanel }
 const SECTION_PANELS_BY_ROLE = { admin: ADMIN_PANEL_BY_NAV, superAdmin: ADMIN_PANEL_BY_NAV, instructor: INSTRUCTOR_PANEL_BY_NAV, student: STUDENT_PANEL_BY_NAV }
@@ -263,7 +264,7 @@ function App() {
   const brandMark = tenantLogoUrl
     ? <img src={tenantLogoUrl} alt="Logo" className="logo-mark logo-mark-image" />
     : <div className="logo-mark">F</div>
-  const baseNav = role === 'student' ? ['Inicio', 'Mi horario', 'Mis temas', 'Cursos', 'Mi inducción', 'Asistencia', 'Permisos', 'Alertas', 'Mi perfil', 'Ayuda', 'Soporte', 'Mi cuenta'] : role === 'instructor' ? ['Inicio', 'Mis clases', 'Temarios', 'Asistencia', 'Mis alumnos', 'Mi disponibilidad', 'Cursos', 'Permisos', 'Alertas', 'Ayuda', 'Soporte', 'Mi cuenta'] : role === 'superAdmin' ? ['Inicio', 'Tenants', 'Usuarios', 'Alumnos', 'Programas', 'Inducción', 'Calendario', 'Horarios', 'Cursos', 'Inscripciones', 'Satisfacción', 'Inasistencias', 'Permisos', 'Alertas', 'Ayuda', 'Soporte', 'Reportes', 'Configuracion'] : ['Inicio', 'Programas', 'Inducción', 'Inscripciones', 'Usuarios', 'Alumnos', 'Calendario', 'Horarios', 'Cursos', 'Satisfacción', 'Inasistencias', 'Permisos', 'Alertas', 'Ayuda', 'Soporte', 'Reportes', 'Configuracion']
+  const baseNav = role === 'student' ? ['Inicio', 'Mi horario', 'Mis temas', 'Cursos', 'Mi inducción', 'Asistencia', 'Permisos', 'Alertas', 'Mi perfil', 'Ayuda', 'Soporte', 'Mi cuenta'] : role === 'instructor' ? ['Inicio', 'Mis clases', 'Temarios', 'Asistencia', 'Mis alumnos', 'Mi disponibilidad', 'Cursos', 'Permisos', 'Alertas', 'Ayuda', 'Soporte', 'Mi cuenta'] : role === 'superAdmin' ? ['Inicio', 'Tenants', 'Usuarios', 'Alumnos', 'Programas', 'Temarios', 'Inducción', 'Calendario', 'Horarios', 'Cursos', 'Inscripciones', 'Satisfacción', 'Inasistencias', 'Permisos', 'Alertas', 'Ayuda', 'Soporte', 'Reportes', 'Configuracion'] : ['Inicio', 'Programas', 'Temarios', 'Inducción', 'Inscripciones', 'Usuarios', 'Alumnos', 'Calendario', 'Horarios', 'Cursos', 'Satisfacción', 'Inasistencias', 'Permisos', 'Alertas', 'Ayuda', 'Soporte', 'Reportes', 'Configuracion']
   // "Avance" (kanban) va segundo para todos los roles; el resto conserva
   // el icono de la posicion que tenia antes de agregarlo.
   const nav = [baseNav[0], 'Avance', ...baseNav.slice(1)]

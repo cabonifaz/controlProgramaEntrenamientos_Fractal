@@ -1321,3 +1321,57 @@ p.sch-warn{margin:0 0 10px}
   .api-table td.api-actions:empty{display:none}
 }
 .api-swagger{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.api-swagger .btn-mini{text-decoration:none;display:inline-flex;align-items:center;min-height:36px}.api-created a{color:#06425e;font-weight:700}
+/* Editor de temarios */
+.te-panel{padding:24px}
+.te-title{margin:0 0 4px;font-size:22px;color:var(--deep)}
+.te-heading{margin:0 0 14px;font-size:17px;color:var(--deep)}
+.te-program{display:grid;gap:6px;font-size:12px;font-weight:700;color:#4f616b;max-width:520px;margin-top:14px}
+.te-program select{height:40px;border:1px solid var(--line);border-radius:7px;padding:0 11px;background:#fff;color:var(--ink);font:inherit;font-size:14px;max-width:100%}
+.te-components{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px}
+.te-chip{border:1px solid var(--line);background:#fff;color:var(--ink);border-radius:20px;padding:8px 14px;font:inherit;font-size:13px;font-weight:600;cursor:pointer;min-height:40px}
+.te-chip:hover{background:#f6f9fa}
+.te-chip.active{background:var(--deep);border-color:var(--deep);color:#fff}
+.te-add{border:1px solid var(--line);border-radius:10px;padding:14px 16px;background:#fafcfc;display:grid;gap:10px}
+.te-add h4{margin:0;display:flex;align-items:center;gap:6px;font-size:14px;color:var(--deep)}
+.te-add-grid{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr);gap:10px}
+.te-add label,.te-edit label{display:grid;gap:4px;font-size:11px;font-weight:700;color:#4f616b;margin:0}
+.te-add input,.te-add textarea,.te-edit input,.te-edit textarea,.te-edit select{width:100%;border:1px solid var(--line);border-radius:7px;padding:0 10px;height:38px;background:#fff;color:var(--ink);font:inherit;font-size:14px}
+.te-add textarea,.te-edit textarea{height:auto;padding:8px 10px;resize:vertical}
+.te-desc-field{grid-column:1/-1}
+.te-add .primary{justify-self:start}
+.te-notice{margin:12px 0 0}
+.te-summary{margin:16px 0 8px;font-size:13px}
+.te-empty{margin:14px 0 0;padding:16px;border:1px dashed var(--line);border-radius:10px;text-align:center;color:#4f616b;font-size:13px}
+.te-list{list-style:none;margin:0;padding:0;border:1px solid var(--line);border-radius:10px;background:#fff}
+.te-item{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:12px;align-items:start;padding:12px 14px}
+.te-item+.te-item{border-top:1px solid #edf1f2}
+.te-item.done{background:#f8fbf9}
+.te-n{display:grid;place-items:center;width:28px;height:28px;border-radius:50%;background:var(--soft);color:var(--deep);font-size:12px;font-weight:700}
+.te-body{display:grid;gap:3px;min-width:0}
+.te-body strong{color:var(--ink);font-size:14px;overflow-wrap:anywhere}
+.te-desc{margin:0;color:#4f616b;font-size:13px;line-height:1.4;overflow-wrap:anywhere}
+.te-meta{font-size:12px;color:#4f616b}
+.te-status{font-weight:700;color:var(--deep)}
+.te-status.st-completed{color:#1f7a50}
+.te-status.st-cancelled{color:#a8322a}
+.te-actions{display:flex;gap:4px}
+.te-icon{display:grid;place-items:center;width:36px;height:36px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--deep);cursor:pointer}
+.te-icon:hover:not(:disabled){background:var(--soft)}
+.te-icon:disabled{opacity:.4;cursor:not-allowed}
+.te-icon.danger{color:#a8322a}
+.te-icon.danger:hover:not(:disabled){background:#fdecec}
+.te-edit{grid-column:2/-1;display:grid;gap:8px}
+.te-edit-row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.te-edit-actions{display:flex;gap:8px;align-items:center}
+@media (max-width:640px){
+  .te-add-grid,.te-edit-row{grid-template-columns:1fr}
+  .te-item{grid-template-columns:auto minmax(0,1fr)}
+  .te-actions{grid-column:2;flex-wrap:wrap}
+  .te-icon{width:44px;height:44px}
+  .te-edit{grid-column:1/-1}
+}
+/* Generador: regenerar desde una fecha */
+.sch-from{margin:12px 0 6px;padding:10px 12px;border-left:3px solid var(--blue);background:var(--soft);border-radius:0 8px 8px 0;font-size:13px;color:var(--ink);line-height:1.45}
+.sch-overdue{display:flex;align-items:flex-start;gap:8px;font-size:13px;color:var(--ink);margin:6px 0 8px}
+.sch-overdue input{width:18px;height:18px;margin:1px 0 0;flex:none;accent-color:var(--blue)}
+.sch-kept{display:block;font-size:11px;color:#1f5f7a;font-weight:600;margin-top:2px}
