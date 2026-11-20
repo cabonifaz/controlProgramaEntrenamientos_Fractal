@@ -1377,3 +1377,17 @@ p.sch-warn{margin:0 0 10px}
 .sch-kept{display:block;font-size:11px;color:#1f5f7a;font-weight:600;margin-top:2px}
 .sch-gaps{margin:10px 0}.sch-gaps.st-done{display:flex;align-items:center;gap:6px}
 .sch-warn.sch-gaps{display:flex;flex-wrap:nowrap;align-items:flex-start;gap:8px}.sch-warn.sch-gaps svg{flex:none;margin-top:2px}
+
+/* Slack */
+.slack-form>label{display:grid;gap:6px;font-size:11px;font-weight:700;color:#4f616b;max-width:420px;margin:12px 0 4px}
+.slack-form select,.slack-fields input{height:40px;border:1px solid var(--line);border-radius:7px;padding:0 11px;background:#fff;color:var(--ink);font:inherit;font-size:14px;width:100%;max-width:100%}
+.slack-fields{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr);gap:12px;margin:12px 0 0}
+.slack-fields label{display:grid;gap:6px;font-size:11px;font-weight:700;color:#4f616b;margin:0}
+.slack-state{margin:12px 0 0;padding:10px 12px;border-radius:8px;background:#f1f4f6;color:#3d4f59;font-size:13px;overflow-wrap:anywhere}
+.slack-state.is-on{background:#e6f5ec;color:#14532d}
+.slack-state.is-error{background:#fdecec;color:#7f1d1d}
+.slack-state code{font-size:12px}
+.slack-actions{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:16px 0 0}
+.slack-actions button{min-height:40px}
+.slack-actions .link-danger{background:none;border:0;color:#b42318;font-weight:600;text-decoration:underline;cursor:pointer;padding:0 6px}
+@media (max-width:640px){.slack-fields{grid-template-columns:1fr}.slack-actions button{flex:1 1 auto}}

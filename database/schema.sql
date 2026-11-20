@@ -369,6 +369,35 @@ CREATE TABLE IF NOT EXISTS class_reminders (
   CONSTRAINT fk_class_reminder_user FOREIGN KEY (user_id) REFERENCES users(id)
 );
 
+-- Canal de Slack de cada programa (Incoming Webhook). Recordatorios de las
+-- clases de hoy: 1 hora antes y 15 minutos antes, con el enlace de la clase.
+CREATE TABLE IF NOT EXISTS program_slack_channels (
+  program_id BIGINT UNSIGNED PRIMARY KEY,
+  webhook_url VARCHAR(500) NOT NULL,
+  channel_name VARCHAR(120) NULL,
+  remind_60 BOOLEAN NOT NULL DEFAULT TRUE,
+  remind_15 BOOLEAN NOT NULL DEFAULT TRUE,
+  last_sent_at DATETIME NULL,
+  last_error VARCHAR(300) NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  created_by BIGINT UNSIGNED NULL,
+  updated_at DATETIME NULL,
+  updated_by BIGINT UNSIGNED NULL,
+  CONSTRAINT fk_psc_program FOREIGN KEY (program_id) REFERENCES training_programs(id)
+);
+
+CREATE TABLE IF NOT EXISTS slack_reminders (
+  id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+  program_id BIGINT UNSIGNED NOT NULL,
+  topic_id BIGINT UNSIGNED NOT NULL,
+  kind VARCHAR(10) NOT NULL,
+  class_date DATE NOT NULL,
+  sent_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_slack_reminder (topic_id, kind, class_date),
+  KEY ix_slack_reminders_sent (sent_at),
+  CONSTRAINT fk_slack_reminder_topic FOREIGN KEY (topic_id) REFERENCES topics(id)
+);
+
 -- Tokens de API para aplicaciones externas (p.ej. un tracker de horas que
 -- extrae las horas dictadas por los profesores). Solo se guarda el hash
 -- sha256 del token; el token en claro se muestra una sola vez al crearlo.
@@ -907,6 +936,15 @@ DROP PROCEDURE IF EXISTS sp_class_reminders_due;
 DROP PROCEDURE IF EXISTS sp_class_reminders_claim;
 DROP PROCEDURE IF EXISTS sp_class_reminders_release;
 DROP PROCEDURE IF EXISTS sp_mail_redirect_targets;
+DROP PROCEDURE IF EXISTS sp_program_slack_list;
+DROP PROCEDURE IF EXISTS sp_program_slack_set;
+DROP PROCEDURE IF EXISTS sp_program_slack_delete;
+DROP PROCEDURE IF EXISTS sp_program_slack_webhook;
+DROP PROCEDURE IF EXISTS sp_slack_reminder_programs;
+DROP PROCEDURE IF EXISTS sp_slack_classes_due;
+DROP PROCEDURE IF EXISTS sp_slack_reminders_claim;
+DROP PROCEDURE IF EXISTS sp_slack_reminders_release;
+DROP PROCEDURE IF EXISTS sp_program_slack_result;
 DROP PROCEDURE IF EXISTS sp_topics_update;
 DROP PROCEDURE IF EXISTS sp_topics_delete;
 DROP PROCEDURE IF EXISTS sp_topics_move;
@@ -6869,6 +6907,140 @@ END$$
 -- Modo redirect (staging): a quien llegan los correos de prueba de un
 -- tenant. Sus administradores activos con correo real (se omiten dominios
 -- de prueba como example.com o .test). Vacio = el servidor usa MAIL_REDIRECT_TO.
+-- Slack: programas del tenant con su canal (la URL del webhook nunca se
+-- devuelve completa, solo sus ultimos caracteres).
+CREATE PROCEDURE sp_program_slack_list(IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED, IN p_tenant_id BIGINT UNSIGNED)
+BEGIN
+  IF p_actor_role NOT IN ('super_admin', 'tenant_admin') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+  IF p_actor_role = 'tenant_admin' AND NOT (p_tenant_id <=> p_actor_tenant_id) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
+  END IF;
+  SELECT p.id AS program_id, p.name AS program_name, p.cohort, ps.code AS status_code,
+         s.program_id IS NOT NULL AS configured, RIGHT(s.webhook_url, 6) AS webhook_tail, s.channel_name,
+         COALESCE(s.remind_60, TRUE) AS remind_60, COALESCE(s.remind_15, TRUE) AS remind_15,
+         s.last_sent_at, s.last_error,
+         (SELECT COUNT(*) FROM slack_reminders r WHERE r.program_id = p.id AND r.sent_at >= NOW() - INTERVAL 7 DAY) AS sent_last_7_days
+  FROM training_programs p
+  JOIN master_catalog_values ps ON ps.id = p.status_id
+  LEFT JOIN program_slack_channels s ON s.program_id = p.id
+  WHERE p.tenant_id = p_tenant_id AND p.is_deleted = FALSE AND p.program_type = 'training'
+    AND (ps.code IN ('draft', 'active', 'paused') OR s.program_id IS NOT NULL)
+  ORDER BY ps.code = 'active' DESC, p.starts_on DESC, p.id DESC;
+END$$
+
+-- p_webhook_url NULL o '' = conservar la URL guardada.
+CREATE PROCEDURE sp_program_slack_set(IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED, IN p_program_id BIGINT UNSIGNED,
+  IN p_webhook_url VARCHAR(500), IN p_channel_name VARCHAR(120), IN p_remind_60 BOOLEAN, IN p_remind_15 BOOLEAN)
+BEGIN
+  DECLARE v_tenant_id BIGINT UNSIGNED;
+  SELECT tenant_id INTO v_tenant_id FROM training_programs WHERE id = p_program_id AND is_deleted = FALSE AND program_type = 'training';
+  IF v_tenant_id IS NULL THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'program_not_found';
+  END IF;
+  IF p_actor_role NOT IN ('super_admin', 'tenant_admin') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+  IF p_actor_role = 'tenant_admin' AND NOT (v_tenant_id <=> p_actor_tenant_id) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
+  END IF;
+  IF NULLIF(TRIM(p_webhook_url), '') IS NULL AND NOT EXISTS (SELECT 1 FROM program_slack_channels WHERE program_id = p_program_id) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'slack_webhook_required';
+  END IF;
+  INSERT INTO program_slack_channels (program_id, webhook_url, channel_name, remind_60, remind_15, created_by)
+  VALUES (p_program_id, COALESCE(NULLIF(TRIM(p_webhook_url), ''), ''), NULLIF(TRIM(p_channel_name), ''), COALESCE(p_remind_60, TRUE), COALESCE(p_remind_15, TRUE), p_actor_user_id)
+  ON DUPLICATE KEY UPDATE
+    webhook_url = COALESCE(NULLIF(TRIM(p_webhook_url), ''), webhook_url),
+    last_error = IF(NULLIF(TRIM(p_webhook_url), '') IS NULL, last_error, NULL),
+    channel_name = NULLIF(TRIM(p_channel_name), ''),
+    remind_60 = COALESCE(p_remind_60, TRUE), remind_15 = COALESCE(p_remind_15, TRUE),
+    updated_at = NOW(), updated_by = p_actor_user_id;
+END$$
+
+CREATE PROCEDURE sp_program_slack_delete(IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED, IN p_program_id BIGINT UNSIGNED)
+BEGIN
+  DECLARE v_tenant_id BIGINT UNSIGNED;
+  SELECT tenant_id INTO v_tenant_id FROM training_programs WHERE id = p_program_id AND is_deleted = FALSE AND program_type = 'training';
+  IF v_tenant_id IS NULL THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'program_not_found';
+  END IF;
+  IF p_actor_role NOT IN ('super_admin', 'tenant_admin') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+  IF p_actor_role = 'tenant_admin' AND NOT (v_tenant_id <=> p_actor_tenant_id) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
+  END IF;
+  DELETE FROM program_slack_channels WHERE program_id = p_program_id;
+END$$
+
+-- Para el mensaje de prueba: valida permisos y devuelve la URL.
+CREATE PROCEDURE sp_program_slack_webhook(IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED, IN p_program_id BIGINT UNSIGNED)
+BEGIN
+  DECLARE v_tenant_id BIGINT UNSIGNED;
+  SELECT tenant_id INTO v_tenant_id FROM training_programs WHERE id = p_program_id AND is_deleted = FALSE AND program_type = 'training';
+  IF v_tenant_id IS NULL THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'program_not_found';
+  END IF;
+  IF p_actor_role NOT IN ('super_admin', 'tenant_admin') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+  IF p_actor_role = 'tenant_admin' AND NOT (v_tenant_id <=> p_actor_tenant_id) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
+  END IF;
+  SELECT s.webhook_url, s.channel_name, p.name AS program_name, t.timezone, t.slug
+  FROM program_slack_channels s JOIN training_programs p ON p.id = s.program_id JOIN tenants t ON t.id = p.tenant_id
+  WHERE s.program_id = p_program_id;
+END$$
+
+CREATE PROCEDURE sp_slack_reminder_programs()
+BEGIN
+  SELECT s.program_id, s.webhook_url, s.channel_name, s.remind_60, s.remind_15, p.name AS program_name, t.timezone, t.slug
+  FROM program_slack_channels s
+  JOIN training_programs p ON p.id = s.program_id AND p.is_deleted = FALSE AND p.program_type = 'training'
+  JOIN master_catalog_values ps ON ps.id = p.status_id AND ps.code IN ('draft', 'active', 'paused')
+  JOIN tenants t ON t.id = p.tenant_id AND t.is_deleted = FALSE
+  JOIN master_catalog_values ts ON ts.id = t.status_id AND ts.code = 'active'
+  WHERE s.remind_60 = TRUE OR s.remind_15 = TRUE;
+END$$
+
+-- Clases del programa en una fecha con hora de inicio conocida que aun no
+-- tienen ese aviso en Slack.
+CREATE PROCEDURE sp_slack_classes_due(IN p_program_id BIGINT UNSIGNED, IN p_date DATE, IN p_kind VARCHAR(10))
+BEGIN
+  SELECT t.id AS topic_id, t.title, c.name AS component_name, g.name AS group_name, iu.full_name AS instructor_name,
+         TIME_FORMAT(d.start_time, '%H:%i') AS start_time, TIME_FORMAT(d.end_time, '%H:%i') AS end_time,
+         COALESCE(NULLIF(t.meeting_url, ''), NULLIF(g.meeting_url, '')) AS meeting_url
+  FROM topics t
+  JOIN component_groups g ON g.id = t.group_id AND g.is_deleted = FALSE
+  JOIN components c ON c.id = g.component_id AND c.is_deleted = FALSE AND c.program_id = p_program_id
+  JOIN master_catalog_values ts ON ts.id = t.status_id AND ts.code NOT IN ('completed', 'cancelled')
+  JOIN component_group_schedule_days d ON d.group_id = g.id AND d.is_deleted = FALSE AND d.weekday = DAYOFWEEK(t.scheduled_on) - 1
+  LEFT JOIN users iu ON iu.id = g.instructor_id
+  WHERE t.is_deleted = FALSE AND t.scheduled_on = p_date
+    AND NOT EXISTS (SELECT 1 FROM slack_reminders r WHERE r.topic_id = t.id AND r.kind = p_kind AND r.class_date = p_date)
+  ORDER BY d.start_time, c.sort_order, t.sort_order;
+END$$
+
+CREATE PROCEDURE sp_slack_reminders_claim(IN p_program_id BIGINT UNSIGNED, IN p_topic_id BIGINT UNSIGNED, IN p_kind VARCHAR(10), IN p_date DATE)
+BEGIN
+  INSERT IGNORE INTO slack_reminders (program_id, topic_id, kind, class_date) VALUES (p_program_id, p_topic_id, p_kind, p_date);
+  SELECT ROW_COUNT() AS claimed;
+END$$
+
+CREATE PROCEDURE sp_slack_reminders_release(IN p_topic_id BIGINT UNSIGNED, IN p_kind VARCHAR(10), IN p_date DATE)
+BEGIN
+  DELETE FROM slack_reminders WHERE topic_id = p_topic_id AND kind = p_kind AND class_date = p_date;
+END$$
+
+-- Resultado del ultimo envio (p_error NULL = salio bien).
+CREATE PROCEDURE sp_program_slack_result(IN p_program_id BIGINT UNSIGNED, IN p_error VARCHAR(300))
+BEGIN
+  UPDATE program_slack_channels
+  SET last_sent_at = IF(p_error IS NULL, NOW(), last_sent_at), last_error = LEFT(p_error, 300)
+  WHERE program_id = p_program_id;
+END$$
+
 CREATE PROCEDURE sp_mail_redirect_targets(IN p_tenant_id BIGINT UNSIGNED)
 BEGIN
   SELECT u.email

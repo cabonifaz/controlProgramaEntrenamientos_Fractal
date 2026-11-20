@@ -79,6 +79,10 @@ const ERROR_MESSAGES = {
   target_not_found: 'No se encontró el registro.',
   program_not_found: 'Programa no encontrado.',
   token_not_found: 'El token ya no existe.',
+  slack_webhook_required: 'Pega la URL del webhook de Slack.',
+  slack_webhook_invalid: 'La URL no es un webhook de Slack. Debe empezar con https://hooks.slack.com/services/',
+  slack_send_failed: 'Slack no aceptó el mensaje. Revisa que el webhook siga activo.',
+  slack_not_configured: 'Primero guarda el webhook de este programa.',
   topic_not_found: 'El tema ya no existe.',
   topic_has_activity: 'No se puede quitar: el tema ya se dictó o tiene asistencia registrada. Si no se dará, cámbialo a Cancelado.',
   name_required: 'Ponle un nombre al token (por ejemplo, la aplicación que lo usará).',
@@ -3838,6 +3842,121 @@ function ClassRemindersSettings({ session }) {
   )
 }
 
+// Slack: cada programa puede tener su canal (Incoming Webhook) donde llegan
+// los recordatorios de las clases de hoy, 1 hora y 15 minutos antes, con el
+// enlace de Teams/Meet. La URL del webhook nunca vuelve completa del servidor.
+const SLACK_EMPTY = { webhookUrl: '', channelName: '', remind60: true, remind15: true }
+function SlackSettings({ session }) {
+  const { token, profile } = session
+  const isSuper = profile.roleCode === 'super_admin'
+  const { items: tenants } = useList(isSuper ? '/api/tenants' : '', token)
+  const [tenantId, setTenantId] = useState(isSuper ? '' : profile.tenantId)
+  const [programs, setPrograms] = useState(null)
+  const [programId, setProgramId] = useState('')
+  const [form, setForm] = useState(SLACK_EMPTY)
+  const [busy, setBusy] = useState('')
+  const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
+
+  useEffect(() => { if (isSuper && !tenantId && tenants.length) setTenantId(tenants[0].id) }, [isSuper, tenantId, tenants])
+  const load = useCallback(async (keepProgram) => {
+    if (!tenantId) return
+    try {
+      const res = await apiRequest(`/api/tenants/${tenantId}/slack`, { token })
+      const list = res.data || []
+      setPrograms(list)
+      setProgramId((prev) => {
+        const keep = keepProgram && list.some((p) => p.programId === prev) ? prev : (list.find((p) => p.configured) || list[0])?.programId || ''
+        return keep
+      })
+    } catch (err) { setError(err.message) }
+  }, [tenantId, token])
+  useEffect(() => { setPrograms(null); setError(''); setNotice(''); load(false) }, [load])
+
+  const current = programs?.find((p) => p.programId === programId)
+  useEffect(() => {
+    if (!current) return
+    setForm({ webhookUrl: '', channelName: current.channelName, remind60: current.remind60, remind15: current.remind15 })
+  }, [current?.programId, current?.configured]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function run(kind, fn, okMessage) {
+    setBusy(kind); setError(''); setNotice('')
+    try { await fn(); await load(true); setNotice(okMessage) } catch (err) { setError(err.message) } finally { setBusy('') }
+  }
+  const save = (e) => {
+    e.preventDefault()
+    run('save', () => apiRequest(`/api/programs/${programId}/slack`, { method: 'PUT', token, body: { webhookUrl: form.webhookUrl.trim() || null, channelName: form.channelName, remind60: form.remind60, remind15: form.remind15 } }),
+      form.remind60 || form.remind15 ? 'Guardado. Los recordatorios llegarán solos al canal.' : 'Guardado. Recordatorios de Slack apagados para este programa.')
+  }
+  const test = () => run('test', () => apiRequest(`/api/programs/${programId}/slack/test`, { method: 'POST', token }), 'Mensaje de prueba enviado. Revisa el canal en Slack.')
+  const remove = () => {
+    if (!window.confirm('¿Quitar el canal de Slack de este programa? Dejarán de llegar los recordatorios.')) return
+    run('remove', () => apiRequest(`/api/programs/${programId}/slack`, { method: 'DELETE', token }), 'Canal quitado.')
+  }
+  const lastSent = current?.lastSentAt ? new Date(current.lastSentAt).toLocaleString('es-PE', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : null
+
+  return (
+    <section className="panel admin-form-panel reminders-panel slack-panel">
+      <h3>Recordatorios de clase en Slack</h3>
+      <p className="muted">Avisa en el canal del programa las clases de hoy, 1 hora antes y 15 minutos antes del inicio, con el botón para unirse por Teams o Meet.</p>
+      {isSuper && (
+        <label>Tenant
+          <select value={tenantId} onChange={(e) => setTenantId(Number(e.target.value))}>
+            {tenants.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+          </select>
+        </label>
+      )}
+      {!programs && !error && <p className="muted">Cargando…</p>}
+      {programs && !programs.length && <p className="muted">No hay programas activos en este tenant.</p>}
+      {programs && programs.length > 0 && (
+        <form onSubmit={save} className="slack-form">
+          <label>Programa
+            <select value={programId} onChange={(e) => { setProgramId(Number(e.target.value)); setNotice(''); setError('') }}>
+              {programs.map((p) => <option key={p.programId} value={p.programId}>{p.programName}{p.cohort ? ` · ${p.cohort}` : ''}{p.configured ? ' — conectado' : ''}</option>)}
+            </select>
+          </label>
+          {current && (
+            <>
+              <p className={`slack-state ${current.configured ? (current.lastError ? 'is-error' : 'is-on') : ''}`} role="status">
+                {current.configured
+                  ? <>Conectado{current.channelName ? <> a <strong>#{current.channelName}</strong></> : ''} · webhook terminado en <code>…{current.webhookTail}</code>{lastSent ? ` · último aviso: ${lastSent}` : ''}</>
+                  : 'Este programa aún no tiene canal de Slack.'}
+              </p>
+              {current.lastError && <p className="rem-warning">Último envío falló: {current.lastError}</p>}
+              <div className="slack-fields">
+                <label>URL del webhook de Slack
+                  <input type="password" autoComplete="off" spellCheck={false} value={form.webhookUrl}
+                    placeholder={current.configured ? 'Déjalo vacío para conservar el actual' : 'https://hooks.slack.com/services/…'}
+                    onChange={(e) => setForm({ ...form, webhookUrl: e.target.value })} />
+                </label>
+                <label>Canal (solo para mostrar)
+                  <input value={form.channelName} maxLength={120} placeholder="ej.: nombre-del-canal" onChange={(e) => setForm({ ...form, channelName: e.target.value })} />
+                </label>
+              </div>
+              <label className="checkbox-field">
+                <input type="checkbox" checked={form.remind60} onChange={(e) => setForm({ ...form, remind60: e.target.checked })} />
+                <span><strong>1 hora antes</strong> · aviso de la clase con el enlace para unirse</span>
+              </label>
+              <label className="checkbox-field">
+                <input type="checkbox" checked={form.remind15} onChange={(e) => setForm({ ...form, remind15: e.target.checked })} />
+                <span><strong>15 minutos antes</strong> · último aviso con el enlace</span>
+              </label>
+              <div className="slack-actions">
+                <button className="primary" disabled={Boolean(busy)}>{busy === 'save' ? 'Guardando…' : 'Guardar'}</button>
+                {current.configured && <button type="button" className="secondary" disabled={Boolean(busy)} onClick={test}>{busy === 'test' ? 'Enviando…' : 'Enviar mensaje de prueba'}</button>}
+                {current.configured && <button type="button" className="link-danger" disabled={Boolean(busy)} onClick={remove}>Quitar canal</button>}
+              </div>
+              <p className="muted rem-stats">Solo avisa clases con día y hora en el horario del grupo. Avisos enviados en los últimos 7 días: <strong>{current.sentLast7Days}</strong></p>
+            </>
+          )}
+        </form>
+      )}
+      {notice && <p className="temp-password-box" role="status">{notice}</p>}
+      <ErrorNote message={error} />
+    </section>
+  )
+}
+
 // Tokens de API para aplicaciones externas (p.ej. el tracker que paga las
 // horas dictadas). El token se muestra una sola vez al crearlo.
 const TOKEN_EXPIRY_OPTIONS = [['90', '90 días'], ['365', '1 año'], ['', 'Sin vencimiento']]
@@ -4038,6 +4157,7 @@ export function ChangePasswordPanel({ session }) {
         </section>
       )}
       {(isTenantAdmin || profile.roleCode === 'super_admin') && <ClassRemindersSettings session={session} />}
+      {(isTenantAdmin || profile.roleCode === 'super_admin') && <SlackSettings session={session} />}
       {(isTenantAdmin || profile.roleCode === 'super_admin') && <ApiTokensSettings session={session} />}
       <section className="panel admin-form-panel">
         <h3>Cambiar mi contraseña</h3>

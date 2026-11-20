@@ -81,6 +81,7 @@ const STATUS_BY_SP_MESSAGE = {
   topic_not_found: 404,
   topic_has_activity: 409,
   invalid_direction: 400,
+  slack_webhook_required: 400,
 }
 
 // Los procedimientos almacenados comunican decisiones de negocio con

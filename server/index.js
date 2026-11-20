@@ -21,6 +21,7 @@ import { registerSchedulePlannerRoutes } from './schedulePlanner.js'
 import { registerSelfEnrollRoutes } from './selfEnroll.js'
 import { registerAdminDashboardRoutes } from './adminDashboard.js'
 import { registerClassReminderRoutes, startClassReminders } from './classReminders.js'
+import { registerSlackRoutes, startSlackReminders } from './slackReminders.js'
 import { registerExternalApiRoutes } from './externalApi.js'
 import { registerExternalApiDocs } from './externalApiDocs.js'
 import { registerSupportRoutes } from './support.js'
@@ -286,6 +287,7 @@ registerSchedulePlannerRoutes(app)
 registerSelfEnrollRoutes(app)
 registerAdminDashboardRoutes(app)
 registerClassReminderRoutes(app)
+registerSlackRoutes(app)
 registerExternalApiRoutes(app)
 registerExternalApiDocs(app)
 registerSupportRoutes(app)
@@ -2324,4 +2326,5 @@ if (process.env.NODE_ENV === 'production') {
 }
 
 startClassReminders()
+startSlackReminders()
 app.listen(port, () => console.log(`Training monolith listening on http://localhost:${port}`))
