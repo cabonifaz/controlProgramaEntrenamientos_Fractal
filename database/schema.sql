@@ -945,6 +945,7 @@ DROP PROCEDURE IF EXISTS sp_slack_classes_due;
 DROP PROCEDURE IF EXISTS sp_slack_reminders_claim;
 DROP PROCEDURE IF EXISTS sp_slack_reminders_release;
 DROP PROCEDURE IF EXISTS sp_program_slack_result;
+DROP PROCEDURE IF EXISTS sp_instructor_class_checkins;
 DROP PROCEDURE IF EXISTS sp_topics_update;
 DROP PROCEDURE IF EXISTS sp_topics_delete;
 DROP PROCEDURE IF EXISTS sp_topics_move;
@@ -7039,6 +7040,31 @@ BEGIN
   UPDATE program_slack_channels
   SET last_sent_at = IF(p_error IS NULL, NOW(), last_sent_at), last_error = LEFT(p_error, 300)
   WHERE program_id = p_program_id;
+END$$
+
+-- Clases del profesor (de los ultimos 60 dias a manana) que aun no marca
+-- como dictadas, con su horario, para avisarle en pantalla durante la clase,
+-- al terminarla y al empezar la siguiente. El servidor decide con la hora
+-- local del tenant cuales estan en curso, terminadas o por empezar.
+CREATE PROCEDURE sp_instructor_class_checkins(IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80))
+BEGIN
+  IF p_actor_role <> 'instructor' THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+  SELECT t.id AS topic_id, t.title, ts.code AS status_code, DATE_FORMAT(t.scheduled_on, '%Y-%m-%d') AS scheduled_on,
+         TIME_FORMAT(d.start_time, '%H:%i') AS start_time, TIME_FORMAT(d.end_time, '%H:%i') AS end_time,
+         c.name AS component_name, p.name AS program_name, g.id AS group_id, g.name AS group_name,
+         COALESCE(NULLIF(t.meeting_url, ''), NULLIF(g.meeting_url, '')) AS meeting_url, tn.timezone
+  FROM topics t
+  JOIN component_groups g ON g.id = t.group_id AND g.is_deleted = FALSE AND g.instructor_id = p_actor_user_id
+  JOIN components c ON c.id = g.component_id AND c.is_deleted = FALSE
+  JOIN training_programs p ON p.id = c.program_id AND p.is_deleted = FALSE AND p.program_type = 'training'
+  JOIN master_catalog_values ps ON ps.id = p.status_id AND ps.code IN ('draft', 'active', 'paused')
+  JOIN tenants tn ON tn.id = p.tenant_id
+  JOIN master_catalog_values ts ON ts.id = t.status_id AND ts.code NOT IN ('completed', 'cancelled')
+  LEFT JOIN component_group_schedule_days d ON d.group_id = g.id AND d.is_deleted = FALSE AND d.weekday = DAYOFWEEK(t.scheduled_on) - 1
+  WHERE t.is_deleted = FALSE AND t.scheduled_on BETWEEN CURDATE() - INTERVAL 60 DAY AND CURDATE() + INTERVAL 1 DAY
+  ORDER BY t.scheduled_on, d.start_time, c.sort_order, t.sort_order;
 END$$
 
 CREATE PROCEDURE sp_mail_redirect_targets(IN p_tenant_id BIGINT UNSIGNED)

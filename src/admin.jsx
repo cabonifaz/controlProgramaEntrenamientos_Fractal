@@ -3300,7 +3300,8 @@ export function InstructorAttendancePanel({ session, topic, onBack, embedded = f
     try {
       await apiRequest(`/api/topics/${topic.id}/status`, {
         method: 'POST', token,
-        body: { statusCode, actualDate: statusCode === 'completed' ? new Date().toISOString().slice(0, 10) : null },
+        // Fecha real = la de la clase (si se marca despues), u hoy en hora local si se dicto antes.
+        body: { statusCode, actualDate: statusCode === 'completed' ? classActualDate(topic.scheduled_on) : null },
       })
       setTopicStatus(statusCode)
     } catch (err) {
@@ -4178,12 +4179,23 @@ export function ChangePasswordPanel({ session }) {
 // Banner de "proxima clase" para el instructor: lo primero que ve al
 // entrar, bien llamativo, con cuenta regresiva y boton directo a la
 // lista de asistencia (sin pasar por grupo -> temario).
+// Fecha local (no UTC: a las 19:00 de Lima en UTC ya es el dia siguiente).
+function localTodayIso() {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+function classActualDate(scheduledOn) {
+  const today = localTodayIso()
+  const day = scheduledOn ? String(scheduledOn).slice(0, 10) : ''
+  return day && day <= today ? day : today
+}
+
 function NextClassBanner({ session, onOpenAttendance }) {
   const { token } = session
   const { items: topics } = useList('/api/my/topics', token)
   const [, forceTick] = useState(0)
 
-  const todayIso = new Date().toISOString().slice(0, 10)
+  const todayIso = localTodayIso()
   const next = useMemo(() => {
     return topics
       .filter((t) => t.scheduled_on && t.scheduled_on >= todayIso && t.status_code !== 'completed' && t.status_code !== 'cancelled')
@@ -4230,7 +4242,10 @@ function NextClassBannerCard({ session, next, todayIso, scheduleDays, onOpenAtte
       const mins = Math.round((diffMs % 3600000) / 60000)
       countdownLabel = hours > 0 ? `Faltan ${hours}h ${mins}min` : `Faltan ${mins} min`
     } else {
-      countdownLabel = 'En curso o por comenzar'
+      const [eh, em] = (timeBlock.end_time || timeBlock.start_time).split(':').map(Number)
+      const classEnd = new Date(classDate)
+      classEnd.setHours(eh, em, 0, 0)
+      countdownLabel = new Date() >= classEnd ? 'Terminó · marca si completaste el tema' : 'En curso'
     }
   }
 

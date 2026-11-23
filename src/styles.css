@@ -1391,3 +1391,59 @@ p.sch-warn{margin:0 0 10px}
 .slack-actions button{min-height:40px}
 .slack-actions .link-danger{background:none;border:0;color:#b42318;font-weight:600;text-decoration:underline;cursor:pointer;padding:0 6px}
 @media (max-width:640px){.slack-fields{grid-template-columns:1fr}.slack-actions button{flex:1 1 auto}}
+
+/* Avisos al profesor: marcar temas dictados */
+.cc-stack{display:grid;gap:12px;margin:0 0 18px}
+.cc-alert{border-radius:12px;padding:16px 18px;border:2px solid transparent}
+.cc-alert h3{margin:0;font:600 17px 'Space Grotesk';line-height:1.3}
+.cc-alert p{margin:6px 0 0;font-size:14px;line-height:1.45}
+.cc-head{display:flex;align-items:center;gap:10px}
+.cc-live{background:linear-gradient(135deg,#063b55,#0b5274);color:#fff;border-color:#0b5274}
+.cc-live h3{color:#fff;margin-top:6px}.cc-live p{color:#dbeaf1}.cc-live strong{color:#fff}
+.cc-kicker{font-size:12px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;color:#ffd27a}
+.cc-live-dot{width:11px;height:11px;border-radius:50%;background:#ff4d4d;box-shadow:0 0 0 0 rgba(255,77,77,.7);animation:cc-pulse 1.4s infinite}
+.cc-pending{background:#fff4e5;border-color:#f59e0b;color:#4a2c00;animation:cc-glow 2.2s ease-in-out infinite}
+.cc-pending .cc-head{color:#b45309}.cc-pending h3{color:#7c2d12}
+.cc-hours{display:flex;gap:8px;align-items:flex-start;font-weight:600;color:#7c2d12 !important}
+.cc-hours svg{flex:none;margin-top:2px}
+.cc-delayed{background:#f5f7f9;border:1px solid var(--line);color:var(--ink)}
+.cc-delayed .cc-head{color:#52646d}.cc-delayed h3{font-size:15px;color:var(--deep)}
+.cc-list{list-style:none;margin:12px 0 0;padding:0;display:grid;gap:8px}
+.cc-row{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;background:#fff;border:1px solid #f1d5a8;border-radius:10px;padding:10px 12px}
+.cc-row.is-delayed{border-color:var(--line)}
+.cc-row-info{display:grid;gap:3px;min-width:0;flex:1 1 260px}
+.cc-row-info strong{font-size:14px;color:var(--deep)}
+.cc-row-info span{font-size:12.5px;color:#52646d}
+.cc-row-tag{color:#8a5200 !important}
+.cc-row-actions,.cc-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.cc-actions{margin-top:12px}
+.cc-yes,.cc-no,.cc-later{display:inline-flex;align-items:center;gap:6px;min-height:40px;padding:0 14px;border-radius:8px;font:inherit;font-size:13.5px;font-weight:700;cursor:pointer}
+.cc-yes{background:#15803d;color:#fff;border:1px solid #15803d}
+.cc-yes:hover{background:#166534}
+.cc-no{background:#fff;color:#7c2d12;border:1px solid #d6a46a}
+.cc-live .cc-no{background:transparent;color:#fff;border-color:#9cc3d2}
+.cc-yes:disabled,.cc-no:disabled{opacity:.6;cursor:wait}
+.cc-flash{display:flex;align-items:center;gap:8px;margin:0;padding:10px 12px;border-radius:8px;background:#e6f5ec;color:#14532d;font-size:13.5px;font-weight:600}
+.cc-flash button{margin-left:auto;background:none;border:0;color:#14532d;cursor:pointer;min-width:32px;min-height:32px}
+.cc-error{margin:8px 0 0;color:#b42318;font-size:13px}
+.cc-overlay{position:fixed;inset:0;z-index:60;background:rgba(6,30,44,.62);display:grid;place-items:center;padding:16px;overflow:auto}
+.cc-modal{position:relative;width:min(560px,100%);background:#fff;border-radius:16px;padding:26px 24px 20px;border-top:8px solid #f59e0b;box-shadow:0 24px 60px rgba(0,0,0,.35);animation:cc-pop .25s ease-out;color:var(--ink)}
+.cc-modal-start{border-top-color:#0b5274}
+.cc-modal h2{margin:10px 0 6px;font:600 21px 'Space Grotesk';color:var(--deep);line-height:1.25;padding-right:28px}
+.cc-modal-icon{width:56px;height:56px;border-radius:50%;display:grid;place-items:center;background:#fff4e5;color:#b45309;animation:cc-shake 1.6s ease-in-out 2}
+.cc-modal-start .cc-modal-icon{background:#e3f0f6;color:#0b5274;animation:none}
+.cc-modal-desc{margin:0;font-size:14.5px;line-height:1.5;color:#3d4f59}
+.cc-modal-desc strong{color:#7c2d12}.cc-modal-start .cc-modal-desc strong{color:var(--deep)}
+.cc-modal-live{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin:14px 0 0;padding:10px 12px;border-radius:10px;background:#f1f6f9;font-size:13.5px;color:#3d4f59}
+.cc-modal-sub{margin:16px 0 0;font-weight:700;color:#7c2d12;font-size:14px}
+.cc-modal .cc-list{max-height:46vh;overflow:auto}
+.cc-modal-foot{display:flex;justify-content:flex-end;margin-top:18px}
+.cc-later{background:#fff;color:#52646d;border:1px solid var(--line)}
+.cc-close{position:absolute;top:12px;right:12px;background:none;border:0;color:#52646d;cursor:pointer;min-width:40px;min-height:40px;border-radius:8px}
+.cc-close:hover{background:#f1f4f6}
+@keyframes cc-pulse{0%{box-shadow:0 0 0 0 rgba(255,77,77,.7)}70%{box-shadow:0 0 0 10px rgba(255,77,77,0)}100%{box-shadow:0 0 0 0 rgba(255,77,77,0)}}
+@keyframes cc-glow{0%,100%{box-shadow:0 0 0 0 rgba(245,158,11,0)}50%{box-shadow:0 0 0 6px rgba(245,158,11,.28)}}
+@keyframes cc-pop{from{transform:scale(.94);opacity:0}to{transform:scale(1);opacity:1}}
+@keyframes cc-shake{0%,100%{transform:rotate(0)}20%{transform:rotate(-12deg)}40%{transform:rotate(10deg)}60%{transform:rotate(-6deg)}80%{transform:rotate(4deg)}}
+@media (prefers-reduced-motion:reduce){.cc-live-dot,.cc-pending,.cc-modal,.cc-modal-icon{animation:none}}
+@media (max-width:640px){.cc-alert{padding:14px}.cc-row-actions{width:100%}.cc-row-actions button,.cc-actions .cc-yes,.cc-actions .cc-no{flex:1 1 auto;justify-content:center}.cc-modal{padding:22px 16px 16px}.cc-modal h2{font-size:19px}}

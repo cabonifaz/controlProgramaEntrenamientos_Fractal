@@ -22,6 +22,7 @@ import { registerSelfEnrollRoutes } from './selfEnroll.js'
 import { registerAdminDashboardRoutes } from './adminDashboard.js'
 import { registerClassReminderRoutes, startClassReminders } from './classReminders.js'
 import { registerSlackRoutes, startSlackReminders } from './slackReminders.js'
+import { registerClassCheckinRoutes } from './classCheckins.js'
 import { registerExternalApiRoutes } from './externalApi.js'
 import { registerExternalApiDocs } from './externalApiDocs.js'
 import { registerSupportRoutes } from './support.js'
@@ -288,6 +289,7 @@ registerSelfEnrollRoutes(app)
 registerAdminDashboardRoutes(app)
 registerClassReminderRoutes(app)
 registerSlackRoutes(app)
+registerClassCheckinRoutes(app)
 registerExternalApiRoutes(app)
 registerExternalApiDocs(app)
 registerSupportRoutes(app)
