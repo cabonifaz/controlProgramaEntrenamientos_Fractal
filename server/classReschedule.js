@@ -76,6 +76,43 @@ export function proposalsFrom(slots) {
   return out
 }
 
+// Fecha y hora escritas a mano. issues = no se puede (bloquea);
+// warnings = se puede, pero conviene revisarlo.
+export function checkCustomSlot({ ctx, rows, today, nowMinutes, date, start, end }) {
+  const issues = [], warnings = []
+  const pick = (k) => rows.filter((r) => r.kind === k).map((r) => ({ ...r, start: r.start_time, end: r.end_time }))
+  const slot = { start, end }
+  if (toMinutes(start) >= toMinutes(end)) issues.push('La hora de fin debe ser posterior a la de inicio.')
+  if (date < today || (date === today && toMinutes(start) <= nowMinutes)) issues.push('La fecha y hora ya pasaron.')
+  if (date === ctx.scheduled_on && start === ctx.start_time && end === ctx.end_time) issues.push('Es la misma fecha y hora que ya tiene la clase.')
+  if (rows.some((r) => r.kind === 'holiday' && r.d === date)) issues.push('Ese día es feriado.')
+  const day = pick('busy').filter((b) => b.d === date)
+  if (day.some((b) => Number(b.group_id) === Number(ctx.group_id))) issues.push('El grupo ya tiene otra clase ese día.')
+  if (day.some((b) => Number(b.same_instructor) === 1 && Number(b.group_id) !== Number(ctx.group_id))) issues.push(`${ctx.instructor_name || 'El profesor'} ya dicta otra clase ese día.`)
+  if (issues.length) return { issues, warnings }
+  const wd = weekdayOf(date)
+  const avail = pick('avail')
+  if (avail.length && !avail.some((a) => Number(a.weekday) === wd && covers(a, slot))) warnings.push(`Está fuera de la disponibilidad que registró ${ctx.instructor_name || 'el profesor'} para este programa.`)
+  const windows = pick('window')
+  if (windows.length && !windows.some((w) => Number(w.weekday) === wd && covers(w, slot))) warnings.push('Está fuera de los días y horas de clase del programa.')
+  const clash = day.filter((b) => Number(b.same_program) === 1 && b.start && b.end && overlaps(b, slot))
+  if (clash.length) warnings.push(`Se cruza con otra clase del programa a esa hora (${clash.map((b) => `${b.start}–${b.end}`).join(', ')}): alumnos inscritos en ambas no podrían asistir.`)
+  return { issues, warnings }
+}
+
+function nowMinutesIn(timeZone) {
+  const p = new Intl.DateTimeFormat('en-GB', { timeZone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date()).split(':').map(Number)
+  return p[0] * 60 + p[1]
+}
+
+async function checkCustom(req, topicId, { date, start, end }) {
+  const [ctx] = await callProcedure('sp_reschedule_topic_context', { ...actor(req), p_topic_id: topicId })
+  const tz = ctx.timezone || 'America/Lima'
+  const rows = await callProcedure('sp_reschedule_slot_data', { p_topic_id: topicId, p_from: date, p_to: date })
+  return checkCustomSlot({ ctx, rows: rows || [], today: localToday(tz), nowMinutes: nowMinutesIn(tz), date, start, end })
+}
+const MAX_DATE = (today) => addDays(today, 400)
+
 const actor = (req) => ({ p_actor_user_id: req.user.id, p_actor_role: req.user.roleCode, p_actor_tenant_id: req.user.tenantId })
 const fail = (res, err) => { const { status, message } = mapStoredProcedureError(err); res.status(status).json({ message }) }
 
@@ -160,18 +197,35 @@ export function registerClassRescheduleRoutes(app) {
     } catch (err) { fail(res, err) }
   })
 
+  // Verifica una fecha y hora escritas a mano (para mostrar avisos en pantalla).
+  app.post('/api/topics/:id/reschedule-check', authenticate, async (req, res) => {
+    const topicId = Number(req.params.id)
+    const { date, start, end } = req.body || {}
+    if (!Number.isInteger(topicId) || !DATE_RE.test(date || '') || !TIME_RE.test(start || '') || !TIME_RE.test(end || '') || date > MAX_DATE(localToday())) {
+      return res.status(400).json({ message: 'Invalid request format' })
+    }
+    try {
+      res.json({ data: await checkCustom(req, topicId, { date, start, end }) })
+    } catch (err) { fail(res, err) }
+  })
+
   // Crear: el profesor la aplica; el admin la aplica (apply) o la propone (propose).
   app.post('/api/topics/:id/reschedule-request', authenticate, async (req, res) => {
     const topicId = Number(req.params.id)
-    const { date, start, end, reason, mode } = req.body || {}
-    if (!Number.isInteger(topicId) || !DATE_RE.test(date || '') || !TIME_RE.test(start || '') || !TIME_RE.test(end || '')
+    const { date, start, end, reason, mode, custom } = req.body || {}
+    if (!Number.isInteger(topicId) || !DATE_RE.test(date || '') || date > MAX_DATE(localToday()) || !TIME_RE.test(start || '') || !TIME_RE.test(end || '')
       || !['apply', 'propose'].includes(mode) || (reason != null && (typeof reason !== 'string' || reason.length > 500))) {
       return res.status(400).json({ message: 'Invalid request format' })
     }
     if (req.user.roleCode === 'instructor' && mode !== 'apply') return res.status(403).json({ message: 'not_authorized' })
     try {
-      const { slots } = await loadOptions(req, topicId)
-      if (!slots.some((s) => sameSlot(s, { date, start, end }))) return res.status(409).json({ message: 'slot_not_available' })
+      if (custom === true) {
+        const { issues } = await checkCustom(req, topicId, { date, start, end })
+        if (issues.length) return res.status(409).json({ message: issues[0], issues })
+      } else {
+        const { slots } = await loadOptions(req, topicId)
+        if (!slots.some((s) => sameSlot(s, { date, start, end }))) return res.status(409).json({ message: 'slot_not_available' })
+      }
       const [r] = await callProcedure('sp_class_reschedule_create', { ...actor(req), p_topic_id: topicId, p_new_date: date, p_new_start: start, p_new_end: end, p_reason: reason || null, p_mode: mode })
       const requestId = Number(r.request_id)
       const notified = await notifyReschedule(requestId, mode === 'apply' ? 'applied' : 'proposed', req.user.id).catch((err) => { console.error('[reprogramar] avisos:', err.message); return null })
@@ -188,7 +242,7 @@ export function registerClassRescheduleRoutes(app) {
   // Confirmar una propuesta pendiente (la misma fecha u otra de las propuestas).
   app.post('/api/class-reschedules/:id/confirm', authenticate, async (req, res) => {
     const id = Number(req.params.id)
-    const { date, start, end } = req.body || {}
+    const { date, start, end, custom: manual } = req.body || {}
     const custom = date || start || end
     if (!Number.isInteger(id) || (custom && (!DATE_RE.test(date || '') || !TIME_RE.test(start || '') || !TIME_RE.test(end || '')))) {
       return res.status(400).json({ message: 'Invalid request format' })
@@ -197,9 +251,18 @@ export function registerClassRescheduleRoutes(app) {
       const [r] = await callProcedure('sp_class_reschedule_get', { p_request_id: id })
       if (!r) return res.status(404).json({ message: 'reschedule_not_found' })
       if (r.status !== 'pending') return res.status(409).json({ message: 'reschedule_not_pending' })
-      const { slots } = await loadOptions(req, Number(r.topic_id))
       const chosen = custom ? { date, start, end } : { date: r.new_date, start: r.new_start, end: r.new_end }
-      if (!slots.some((s) => sameSlot(s, chosen))) return res.status(409).json({ message: 'slot_not_available' })
+      if (manual === true && custom) {
+        const { issues } = await checkCustom(req, Number(r.topic_id), chosen)
+        if (issues.length) return res.status(409).json({ message: issues[0], issues })
+      } else {
+        // La propuesta guardada pudo ser manual: se valida como tal si no esta entre las sugeridas.
+        const { slots } = await loadOptions(req, Number(r.topic_id))
+        if (!slots.some((s) => sameSlot(s, chosen))) {
+          const { issues } = await checkCustom(req, Number(r.topic_id), chosen)
+          if (issues.length) return res.status(409).json({ message: issues[0], issues })
+        }
+      }
       await callProcedure('sp_class_reschedule_confirm', { ...actor(req), p_request_id: id, p_new_date: chosen.date, p_new_start: chosen.start, p_new_end: chosen.end })
       const notified = await notifyReschedule(id, 'applied', req.user.id).catch((err) => { console.error('[reprogramar] avisos:', err.message); return null })
       res.json({ data: { ok: true, notified } })
