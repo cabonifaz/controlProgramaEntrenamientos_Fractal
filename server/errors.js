@@ -82,6 +82,11 @@ const STATUS_BY_SP_MESSAGE = {
   topic_has_activity: 409,
   invalid_direction: 400,
   slack_webhook_required: 400,
+  topic_not_reschedulable: 409,
+  invalid_reschedule: 400,
+  reschedule_not_found: 404,
+  reschedule_not_pending: 409,
+  group_has_class_that_day: 409,
 }
 
 // Los procedimientos almacenados comunican decisiones de negocio con

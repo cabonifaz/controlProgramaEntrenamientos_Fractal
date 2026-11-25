@@ -73,6 +73,7 @@ async function main() {
     await connection.query('CALL sp_migrate_program_type_v1()')
     await connection.query('CALL sp_migrate_schedule_close_v1()')
     await connection.query('CALL sp_migrate_class_reminders_v1()')
+    await connection.query('CALL sp_migrate_class_reschedule_v1()')
 
     console.log('Schema applied successfully.')
   } finally {

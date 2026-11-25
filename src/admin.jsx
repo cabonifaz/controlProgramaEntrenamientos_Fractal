@@ -6,6 +6,7 @@ import { formatDay } from './progress.jsx'
 import { ClassroomPanel, JoinButton } from './classroom.jsx'
 import { AiMaterialGenerator } from './aiMaterial.jsx'
 import { TopicsEditor } from './topicsEditor.jsx'
+import { RescheduleButton } from './reschedule.jsx'
 import { buildMaterialPrompt, DEFAULT_PROMPT_OPTIONS, MATERIAL_LEVELS, SKILL_NAME, suggestedBatchSize } from './materialPrompt'
 import { BANNER_STYLES, buildBannerPrompt, DEFAULT_BANNER_OPTIONS } from './bannerPrompt'
 import { DEFAULT_ACCENT, PALETTE_PRESETS, readableTextOn, resolvePalette } from './palette'
@@ -4227,7 +4228,8 @@ function NextClassBannerCard({ session, next, todayIso, scheduleDays, onOpenAtte
   }, [next.id, session.token, version])
 
   const weekday = new Date(`${next.scheduled_on}T00:00:00Z`).getUTCDay()
-  const timeBlock = scheduleDays.find((d) => d.weekday === weekday)
+  // Una clase reprogramada tiene su propia hora.
+  const timeBlock = next.class_start ? { start_time: next.class_start, end_time: next.class_end } : scheduleDays.find((d) => d.weekday === weekday)
   const daysUntil = Math.round((new Date(`${next.scheduled_on}T00:00:00Z`) - new Date(`${todayIso}T00:00:00Z`)) / 86400000)
   const whenLabel = daysUntil === 0 ? 'Hoy' : daysUntil === 1 ? 'Mañana' : `En ${daysUntil} días`
 
@@ -4265,6 +4267,7 @@ function NextClassBannerCard({ session, next, todayIso, scheduleDays, onOpenAtte
         {meetingUrl ? <JoinButton url={meetingUrl} /> : <button type="button" className="secondary next-class-add" onClick={() => setClassOpen(true)}>Agregar link de la reunión</button>}
         <button className="primary" onClick={() => onOpenAttendance(next)}>Ver lista de asistencia</button>
         {meetingUrl && <button type="button" className="text-button next-class-edit" onClick={() => setClassOpen(true)}>Clase y materiales</button>}
+        <RescheduleButton session={session} topicId={next.id} className="secondary next-class-add" label="No puedo dar esta clase" onDone={() => window.location.reload()} />
       </div>
     </section>
     {classOpen && (

@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import { ArrowDown, ArrowUp, Pencil, Plus, Trash2 } from 'lucide-react'
+import { RescheduleButton, ReschedulesAdminPanel } from './reschedule.jsx'
 import { apiRequest } from './api'
 import { ErrorNote } from './admin.jsx'
 import { formatDay, programOptionLabel, withPeriod } from './progress.jsx'
@@ -145,6 +146,7 @@ export function TopicsEditor({ session, group, heading }) {
                         <button type="button" className="te-icon" onClick={() => move(t, 'up')} disabled={i === 0 || busy !== ''} aria-label={`Subir ${t.title}`} title="Subir"><ArrowUp size={16} aria-hidden="true" /></button>
                         <button type="button" className="te-icon" onClick={() => move(t, 'down')} disabled={i === topics.length - 1 || busy !== ''} aria-label={`Bajar ${t.title}`} title="Bajar"><ArrowDown size={16} aria-hidden="true" /></button>
                         <button type="button" className="te-icon" onClick={() => setEditing({ original: t, title: t.title, description: t.description || '', scheduledOn: isoDay(t.scheduled_on), statusCode: t.status_code })} disabled={busy !== ''} aria-label={`Editar ${t.title}`} title="Editar"><Pencil size={16} aria-hidden="true" /></button>
+                        {!done && t.status_code !== 'cancelled' && t.scheduled_on && <RescheduleButton session={session} topicId={t.id} className="te-icon te-resched" label="Reprogramar" onDone={load} />}
                         <button type="button" className="te-icon danger" onClick={() => remove(t)} disabled={busy !== '' || done} aria-label={`Quitar ${t.title}`} title={done ? 'Ya se dictó: no se puede quitar' : 'Quitar'}><Trash2 size={16} aria-hidden="true" /></button>
                       </div>
                     </>
@@ -205,6 +207,7 @@ export function TopicsAdminPanel({ session }) {
 
   return (
     <div className="admin-wrap">
+      <ReschedulesAdminPanel session={session} />
       <section className="panel te-panel">
         <h2 className="te-title">Temarios</h2>
         <p className="muted">Agrega, edita, ordena o quita los temas de cada componente. También puedes cargarlos con Excel desde Programas.</p>

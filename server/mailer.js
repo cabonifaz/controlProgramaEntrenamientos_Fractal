@@ -151,3 +151,42 @@ ${appUrl ? `<p style="margin:20px 0 20px"><a href="${esc(appUrl)}" style="displa
   const text = `${hello}\n\n${lead}\n\n${classes.map((c) => `- ${time(c)} · ${c.title} (${c.componentName}, ${c.programName})${c.role === 'instructor' ? ' · Tú dictas' : ''}${c.meetingUrl ? `\n  Unirse: ${c.meetingUrl}` : ''}`).join('\n')}\n\n${tip}${appUrl ? `\n\n${appUrl}` : ''}`
   return { subject, html, text }
 }
+
+// Cambio de fecha de una clase. kind: 'applied' (la clase ya se movio),
+// 'proposed' (al profesor: confirmar la nueva fecha), 'rejected' (a los
+// admins: el profesor no acepto). r: datos de sp_class_reschedule_get.
+export function classRescheduleEmail({ kind, fullName, role, r, appUrl, oldLabel, newLabel }) {
+  const org = r.tenant_name || 'Fractal'
+  const color = HEX.test(r.brand_color || '') ? r.brand_color : '#06425e'
+  const hello = fullName ? `Hola ${fullName},` : 'Hola,'
+  const time = (s, e) => (s ? `${s}${e ? `–${e}` : ''}` : '')
+  const oldWhen = `${oldLabel}${r.old_start ? `, ${time(r.old_start, r.old_end)}` : ''}`
+  const newWhen = `${newLabel}, ${time(r.new_start, r.new_end)}`
+  const title = kind === 'proposed' ? 'Confirma la nueva fecha de tu clase' : kind === 'rejected' ? 'El profesor no aceptó la nueva fecha' : 'Tu clase cambió de fecha'
+  const subject = kind === 'proposed' ? `Confirma la nueva fecha: ${r.title} · ${org}` : kind === 'rejected' ? `Reprogramación no aceptada: ${r.title}` : `Clase reprogramada: ${r.title} → ${newLabel}`
+  const lead = kind === 'proposed'
+    ? `Se propone mover tu clase “${r.title}” a una nueva fecha que coincide con tu disponibilidad. Entra a la app para confirmarla o elegir otra.`
+    : kind === 'rejected'
+      ? `${r.instructor_name || 'El profesor'} no aceptó mover la clase “${r.title}”. Revisa la reprogramación en la app.`
+      : role === 'instructor' ? `Tu clase “${r.title}” se movió a una nueva fecha.` : `La clase “${r.title}” se movió a una nueva fecha.`
+  const reason = r.reason ? `<p style="margin:0 0 16px;font-size:14px;color:#5d6b74">Motivo: ${esc(r.reason)}</p>` : ''
+  const html = `<!doctype html><html lang="es"><body style="margin:0;background:#f5f7f8;font-family:Arial,Helvetica,sans-serif;color:#17232d">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f5f7f8;padding:24px 12px"><tr><td align="center">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#ffffff;border-radius:12px;border:1px solid #dfe6e9">
+<tr><td style="padding:28px 28px 8px"><p style="margin:0 0 4px;font-size:12px;letter-spacing:1px;text-transform:uppercase;color:#5d6b74">${esc(org)} · Training</p>
+<h1 style="margin:0;font-size:22px;color:#06425e">${esc(title)}</h1></td></tr>
+<tr><td style="padding:12px 28px 4px;font-size:15px;line-height:1.55"><p style="margin:0 0 12px">${esc(hello)}</p><p style="margin:0 0 16px">${esc(lead)}</p>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 16px;font-size:14px">
+<tr><td style="padding:8px 0;color:#5d6b74;width:120px">Clase</td><td style="padding:8px 0;font-weight:bold">${esc(r.title)}<div style="font-weight:normal;color:#5d6b74">${esc(r.component_name)} · ${esc(r.program_name)}</div></td></tr>
+<tr><td style="padding:8px 0;color:#5d6b74;border-top:1px solid #dfe6e9">Antes</td><td style="padding:8px 0;border-top:1px solid #dfe6e9;text-decoration:line-through;color:#5d6b74">${esc(oldWhen)}</td></tr>
+<tr><td style="padding:8px 0;color:#5d6b74;border-top:1px solid #dfe6e9">${kind === 'applied' ? 'Nueva fecha' : 'Propuesta'}</td><td style="padding:8px 0;border-top:1px solid #dfe6e9;font-weight:bold;color:#06425e">${esc(newWhen)}</td></tr>
+${r.instructor_name ? `<tr><td style="padding:8px 0;color:#5d6b74;border-top:1px solid #dfe6e9">Profesor</td><td style="padding:8px 0;border-top:1px solid #dfe6e9">${esc(r.instructor_name)}</td></tr>` : ''}
+</table>${reason}
+${kind === 'applied' && r.meeting_url ? `<p style="margin:0 0 12px"><a href="${esc(r.meeting_url)}" style="color:#06425e;font-weight:bold;text-decoration:underline">Enlace para unirse a la clase</a></p>` : ''}
+${appUrl ? `<p style="margin:8px 0 20px"><a href="${esc(appUrl)}" style="display:inline-block;background:${color};color:${textOn(color)};text-decoration:none;font-weight:bold;padding:12px 22px;border-radius:8px">${kind === 'proposed' ? 'Confirmar en la app' : 'Abrir la app'}</a></p>` : ''}
+</td></tr>
+<tr><td style="padding:16px 28px 24px;border-top:1px solid #dfe6e9;font-size:12px;color:#5d6b74">Recibes este aviso porque participas en un programa de ${esc(org)}. Las horas están en hora de Perú.</td></tr>
+</table></td></tr></table></body></html>`
+  const text = `${hello}\n\n${lead}\n\nClase: ${r.title} (${r.component_name}, ${r.program_name})\nAntes: ${oldWhen}\n${kind === 'applied' ? 'Nueva fecha' : 'Propuesta'}: ${newWhen}${r.reason ? `\nMotivo: ${r.reason}` : ''}${appUrl ? `\n\n${appUrl}` : ''}`
+  return { subject, html, text }
+}

@@ -4,6 +4,7 @@ import { apiRequest } from './api'
 import { ErrorNote, InstructorAttendancePanel, MaterialViewer, Modal } from './admin.jsx'
 import { ReactionBreakdown, ReactionChip, ReactionPicker, aggregate, canReact, useReactionSummary } from './satisfaction.jsx'
 import { InstructorAbsenceNotice, useMyInstructorAbsences } from './indicators.jsx'
+import { RescheduleButton } from './reschedule.jsx'
 import { ClassroomPanel } from './classroom.jsx'
 
 // Vista "Avance": kanban de componentes del programa y, al entrar a uno,
@@ -309,6 +310,9 @@ function TopicDetail({ session, topic, component, group, today, isStudent, react
         <SessionAttendance session={session} topic={topic} isStudent={isStudent} onRegister={isStudent ? null : onRegister} />
         {isStudent ? <ReactionPicker token={session.token} topic={topic} today={today} /> : (reaction || canReact(topic, today)) && <ReactionBreakdown summary={reaction} />}
         {session.role === 'instructor' && <InstructorAbsenceNotice token={session.token} topic={topic} today={today} absence={absence} onChanged={onAbsenceChanged} />}
+        {!isStudent && topic.column !== 'completed' && topic.statusCode !== 'cancelled' && topic.scheduledOn && (
+          <div className="pg-resched"><RescheduleButton session={session} topicId={topic.id} label={session.role === 'instructor' ? 'No puedo dar esta clase: reprogramar' : 'Reprogramar clase'} onDone={onClose} /></div>
+        )}
         <div className="pg-detail-actions">
           {topic.hasMaterial
             ? <button type="button" className="primary" onClick={onOpenMaterial}><BookOpen size={16} aria-hidden="true" /> Abrir contenido del tema</button>

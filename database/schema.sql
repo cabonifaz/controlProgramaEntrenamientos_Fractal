@@ -386,6 +386,36 @@ CREATE TABLE IF NOT EXISTS program_slack_channels (
   CONSTRAINT fk_psc_program FOREIGN KEY (program_id) REFERENCES training_programs(id)
 );
 
+-- Reprogramacion de una clase (tema) a otra fecha y hora. La propone el
+-- profesor (se aplica al aceptar) o el admin (la confirma el admin o el
+-- profesor). La clase reprogramada guarda su propia hora en topics.class_start
+-- / class_end porque puede caer en un dia sin horario semanal del grupo.
+CREATE TABLE IF NOT EXISTS class_reschedules (
+  id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+  tenant_id BIGINT UNSIGNED NULL,
+  topic_id BIGINT UNSIGNED NOT NULL,
+  group_id BIGINT UNSIGNED NOT NULL,
+  instructor_id BIGINT UNSIGNED NULL,
+  status VARCHAR(20) NOT NULL,
+  reason VARCHAR(500) NULL,
+  old_date DATE NULL,
+  old_start TIME NULL,
+  old_end TIME NULL,
+  new_date DATE NOT NULL,
+  new_start TIME NOT NULL,
+  new_end TIME NOT NULL,
+  requested_by BIGINT UNSIGNED NULL,
+  requested_role VARCHAR(40) NOT NULL,
+  resolved_at DATETIME NULL,
+  resolved_by BIGINT UNSIGNED NULL,
+  resolution_note VARCHAR(300) NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY ix_resched_topic (topic_id, status),
+  KEY ix_resched_tenant (tenant_id, status),
+  CONSTRAINT fk_resched_topic FOREIGN KEY (topic_id) REFERENCES topics(id),
+  CONSTRAINT chk_resched_status CHECK (status IN ('pending', 'applied', 'rejected', 'withdrawn', 'superseded'))
+);
+
 CREATE TABLE IF NOT EXISTS slack_reminders (
   id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
   program_id BIGINT UNSIGNED NOT NULL,
@@ -946,6 +976,17 @@ DROP PROCEDURE IF EXISTS sp_slack_reminders_claim;
 DROP PROCEDURE IF EXISTS sp_slack_reminders_release;
 DROP PROCEDURE IF EXISTS sp_program_slack_result;
 DROP PROCEDURE IF EXISTS sp_instructor_class_checkins;
+DROP PROCEDURE IF EXISTS sp_migrate_class_reschedule_v1;
+DROP PROCEDURE IF EXISTS sp_reschedule_topic_context;
+DROP PROCEDURE IF EXISTS sp_reschedule_slot_data;
+DROP PROCEDURE IF EXISTS sp_class_reschedule_create;
+DROP PROCEDURE IF EXISTS sp_class_reschedule_confirm;
+DROP PROCEDURE IF EXISTS sp_class_reschedule_cancel;
+DROP PROCEDURE IF EXISTS sp_class_reschedule_list;
+DROP PROCEDURE IF EXISTS sp_class_reschedule_get;
+DROP PROCEDURE IF EXISTS sp_class_reschedule_recipients;
+DROP PROCEDURE IF EXISTS sp_class_reschedule_alerts;
+DROP PROCEDURE IF EXISTS sp_program_slack_channel;
 DROP PROCEDURE IF EXISTS sp_topics_update;
 DROP PROCEDURE IF EXISTS sp_topics_delete;
 DROP PROCEDURE IF EXISTS sp_topics_move;
@@ -2730,7 +2771,7 @@ BEGIN
   WHERE c.code = 'TOPIC_STATUS' AND v.code = 'rescheduled';
 
   UPDATE topics
-  SET scheduled_on = p_new_date, status_id = v_rescheduled_status_id, updated_at = NOW(), updated_by = p_actor_user_id
+  SET scheduled_on = p_new_date, class_start = NULL, class_end = NULL, status_id = v_rescheduled_status_id, updated_at = NOW(), updated_by = p_actor_user_id
   WHERE id = p_topic_id;
 END$$
 
@@ -3804,6 +3845,7 @@ BEGIN
   END IF;
 
   SELECT t.id, t.title, t.scheduled_on, t.duration_minutes, ts.code AS status_code, ts.label AS status_label,
+         TIME_FORMAT(t.class_start, '%H:%i') AS class_start, TIME_FORMAT(t.class_end, '%H:%i') AS class_end,
          g.id AS group_id, g.name AS group_name,
          c.id AS component_id, c.name AS component_name,
          p.id AS program_id, p.name AS program_name,
@@ -4813,7 +4855,7 @@ BEGIN
          g.meeting_url AS group_meeting_url, t.recording_url, t.class_notes,
          (SELECT COUNT(*) FROM topic_resources tr WHERE tr.topic_id = t.id AND tr.is_deleted = FALSE) AS resource_count,
          ts.code AS status_code, ts.label AS status_label,
-         sd.start_time, sd.end_time,
+         COALESCE(t.class_start, sd.start_time) AS start_time, COALESCE(t.class_end, sd.end_time) AS end_time,
          -- Asistencia de la sesion: conteos del grupo para admins/instructor;
          -- el alumno solo recibe su propio registro.
          IF(p_actor_role = 'student', NULL,
@@ -5885,7 +5927,7 @@ BEGIN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
   END IF;
   SET v_tenant = IF(p_actor_role = 'super_admin', p_tenant_filter, p_actor_tenant_id);
-  SELECT t.id AS topic_id, t.title, t.scheduled_on, TIME_FORMAT(d.start_time, '%H:%i') AS start_time, TIME_FORMAT(d.end_time, '%H:%i') AS end_time,
+  SELECT t.id AS topic_id, t.title, t.scheduled_on, TIME_FORMAT(COALESCE(t.class_start, d.start_time), '%H:%i') AS start_time, TIME_FORMAT(COALESCE(t.class_end, d.end_time), '%H:%i') AS end_time,
          g.id AS group_id, g.name AS group_name, c.name AS component_name, p.name AS program_name, tn.name AS tenant_name,
          iu.full_name AS instructor_name,
          (SELECT COUNT(*) FROM group_enrollments ge WHERE ge.group_id = g.id AND ge.is_deleted = FALSE AND EXISTS (SELECT 1 FROM users ux WHERE ux.id = ge.student_id AND ux.is_active = TRUE AND ux.is_deleted = FALSE)) AS enrolled
@@ -6120,7 +6162,7 @@ BEGIN
   UPDATE topics t
   JOIN tmp_plan_topics tt ON tt.topic_id = t.id
   JOIN tmp_plan_dates pd ON pd.group_id = tt.group_id AND pd.pos = tt.pos
-  SET t.scheduled_on = pd.d, t.status_id = v_scheduled_status_id, t.updated_at = NOW(), t.updated_by = p_actor_user_id;
+  SET t.scheduled_on = pd.d, t.class_start = NULL, t.class_end = NULL, t.status_id = v_scheduled_status_id, t.updated_at = NOW(), t.updated_by = p_actor_user_id;
 
   -- Cada fecha debe caer en un dia del horario semanal del grupo.
   SELECT COUNT(*) INTO v_count FROM tmp_plan_topics tt JOIN topics t ON t.id = tt.topic_id
@@ -6856,9 +6898,9 @@ BEGIN
   SELECT x.* FROM (
     SELECT t.id AS topic_id, u.id AS user_id, u.full_name, u.email, 'student' AS recipient_role,
            t.title, c.name AS component_name, p.name AS program_name, g.name AS group_name,
-           TIME_FORMAT(d.start_time, '%H:%i') AS start_time, TIME_FORMAT(d.end_time, '%H:%i') AS end_time,
+           TIME_FORMAT(COALESCE(t.class_start, d.start_time), '%H:%i') AS start_time, TIME_FORMAT(COALESCE(t.class_end, d.end_time), '%H:%i') AS end_time,
            COALESCE(NULLIF(t.meeting_url, ''), NULLIF(g.meeting_url, '')) AS meeting_url,
-           iu.full_name AS instructor_name, d.start_time AS sort_time, c.sort_order
+           iu.full_name AS instructor_name, COALESCE(t.class_start, d.start_time) AS sort_time, c.sort_order
     FROM topics t
     JOIN component_groups g ON g.id = t.group_id AND g.is_deleted = FALSE
     JOIN components c ON c.id = g.component_id AND c.is_deleted = FALSE
@@ -6873,9 +6915,9 @@ BEGIN
     UNION ALL
     SELECT t.id AS topic_id, u.id AS user_id, u.full_name, u.email, 'instructor' AS recipient_role,
            t.title, c.name AS component_name, p.name AS program_name, g.name AS group_name,
-           TIME_FORMAT(d.start_time, '%H:%i') AS start_time, TIME_FORMAT(d.end_time, '%H:%i') AS end_time,
+           TIME_FORMAT(COALESCE(t.class_start, d.start_time), '%H:%i') AS start_time, TIME_FORMAT(COALESCE(t.class_end, d.end_time), '%H:%i') AS end_time,
            COALESCE(NULLIF(t.meeting_url, ''), NULLIF(g.meeting_url, '')) AS meeting_url,
-           iu.full_name AS instructor_name, d.start_time AS sort_time, c.sort_order
+           iu.full_name AS instructor_name, COALESCE(t.class_start, d.start_time) AS sort_time, c.sort_order
     FROM topics t
     JOIN component_groups g ON g.id = t.group_id AND g.is_deleted = FALSE
     JOIN components c ON c.id = g.component_id AND c.is_deleted = FALSE
@@ -7010,17 +7052,17 @@ END$$
 CREATE PROCEDURE sp_slack_classes_due(IN p_program_id BIGINT UNSIGNED, IN p_date DATE, IN p_kind VARCHAR(10))
 BEGIN
   SELECT t.id AS topic_id, t.title, c.name AS component_name, g.name AS group_name, iu.full_name AS instructor_name,
-         TIME_FORMAT(d.start_time, '%H:%i') AS start_time, TIME_FORMAT(d.end_time, '%H:%i') AS end_time,
+         TIME_FORMAT(COALESCE(t.class_start, d.start_time), '%H:%i') AS start_time, TIME_FORMAT(COALESCE(t.class_end, d.end_time), '%H:%i') AS end_time,
          COALESCE(NULLIF(t.meeting_url, ''), NULLIF(g.meeting_url, '')) AS meeting_url
   FROM topics t
   JOIN component_groups g ON g.id = t.group_id AND g.is_deleted = FALSE
   JOIN components c ON c.id = g.component_id AND c.is_deleted = FALSE AND c.program_id = p_program_id
   JOIN master_catalog_values ts ON ts.id = t.status_id AND ts.code NOT IN ('completed', 'cancelled')
-  JOIN component_group_schedule_days d ON d.group_id = g.id AND d.is_deleted = FALSE AND d.weekday = DAYOFWEEK(t.scheduled_on) - 1
+  LEFT JOIN component_group_schedule_days d ON d.group_id = g.id AND d.is_deleted = FALSE AND d.weekday = DAYOFWEEK(t.scheduled_on) - 1
   LEFT JOIN users iu ON iu.id = g.instructor_id
-  WHERE t.is_deleted = FALSE AND t.scheduled_on = p_date
+  WHERE t.is_deleted = FALSE AND t.scheduled_on = p_date AND COALESCE(t.class_start, d.start_time) IS NOT NULL
     AND NOT EXISTS (SELECT 1 FROM slack_reminders r WHERE r.topic_id = t.id AND r.kind = p_kind AND r.class_date = p_date)
-  ORDER BY d.start_time, c.sort_order, t.sort_order;
+  ORDER BY COALESCE(t.class_start, d.start_time), c.sort_order, t.sort_order;
 END$$
 
 CREATE PROCEDURE sp_slack_reminders_claim(IN p_program_id BIGINT UNSIGNED, IN p_topic_id BIGINT UNSIGNED, IN p_kind VARCHAR(10), IN p_date DATE)
@@ -7042,6 +7084,336 @@ BEGIN
   WHERE program_id = p_program_id;
 END$$
 
+-- Columnas propias de la clase reprogramada.
+CREATE PROCEDURE sp_migrate_class_reschedule_v1()
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'topics' AND column_name = 'class_start') THEN
+    ALTER TABLE topics ADD COLUMN class_start TIME NULL AFTER scheduled_on, ADD COLUMN class_end TIME NULL AFTER class_start;
+  END IF;
+END$$
+
+-- Datos de la clase a reprogramar, con permisos: el profesor solo sus clases;
+-- el admin las de su tenant.
+CREATE PROCEDURE sp_reschedule_topic_context(IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED, IN p_topic_id BIGINT UNSIGNED)
+BEGIN
+  DECLARE v_tenant_id BIGINT UNSIGNED;
+  DECLARE v_instructor_id BIGINT UNSIGNED;
+  DECLARE v_status VARCHAR(40);
+  SELECT p.tenant_id, g.instructor_id, ts.code INTO v_tenant_id, v_instructor_id, v_status
+  FROM topics t
+  JOIN component_groups g ON g.id = t.group_id AND g.is_deleted = FALSE
+  JOIN components c ON c.id = g.component_id AND c.is_deleted = FALSE
+  JOIN training_programs p ON p.id = c.program_id AND p.is_deleted = FALSE
+  JOIN master_catalog_values ts ON ts.id = t.status_id
+  WHERE t.id = p_topic_id AND t.is_deleted = FALSE;
+  IF v_tenant_id IS NULL THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'topic_not_found';
+  END IF;
+  IF p_actor_role = 'instructor' AND NOT (v_instructor_id <=> p_actor_user_id) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  ELSEIF p_actor_role = 'tenant_admin' AND NOT (v_tenant_id <=> p_actor_tenant_id) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
+  ELSEIF p_actor_role NOT IN ('instructor', 'tenant_admin', 'super_admin') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+  IF v_status IN ('completed', 'cancelled') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'topic_not_reschedulable';
+  END IF;
+  SELECT t.id AS topic_id, t.title, ts.code AS status_code, DATE_FORMAT(t.scheduled_on, '%Y-%m-%d') AS scheduled_on,
+         TIME_FORMAT(COALESCE(t.class_start, d.start_time), '%H:%i') AS start_time, TIME_FORMAT(COALESCE(t.class_end, d.end_time), '%H:%i') AS end_time,
+         t.duration_minutes, g.id AS group_id, g.name AS group_name, c.id AS component_id, c.name AS component_name,
+         p.id AS program_id, p.name AS program_name, DATE_FORMAT(p.ends_on, '%Y-%m-%d') AS program_ends_on,
+         g.instructor_id, iu.full_name AS instructor_name, iu.email AS instructor_email,
+         tn.id AS tenant_id, tn.name AS tenant_name, tn.slug AS tenant_slug, tn.timezone, tn.brand_color,
+         COALESCE(NULLIF(t.meeting_url, ''), NULLIF(g.meeting_url, '')) AS meeting_url,
+         (SELECT r.id FROM class_reschedules r WHERE r.topic_id = t.id AND r.status = 'pending' ORDER BY r.id DESC LIMIT 1) AS pending_id
+  FROM topics t
+  JOIN component_groups g ON g.id = t.group_id
+  JOIN components c ON c.id = g.component_id
+  JOIN training_programs p ON p.id = c.program_id
+  JOIN tenants tn ON tn.id = p.tenant_id
+  JOIN master_catalog_values ts ON ts.id = t.status_id
+  LEFT JOIN users iu ON iu.id = g.instructor_id
+  LEFT JOIN component_group_schedule_days d ON d.group_id = g.id AND d.is_deleted = FALSE AND d.weekday = DAYOFWEEK(t.scheduled_on) - 1
+  WHERE t.id = p_topic_id;
+END$$
+
+-- Todo lo necesario para proponer fechas, en una sola lista:
+--  window: franjas de clase del programa (o el horario del grupo si no hay);
+--  avail: disponibilidad del profesor en el programa;
+--  holiday: feriados; busy: clases del programa o del profesor en el rango.
+CREATE PROCEDURE sp_reschedule_slot_data(IN p_topic_id BIGINT UNSIGNED, IN p_from DATE, IN p_to DATE)
+BEGIN
+  DECLARE v_program_id BIGINT UNSIGNED;
+  DECLARE v_group_id BIGINT UNSIGNED;
+  DECLARE v_instructor_id BIGINT UNSIGNED;
+  DECLARE v_tenant_id BIGINT UNSIGNED;
+  SELECT c.program_id, g.id, g.instructor_id, p.tenant_id INTO v_program_id, v_group_id, v_instructor_id, v_tenant_id
+  FROM topics t JOIN component_groups g ON g.id = t.group_id JOIN components c ON c.id = g.component_id JOIN training_programs p ON p.id = c.program_id
+  WHERE t.id = p_topic_id;
+
+  SELECT 'window' AS kind, w.weekday, NULL AS d, TIME_FORMAT(w.start_time, '%H:%i') AS start_time, TIME_FORMAT(w.end_time, '%H:%i') AS end_time,
+         NULL AS group_id, FALSE AS same_instructor, TRUE AS same_program
+  FROM program_schedule_windows w WHERE w.program_id = v_program_id
+  UNION ALL
+  SELECT 'group_day', sd.weekday, NULL, TIME_FORMAT(sd.start_time, '%H:%i'), TIME_FORMAT(sd.end_time, '%H:%i'), sd.group_id, TRUE, TRUE
+  FROM component_group_schedule_days sd WHERE sd.group_id = v_group_id AND sd.is_deleted = FALSE
+  UNION ALL
+  SELECT 'avail', a.weekday, NULL, TIME_FORMAT(a.start_time, '%H:%i'), TIME_FORMAT(a.end_time, '%H:%i'), NULL, TRUE, TRUE
+  FROM instructor_availability a WHERE a.instructor_id = v_instructor_id AND a.program_id = v_program_id
+  UNION ALL
+  SELECT 'holiday', NULL, DATE_FORMAT(h.holiday_on, '%Y-%m-%d'), NULL, NULL, NULL, FALSE, FALSE
+  FROM holidays h WHERE h.tenant_id = v_tenant_id AND h.is_deleted = FALSE AND h.holiday_on BETWEEN p_from AND p_to
+  UNION ALL
+  SELECT 'busy', NULL, DATE_FORMAT(t.scheduled_on, '%Y-%m-%d'),
+         TIME_FORMAT(COALESCE(t.class_start, d.start_time), '%H:%i'), TIME_FORMAT(COALESCE(t.class_end, d.end_time), '%H:%i'),
+         g.id, (g.instructor_id <=> v_instructor_id), (c.program_id = v_program_id)
+  FROM topics t
+  JOIN component_groups g ON g.id = t.group_id AND g.is_deleted = FALSE
+  JOIN components c ON c.id = g.component_id AND c.is_deleted = FALSE
+  JOIN training_programs p ON p.id = c.program_id AND p.is_deleted = FALSE
+  JOIN master_catalog_values ps ON ps.id = p.status_id AND ps.code IN ('draft', 'active', 'paused')
+  JOIN master_catalog_values ts ON ts.id = t.status_id AND ts.code <> 'cancelled'
+  LEFT JOIN component_group_schedule_days d ON d.group_id = g.id AND d.is_deleted = FALSE AND d.weekday = DAYOFWEEK(t.scheduled_on) - 1
+  WHERE t.is_deleted = FALSE AND t.id <> p_topic_id AND t.scheduled_on BETWEEN p_from AND p_to
+    AND (c.program_id = v_program_id OR g.instructor_id <=> v_instructor_id);
+END$$
+
+-- Crea una reprogramacion. p_mode 'apply' la aplica de inmediato (profesor o
+-- admin); 'propose' (solo admin) la deja pendiente de confirmacion.
+CREATE PROCEDURE sp_class_reschedule_create(IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED, IN p_topic_id BIGINT UNSIGNED,
+  IN p_new_date DATE, IN p_new_start TIME, IN p_new_end TIME, IN p_reason VARCHAR(500), IN p_mode VARCHAR(10))
+BEGIN
+  DECLARE v_tenant_id BIGINT UNSIGNED;
+  DECLARE v_group_id BIGINT UNSIGNED;
+  DECLARE v_instructor_id BIGINT UNSIGNED;
+  DECLARE v_old_date DATE;
+  DECLARE v_old_start TIME;
+  DECLARE v_old_end TIME;
+  DECLARE v_status VARCHAR(40);
+  DECLARE v_id BIGINT UNSIGNED;
+  DECLARE EXIT HANDLER FOR SQLEXCEPTION BEGIN ROLLBACK; RESIGNAL; END;
+  SELECT p.tenant_id, g.id, g.instructor_id, t.scheduled_on, COALESCE(t.class_start, d.start_time), COALESCE(t.class_end, d.end_time), ts.code
+    INTO v_tenant_id, v_group_id, v_instructor_id, v_old_date, v_old_start, v_old_end, v_status
+  FROM topics t
+  JOIN component_groups g ON g.id = t.group_id AND g.is_deleted = FALSE
+  JOIN components c ON c.id = g.component_id
+  JOIN training_programs p ON p.id = c.program_id
+  JOIN master_catalog_values ts ON ts.id = t.status_id
+  LEFT JOIN component_group_schedule_days d ON d.group_id = g.id AND d.is_deleted = FALSE AND d.weekday = DAYOFWEEK(t.scheduled_on) - 1
+  WHERE t.id = p_topic_id AND t.is_deleted = FALSE;
+  IF v_group_id IS NULL THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'topic_not_found';
+  END IF;
+  IF p_actor_role = 'instructor' AND (NOT (v_instructor_id <=> p_actor_user_id) OR p_mode <> 'apply') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  ELSEIF p_actor_role = 'tenant_admin' AND NOT (v_tenant_id <=> p_actor_tenant_id) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
+  ELSEIF p_actor_role NOT IN ('instructor', 'tenant_admin', 'super_admin') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+  IF v_status IN ('completed', 'cancelled') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'topic_not_reschedulable';
+  END IF;
+  IF p_mode NOT IN ('apply', 'propose') OR p_new_date IS NULL OR p_new_start IS NULL OR p_new_end IS NULL OR p_new_start >= p_new_end THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'invalid_reschedule';
+  END IF;
+  START TRANSACTION;
+  -- Una propuesta nueva reemplaza a la pendiente.
+  UPDATE class_reschedules SET status = 'superseded', resolved_at = NOW(), resolved_by = p_actor_user_id
+  WHERE topic_id = p_topic_id AND status = 'pending';
+  INSERT INTO class_reschedules (tenant_id, topic_id, group_id, instructor_id, status, reason, old_date, old_start, old_end,
+    new_date, new_start, new_end, requested_by, requested_role)
+  VALUES (v_tenant_id, p_topic_id, v_group_id, v_instructor_id, 'pending', NULLIF(TRIM(p_reason), ''), v_old_date, v_old_start, v_old_end,
+    p_new_date, p_new_start, p_new_end, p_actor_user_id, p_actor_role);
+  SET v_id = LAST_INSERT_ID();
+  IF p_mode = 'apply' THEN
+    CALL sp_class_reschedule_confirm(p_actor_user_id, p_actor_role, p_actor_tenant_id, v_id, p_new_date, p_new_start, p_new_end);
+  END IF;
+  COMMIT;
+  SELECT v_id AS request_id, p_mode = 'apply' AS applied;
+END$$
+
+-- Confirma (aplica) una reprogramacion pendiente; se puede elegir otra
+-- fecha/hora propuesta. La confirma el profesor de la clase o un admin.
+CREATE PROCEDURE sp_class_reschedule_confirm(IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED, IN p_request_id BIGINT UNSIGNED,
+  IN p_new_date DATE, IN p_new_start TIME, IN p_new_end TIME)
+BEGIN
+  DECLARE v_topic_id BIGINT UNSIGNED;
+  DECLARE v_tenant_id BIGINT UNSIGNED;
+  DECLARE v_group_id BIGINT UNSIGNED;
+  DECLARE v_instructor_id BIGINT UNSIGNED;
+  DECLARE v_status VARCHAR(20);
+  DECLARE v_date DATE;
+  DECLARE v_start TIME;
+  DECLARE v_end TIME;
+  SELECT topic_id, tenant_id, group_id, instructor_id, status, COALESCE(p_new_date, new_date), COALESCE(p_new_start, new_start), COALESCE(p_new_end, new_end)
+    INTO v_topic_id, v_tenant_id, v_group_id, v_instructor_id, v_status, v_date, v_start, v_end
+  FROM class_reschedules WHERE id = p_request_id;
+  IF v_topic_id IS NULL THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'reschedule_not_found';
+  END IF;
+  IF p_actor_role = 'instructor' AND NOT (v_instructor_id <=> p_actor_user_id) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  ELSEIF p_actor_role = 'tenant_admin' AND NOT (v_tenant_id <=> p_actor_tenant_id) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
+  ELSEIF p_actor_role NOT IN ('instructor', 'tenant_admin', 'super_admin') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+  IF v_status <> 'pending' THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'reschedule_not_pending';
+  END IF;
+  IF v_start >= v_end THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'invalid_reschedule';
+  END IF;
+  IF EXISTS (SELECT 1 FROM holidays WHERE tenant_id = v_tenant_id AND holiday_on = v_date AND is_deleted = FALSE) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'date_is_holiday';
+  END IF;
+  IF EXISTS (SELECT 1 FROM topics t2 JOIN master_catalog_values s2 ON s2.id = t2.status_id AND s2.code <> 'cancelled'
+             WHERE t2.group_id = v_group_id AND t2.scheduled_on = v_date AND t2.is_deleted = FALSE AND t2.id <> v_topic_id) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'group_has_class_that_day';
+  END IF;
+  IF v_instructor_id IS NOT NULL AND EXISTS (
+    SELECT 1 FROM topics t2 JOIN component_groups g2 ON g2.id = t2.group_id AND g2.is_deleted = FALSE
+    JOIN components c2 ON c2.id = g2.component_id AND c2.is_deleted = FALSE
+    JOIN training_programs p2 ON p2.id = c2.program_id AND p2.is_deleted = FALSE
+    JOIN master_catalog_values ps2 ON ps2.id = p2.status_id AND ps2.code IN ('draft', 'active', 'paused')
+    JOIN master_catalog_values s2 ON s2.id = t2.status_id AND s2.code <> 'cancelled'
+    WHERE g2.instructor_id = v_instructor_id AND t2.scheduled_on = v_date AND t2.is_deleted = FALSE AND t2.id <> v_topic_id) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'instructor_not_available';
+  END IF;
+  UPDATE topics
+  SET scheduled_on = v_date, class_start = v_start, class_end = v_end,
+      status_id = (SELECT v.id FROM master_catalog_values v JOIN master_catalogs mc ON mc.id = v.catalog_id WHERE mc.code = 'TOPIC_STATUS' AND v.code = 'rescheduled'),
+      updated_at = NOW(), updated_by = p_actor_user_id
+  WHERE id = v_topic_id;
+  UPDATE class_reschedules SET status = 'applied', new_date = v_date, new_start = v_start, new_end = v_end, resolved_at = NOW(), resolved_by = p_actor_user_id
+  WHERE id = p_request_id;
+END$$
+
+-- Rechaza (profesor) o retira (admin) una propuesta pendiente.
+CREATE PROCEDURE sp_class_reschedule_cancel(IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED, IN p_request_id BIGINT UNSIGNED, IN p_note VARCHAR(300))
+BEGIN
+  DECLARE v_tenant_id BIGINT UNSIGNED;
+  DECLARE v_instructor_id BIGINT UNSIGNED;
+  DECLARE v_status VARCHAR(20);
+  SELECT tenant_id, instructor_id, status INTO v_tenant_id, v_instructor_id, v_status FROM class_reschedules WHERE id = p_request_id;
+  IF v_status IS NULL THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'reschedule_not_found';
+  END IF;
+  IF p_actor_role = 'instructor' AND NOT (v_instructor_id <=> p_actor_user_id) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  ELSEIF p_actor_role = 'tenant_admin' AND NOT (v_tenant_id <=> p_actor_tenant_id) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'tenant_mismatch';
+  ELSEIF p_actor_role NOT IN ('instructor', 'tenant_admin', 'super_admin') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+  IF v_status <> 'pending' THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'reschedule_not_pending';
+  END IF;
+  UPDATE class_reschedules SET status = IF(p_actor_role = 'instructor', 'rejected', 'withdrawn'), resolved_at = NOW(), resolved_by = p_actor_user_id,
+    resolution_note = NULLIF(TRIM(p_note), '')
+  WHERE id = p_request_id;
+END$$
+
+-- Reprogramaciones visibles: el profesor las de sus clases, el admin las de
+-- su tenant. Pendientes y las de los ultimos 30 dias.
+CREATE PROCEDURE sp_class_reschedule_list(IN p_actor_user_id BIGINT UNSIGNED, IN p_actor_role VARCHAR(80), IN p_actor_tenant_id BIGINT UNSIGNED)
+BEGIN
+  IF p_actor_role NOT IN ('instructor', 'tenant_admin', 'super_admin') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
+  END IF;
+  SELECT r.id, r.topic_id, r.status, r.reason, r.requested_role, ru.full_name AS requested_by_name,
+         DATE_FORMAT(r.old_date, '%Y-%m-%d') AS old_date, TIME_FORMAT(r.old_start, '%H:%i') AS old_start, TIME_FORMAT(r.old_end, '%H:%i') AS old_end,
+         DATE_FORMAT(r.new_date, '%Y-%m-%d') AS new_date, TIME_FORMAT(r.new_start, '%H:%i') AS new_start, TIME_FORMAT(r.new_end, '%H:%i') AS new_end,
+         r.created_at, r.resolved_at, r.resolution_note, t.title, c.name AS component_name, p.name AS program_name, g.name AS group_name,
+         r.instructor_id, iu.full_name AS instructor_name
+  FROM class_reschedules r
+  JOIN topics t ON t.id = r.topic_id
+  JOIN component_groups g ON g.id = r.group_id
+  JOIN components c ON c.id = g.component_id
+  JOIN training_programs p ON p.id = c.program_id
+  LEFT JOIN users ru ON ru.id = r.requested_by
+  LEFT JOIN users iu ON iu.id = r.instructor_id
+  WHERE (r.status = 'pending' OR r.created_at >= NOW() - INTERVAL 30 DAY) AND r.status <> 'superseded'
+    AND ((p_actor_role = 'instructor' AND r.instructor_id = p_actor_user_id)
+      OR (p_actor_role = 'tenant_admin' AND r.tenant_id <=> p_actor_tenant_id)
+      OR p_actor_role = 'super_admin')
+  ORDER BY r.status = 'pending' DESC, r.created_at DESC
+  LIMIT 100;
+END$$
+
+CREATE PROCEDURE sp_class_reschedule_get(IN p_request_id BIGINT UNSIGNED)
+BEGIN
+  SELECT r.id, r.topic_id, r.status, r.reason, r.requested_role, r.requested_by, ru.full_name AS requested_by_name, r.resolved_by,
+         DATE_FORMAT(r.old_date, '%Y-%m-%d') AS old_date, TIME_FORMAT(r.old_start, '%H:%i') AS old_start, TIME_FORMAT(r.old_end, '%H:%i') AS old_end,
+         DATE_FORMAT(r.new_date, '%Y-%m-%d') AS new_date, TIME_FORMAT(r.new_start, '%H:%i') AS new_start, TIME_FORMAT(r.new_end, '%H:%i') AS new_end,
+         t.title, c.name AS component_name, p.id AS program_id, p.name AS program_name, g.name AS group_name,
+         r.instructor_id, iu.full_name AS instructor_name, r.tenant_id, tn.name AS tenant_name, tn.slug AS tenant_slug, tn.brand_color, tn.timezone,
+         COALESCE(NULLIF(t.meeting_url, ''), NULLIF(g.meeting_url, '')) AS meeting_url
+  FROM class_reschedules r
+  JOIN topics t ON t.id = r.topic_id
+  JOIN component_groups g ON g.id = r.group_id
+  JOIN components c ON c.id = g.component_id
+  JOIN training_programs p ON p.id = c.program_id
+  LEFT JOIN tenants tn ON tn.id = r.tenant_id
+  LEFT JOIN users ru ON ru.id = r.requested_by
+  LEFT JOIN users iu ON iu.id = r.instructor_id
+  WHERE r.id = p_request_id;
+END$$
+
+-- Canal de Slack del programa (para avisar cambios de horario).
+CREATE PROCEDURE sp_program_slack_channel(IN p_program_id BIGINT UNSIGNED)
+BEGIN
+  SELECT webhook_url, channel_name FROM program_slack_channels WHERE program_id = p_program_id;
+END$$
+
+-- A quien avisar: alumnos inscritos activos, el profesor y los admins.
+CREATE PROCEDURE sp_class_reschedule_recipients(IN p_request_id BIGINT UNSIGNED)
+BEGIN
+  SELECT u.id AS user_id, u.full_name, u.email, 'student' AS role
+  FROM class_reschedules r
+  JOIN group_enrollments ge ON ge.group_id = r.group_id AND ge.is_deleted = FALSE
+  JOIN users u ON u.id = ge.student_id AND u.is_active = TRUE AND u.is_deleted = FALSE
+  WHERE r.id = p_request_id
+  UNION
+  SELECT u.id, u.full_name, u.email, 'instructor'
+  FROM class_reschedules r JOIN users u ON u.id = r.instructor_id AND u.is_active = TRUE AND u.is_deleted = FALSE
+  WHERE r.id = p_request_id
+  UNION
+  SELECT u.id, u.full_name, u.email, 'admin'
+  FROM class_reschedules r
+  JOIN users u ON u.tenant_id <=> r.tenant_id AND u.is_active = TRUE AND u.is_deleted = FALSE
+  JOIN master_catalog_values ro ON ro.id = u.role_id AND ro.code = 'tenant_admin'
+  WHERE r.id = p_request_id;
+END$$
+
+-- Alertas en la app. p_event: applied (alumnos + profesor + admins, menos
+-- quien lo hizo), proposed (profesor), rejected (admins).
+CREATE PROCEDURE sp_class_reschedule_alerts(IN p_request_id BIGINT UNSIGNED, IN p_event VARCHAR(20), IN p_actor_user_id BIGINT UNSIGNED,
+  IN p_title VARCHAR(200), IN p_description VARCHAR(1000))
+BEGIN
+  DECLARE v_tenant_id BIGINT UNSIGNED;
+  DECLARE v_instructor_id BIGINT UNSIGNED;
+  DECLARE v_group_id BIGINT UNSIGNED;
+  SELECT tenant_id, instructor_id, group_id INTO v_tenant_id, v_instructor_id, v_group_id FROM class_reschedules WHERE id = p_request_id;
+  INSERT INTO alerts (tenant_id, type_id, priority_id, recipient_user_id, title, description, status_id, source_type, source_id, created_by)
+  SELECT v_tenant_id,
+         (SELECT v.id FROM master_catalog_values v JOIN master_catalogs mc ON mc.id = v.catalog_id WHERE mc.code = 'ALERT_TYPE' AND v.code = 'schedule_change'),
+         (SELECT v.id FROM master_catalog_values v JOIN master_catalogs mc ON mc.id = v.catalog_id WHERE mc.code = 'ALERT_PRIORITY' AND v.code = IF(p_event = 'proposed', 'high', 'medium')),
+         x.user_id, LEFT(p_title, 200), LEFT(p_description, 1000),
+         (SELECT v.id FROM master_catalog_values v JOIN master_catalogs mc ON mc.id = v.catalog_id WHERE mc.code = 'ALERT_STATUS' AND v.code = 'open'),
+         'class_reschedule', p_request_id, p_actor_user_id
+  FROM (
+    SELECT ge.student_id AS user_id FROM group_enrollments ge JOIN users u ON u.id = ge.student_id AND u.is_active = TRUE AND u.is_deleted = FALSE
+    WHERE p_event = 'applied' AND ge.group_id = v_group_id AND ge.is_deleted = FALSE
+    UNION SELECT v_instructor_id WHERE v_instructor_id IS NOT NULL AND p_event IN ('applied', 'proposed')
+    UNION SELECT u.id FROM users u JOIN master_catalog_values ro ON ro.id = u.role_id AND ro.code = 'tenant_admin'
+      WHERE p_event IN ('applied', 'rejected') AND u.tenant_id <=> v_tenant_id AND u.is_active = TRUE AND u.is_deleted = FALSE
+  ) x
+  WHERE x.user_id IS NOT NULL AND NOT (x.user_id <=> p_actor_user_id);
+END$$
+
 -- Clases del profesor (de los ultimos 60 dias a manana) que aun no marca
 -- como dictadas, con su horario, para avisarle en pantalla durante la clase,
 -- al terminarla y al empezar la siguiente. El servidor decide con la hora
@@ -7052,7 +7424,7 @@ BEGIN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'not_authorized';
   END IF;
   SELECT t.id AS topic_id, t.title, ts.code AS status_code, DATE_FORMAT(t.scheduled_on, '%Y-%m-%d') AS scheduled_on,
-         TIME_FORMAT(d.start_time, '%H:%i') AS start_time, TIME_FORMAT(d.end_time, '%H:%i') AS end_time,
+         TIME_FORMAT(COALESCE(t.class_start, d.start_time), '%H:%i') AS start_time, TIME_FORMAT(COALESCE(t.class_end, d.end_time), '%H:%i') AS end_time,
          c.name AS component_name, p.name AS program_name, g.id AS group_id, g.name AS group_name,
          COALESCE(NULLIF(t.meeting_url, ''), NULLIF(g.meeting_url, '')) AS meeting_url, tn.timezone
   FROM topics t
@@ -7064,7 +7436,7 @@ BEGIN
   JOIN master_catalog_values ts ON ts.id = t.status_id AND ts.code NOT IN ('completed', 'cancelled')
   LEFT JOIN component_group_schedule_days d ON d.group_id = g.id AND d.is_deleted = FALSE AND d.weekday = DAYOFWEEK(t.scheduled_on) - 1
   WHERE t.is_deleted = FALSE AND t.scheduled_on BETWEEN CURDATE() - INTERVAL 60 DAY AND CURDATE() + INTERVAL 1 DAY
-  ORDER BY t.scheduled_on, d.start_time, c.sort_order, t.sort_order;
+  ORDER BY t.scheduled_on, COALESCE(t.class_start, d.start_time), c.sort_order, t.sort_order;
 END$$
 
 CREATE PROCEDURE sp_mail_redirect_targets(IN p_tenant_id BIGINT UNSIGNED)
@@ -7198,9 +7570,9 @@ BEGIN
          x.assigned_instructor_id, x.is_substitute
   FROM (
     SELECT t.id AS topic_id, COALESCE(t.actual_date, t.scheduled_on) AS class_date,
-           TIME_FORMAT(d.start_time, '%H:%i') AS start_time, TIME_FORMAT(d.end_time, '%H:%i') AS end_time,
-           COALESCE(TIMESTAMPDIFF(MINUTE, d.start_time, d.end_time), t.duration_minutes) AS minutes,
-           CASE WHEN d.id IS NOT NULL THEN 'schedule' WHEN t.duration_minutes IS NOT NULL THEN 'planned' ELSE 'unknown' END AS minutes_source,
+           TIME_FORMAT(COALESCE(t.class_start, d.start_time), '%H:%i') AS start_time, TIME_FORMAT(COALESCE(t.class_end, d.end_time), '%H:%i') AS end_time,
+           COALESCE(TIMESTAMPDIFF(MINUTE, t.class_start, t.class_end), TIMESTAMPDIFF(MINUTE, d.start_time, d.end_time), t.duration_minutes) AS minutes,
+           CASE WHEN t.class_start IS NOT NULL OR d.id IS NOT NULL THEN 'schedule' WHEN t.duration_minutes IS NOT NULL THEN 'planned' ELSE 'unknown' END AS minutes_source,
            t.duration_minutes AS planned_minutes, t.title AS topic_title, c.id AS component_id, c.name AS component_name, c.sort_order,
            g.id AS group_id, g.name AS group_name,
            COALESCE(

@@ -23,6 +23,7 @@ import { registerAdminDashboardRoutes } from './adminDashboard.js'
 import { registerClassReminderRoutes, startClassReminders } from './classReminders.js'
 import { registerSlackRoutes, startSlackReminders } from './slackReminders.js'
 import { registerClassCheckinRoutes } from './classCheckins.js'
+import { registerClassRescheduleRoutes } from './classReschedule.js'
 import { registerExternalApiRoutes } from './externalApi.js'
 import { registerExternalApiDocs } from './externalApiDocs.js'
 import { registerSupportRoutes } from './support.js'
@@ -290,6 +291,7 @@ registerAdminDashboardRoutes(app)
 registerClassReminderRoutes(app)
 registerSlackRoutes(app)
 registerClassCheckinRoutes(app)
+registerClassRescheduleRoutes(app)
 registerExternalApiRoutes(app)
 registerExternalApiDocs(app)
 registerSupportRoutes(app)
