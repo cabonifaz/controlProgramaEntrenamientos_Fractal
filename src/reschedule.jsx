@@ -50,7 +50,8 @@ export function RescheduleDialog({ session, topicId, onClose, onDone, pendingReq
         if (!alive) return
         setData(res.data); setChoice(res.data.proposals[0] || null)
         setManual({ date: '', start: res.data.topic.start || '', end: res.data.topic.end || '' })
-        if (!res.data.proposals.length) setManualOn(true)
+        // El admin coordina la fecha y hora exacta: sin sugerencias.
+        if (!res.data.proposals.length || isAdmin) setManualOn(true)
       })
       .catch((err) => { if (alive) setError(err.message) })
     return () => { alive = false }
@@ -131,10 +132,12 @@ export function RescheduleDialog({ session, topicId, onClose, onDone, pendingReq
                 {isAdmin ? ' Si eliges otra fecha, reemplaza a esa propuesta.' : ' Elige esa u otra fecha y confirma.'}
               </p>
             )}
-            {data.availabilitySource === 'schedule' && (
+            {!isAdmin && data.availabilitySource === 'schedule' && (
               <p className="rs-note">{topic.instructorName || 'El profesor'} no registró su disponibilidad para este programa: se proponen días y horas como los de su horario actual.</p>
             )}
-            {data.proposals.length === 0 ? (
+            {isAdmin ? (
+              <p className="rs-admin-lead">Escribe la nueva fecha y hora exactas que coordinaste. Te avisamos si hay algo que revisar, pero la decisión es tuya.</p>
+            ) : data.proposals.length === 0 ? (
               <p className="rs-empty">No encontramos fechas libres en los próximos 45 días que coincidan con la disponibilidad de {topic.instructorName || 'el profesor'}. Puedes poner una fecha y hora a mano abajo, pedir que actualice su disponibilidad en “Mi disponibilidad” o agregar franjas de clase en Horarios.</p>
             ) : (
               <fieldset className="rs-options">
@@ -181,6 +184,9 @@ export function RescheduleDialog({ session, topicId, onClose, onDone, pendingReq
                       ? <ul className="rs-warnings" role="status">{check.warnings.map((t) => <li key={t}>{t}</li>)}<li className="rs-warn-note">Puedes confirmarla igual.</li></ul>
                       : <p className="rs-ok" role="status">{dayLabel(manual.date)}, {range(manual.start, manual.end)}: libre y dentro de la disponibilidad.</p>}
                   </>
+                )}
+                {manualReady && check && check !== 'loading' && !check.issues.length && (
+                  <p className="rs-summary">La clase pasará al <strong>{dayLabel(manual.date)}, {range(manual.start, manual.end)}</strong>.</p>
                 )}
               </div>
             )}

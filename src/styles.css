@@ -1517,3 +1517,5 @@ p.sch-warn{margin:0 0 10px}
 .rs-ok{margin:0;padding:10px 12px;border-radius:8px;background:#e6f5ec;color:#14532d;font-size:13.5px}
 @media (max-width:640px){.rs-manual-grid{grid-template-columns:1fr 1fr}.rs-manual-grid label:first-child{grid-column:1/-1}}
 .rs-options .rs-option{margin:0}
+.rs-admin-lead{margin:0;font-size:14px;color:#3d4f59}
+.rs-summary{margin:0;font-size:14px;color:var(--deep)}

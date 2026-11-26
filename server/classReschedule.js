@@ -78,17 +78,22 @@ export function proposalsFrom(slots) {
 
 // Fecha y hora escritas a mano. issues = no se puede (bloquea);
 // warnings = se puede, pero conviene revisarlo.
-export function checkCustomSlot({ ctx, rows, today, nowMinutes, date, start, end }) {
+// coordinated (fecha que pone el admin): feriado, otra clase del grupo o del
+// profesor ese dia pasan a ser advertencias; el admin ya lo coordino.
+export function checkCustomSlot({ ctx, rows, today, nowMinutes, date, start, end, coordinated = false }) {
   const issues = [], warnings = []
   const pick = (k) => rows.filter((r) => r.kind === k).map((r) => ({ ...r, start: r.start_time, end: r.end_time }))
   const slot = { start, end }
   if (toMinutes(start) >= toMinutes(end)) issues.push('La hora de fin debe ser posterior a la de inicio.')
   if (date < today || (date === today && toMinutes(start) <= nowMinutes)) issues.push('La fecha y hora ya pasaron.')
   if (date === ctx.scheduled_on && start === ctx.start_time && end === ctx.end_time) issues.push('Es la misma fecha y hora que ya tiene la clase.')
-  if (rows.some((r) => r.kind === 'holiday' && r.d === date)) issues.push('Ese día es feriado.')
+  const soft = coordinated ? warnings : issues
+  if (rows.some((r) => r.kind === 'holiday' && r.d === date)) soft.push('Ese día es feriado.')
   const day = pick('busy').filter((b) => b.d === date)
-  if (day.some((b) => Number(b.group_id) === Number(ctx.group_id))) issues.push('El grupo ya tiene otra clase ese día.')
-  if (day.some((b) => Number(b.same_instructor) === 1 && Number(b.group_id) !== Number(ctx.group_id))) issues.push(`${ctx.instructor_name || 'El profesor'} ya dicta otra clase ese día.`)
+  const groupDay = day.filter((b) => Number(b.group_id) === Number(ctx.group_id))
+  if (groupDay.length) soft.push(`El grupo ya tiene otra clase ese día${groupDay[0].start ? ` (${groupDay[0].start}–${groupDay[0].end})` : ''}.`)
+  const instrDay = day.filter((b) => Number(b.same_instructor) === 1 && Number(b.group_id) !== Number(ctx.group_id))
+  if (instrDay.length) soft.push(`${ctx.instructor_name || 'El profesor'} ya dicta otra clase ese día${instrDay[0].start ? ` (${instrDay[0].start}–${instrDay[0].end})` : ''}.`)
   if (issues.length) return { issues, warnings }
   const wd = weekdayOf(date)
   const avail = pick('avail')
@@ -105,11 +110,12 @@ function nowMinutesIn(timeZone) {
   return p[0] * 60 + p[1]
 }
 
-async function checkCustom(req, topicId, { date, start, end }) {
+const isAdminReq = (req) => ['tenant_admin', 'super_admin'].includes(req.user.roleCode)
+async function checkCustom(req, topicId, { date, start, end }, coordinated = isAdminReq(req)) {
   const [ctx] = await callProcedure('sp_reschedule_topic_context', { ...actor(req), p_topic_id: topicId })
   const tz = ctx.timezone || 'America/Lima'
   const rows = await callProcedure('sp_reschedule_slot_data', { p_topic_id: topicId, p_from: date, p_to: date })
-  return checkCustomSlot({ ctx, rows: rows || [], today: localToday(tz), nowMinutes: nowMinutesIn(tz), date, start, end })
+  return checkCustomSlot({ ctx, rows: rows || [], today: localToday(tz), nowMinutes: nowMinutesIn(tz), date, start, end, coordinated })
 }
 const MAX_DATE = (today) => addDays(today, 400)
 
@@ -257,9 +263,11 @@ export function registerClassRescheduleRoutes(app) {
         if (issues.length) return res.status(409).json({ message: issues[0], issues })
       } else {
         // La propuesta guardada pudo ser manual: se valida como tal si no esta entre las sugeridas.
+        // Si la puso el admin y se confirma tal cual, es una fecha coordinada.
+        const asProposed = !custom && ['tenant_admin', 'super_admin'].includes(r.requested_role)
         const { slots } = await loadOptions(req, Number(r.topic_id))
         if (!slots.some((s) => sameSlot(s, chosen))) {
-          const { issues } = await checkCustom(req, Number(r.topic_id), chosen)
+          const { issues } = await checkCustom(req, Number(r.topic_id), chosen, isAdminReq(req) || asProposed)
           if (issues.length) return res.status(409).json({ message: issues[0], issues })
         }
       }

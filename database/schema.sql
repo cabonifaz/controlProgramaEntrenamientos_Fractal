@@ -7247,8 +7247,14 @@ BEGIN
   DECLARE v_date DATE;
   DECLARE v_start TIME;
   DECLARE v_end TIME;
-  SELECT topic_id, tenant_id, group_id, instructor_id, status, COALESCE(p_new_date, new_date), COALESCE(p_new_start, new_start), COALESCE(p_new_end, new_end)
-    INTO v_topic_id, v_tenant_id, v_group_id, v_instructor_id, v_status, v_date, v_start, v_end
+  DECLARE v_coordinated BOOLEAN DEFAULT FALSE;
+  SELECT topic_id, tenant_id, group_id, instructor_id, status, COALESCE(p_new_date, new_date), COALESCE(p_new_start, new_start), COALESCE(p_new_end, new_end),
+         -- Fecha coordinada por el admin (la pone el admin, o el profesor confirma tal cual la del admin):
+         -- no se bloquea por feriado ni por otra clase ese dia; el admin ya lo coordino.
+         p_actor_role IN ('tenant_admin', 'super_admin')
+           OR (requested_role IN ('tenant_admin', 'super_admin') AND COALESCE(p_new_date, new_date) = new_date
+               AND COALESCE(p_new_start, new_start) = new_start AND COALESCE(p_new_end, new_end) = new_end)
+    INTO v_topic_id, v_tenant_id, v_group_id, v_instructor_id, v_status, v_date, v_start, v_end, v_coordinated
   FROM class_reschedules WHERE id = p_request_id;
   IF v_topic_id IS NULL THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'reschedule_not_found';
@@ -7266,14 +7272,14 @@ BEGIN
   IF v_start >= v_end THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'invalid_reschedule';
   END IF;
-  IF EXISTS (SELECT 1 FROM holidays WHERE tenant_id = v_tenant_id AND holiday_on = v_date AND is_deleted = FALSE) THEN
+  IF NOT v_coordinated AND EXISTS (SELECT 1 FROM holidays WHERE tenant_id = v_tenant_id AND holiday_on = v_date AND is_deleted = FALSE) THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'date_is_holiday';
   END IF;
-  IF EXISTS (SELECT 1 FROM topics t2 JOIN master_catalog_values s2 ON s2.id = t2.status_id AND s2.code <> 'cancelled'
+  IF NOT v_coordinated AND EXISTS (SELECT 1 FROM topics t2 JOIN master_catalog_values s2 ON s2.id = t2.status_id AND s2.code <> 'cancelled'
              WHERE t2.group_id = v_group_id AND t2.scheduled_on = v_date AND t2.is_deleted = FALSE AND t2.id <> v_topic_id) THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'group_has_class_that_day';
   END IF;
-  IF v_instructor_id IS NOT NULL AND EXISTS (
+  IF NOT v_coordinated AND v_instructor_id IS NOT NULL AND EXISTS (
     SELECT 1 FROM topics t2 JOIN component_groups g2 ON g2.id = t2.group_id AND g2.is_deleted = FALSE
     JOIN components c2 ON c2.id = g2.component_id AND c2.is_deleted = FALSE
     JOIN training_programs p2 ON p2.id = c2.program_id AND p2.is_deleted = FALSE
